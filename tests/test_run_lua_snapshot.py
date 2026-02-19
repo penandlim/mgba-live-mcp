@@ -88,3 +88,55 @@ def test_run_lua_snapshot_settles_before_screenshot_when_session_is_given(monkey
     assert fake.calls[0]["args"] == ["--code", "return 9", "--session", "session-123"]
     assert fake.calls[1]["args"] == ["--code", "return true", "--session", "session-123"]
     assert fake.calls[2]["args"] == ["--session", "session-123", "--text-format", "hex"]
+
+
+def test_run_lua_snapshot_waits_for_macro_completion_when_macro_key_returned(monkeypatch: Any) -> None:
+    class _MacroController:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+            self.polls = 0
+
+        async def run(self, command: str, args: list[str], *, timeout: float = 20.0) -> _Result:
+            self.calls.append({"command": command, "args": list(args), "timeout": timeout})
+            if command == "run-lua":
+                if args[:2] == ["--code", "return 11"]:
+                    return _Result(
+                        {
+                            "frame": 100,
+                            "data": {"result": {"status": "started", "macro_key": "__macro_wait_test"}},
+                        }
+                    )
+                if args[:2] == ["--code", "return true"]:
+                    raise AssertionError("no-op settle should not run when macro_key is returned")
+                if args[:1] == ["--code"] and "__macro_wait_test" in args[1]:
+                    self.polls += 1
+                    return _Result({"frame": 100 + self.polls, "data": {"result": self.polls >= 3}})
+            if command == "screenshot":
+                return _Result({"frame": 104, "text": {"format": "none"}})
+            raise AssertionError(f"unexpected command: {command}")
+
+    fake = _MacroController()
+    monkeypatch.setattr(mcp_server, "_controller", fake)
+
+    contents = asyncio.run(
+        mcp_server.call_tool(
+            "mgba_live_run_lua",
+            {
+                "code": "return 11",
+                "session": "session-123",
+                "timeout": 5.0,
+            },
+        )
+    )
+    payload = _first_payload(contents)
+
+    settle = payload["screenshot_settle"]
+    assert payload["screenshot"] == {"frame": 104, "text": {"format": "none"}}
+    assert settle["mode"] == "macro_key"
+    assert settle["macro_key"] == "__macro_wait_test"
+    assert settle["completed"] is True
+    assert settle["polls"] == 3
+    assert settle["waited_seconds"] >= 0
+    assert [call["command"] for call in fake.calls] == ["run-lua", "run-lua", "run-lua", "run-lua", "screenshot"]
+    assert fake.calls[0]["args"] == ["--code", "return 11", "--session", "session-123"]
+    assert "__macro_wait_test" in fake.calls[1]["args"][1]

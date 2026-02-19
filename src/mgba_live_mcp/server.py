@@ -1,7 +1,8 @@
-"""MCP server for persistent live mGBA control with live screenshot returns."""
+"""MCP server for persistent live mGBA control with live screenshot exports."""
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from pathlib import Path
 import json
@@ -112,6 +113,83 @@ async def _resolve_snapshot_session(
     return None
 
 
+def _extract_run_lua_result(command_payload: dict[str, Any]) -> Any:
+    if not isinstance(command_payload, dict):
+        return None
+    data = command_payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    if "result" in data:
+        return data.get("result")
+    return data
+
+
+def _extract_run_lua_macro_key(command_payload: dict[str, Any]) -> str | None:
+    result = _extract_run_lua_result(command_payload)
+    if not isinstance(result, dict):
+        return None
+    macro_key = result.get("macro_key")
+    if isinstance(macro_key, str) and macro_key:
+        return macro_key
+    return None
+
+
+def _lua_quote(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{escaped}'"
+
+
+async def _wait_for_macro_completion(
+    *,
+    session_id: str,
+    macro_key: str,
+    timeout: float,
+    poll_seconds: float = 0.05,
+) -> dict[str, Any]:
+    settle_timeout = max(float(timeout), 0.0)
+    poll_interval = max(float(poll_seconds), 0.01)
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+    deadline = started_at + settle_timeout
+    polls = 0
+    wait_code = (
+        f"local macro = _G[{_lua_quote(macro_key)}]; "
+        "if macro == nil then return true end "
+        "local active = macro.active; "
+        "if active == nil then return true end "
+        "return active == false"
+    )
+    poll_command_timeout = max(1.0, min(5.0, settle_timeout if settle_timeout > 0 else 1.0))
+
+    while True:
+        polls += 1
+        poll_result = await _controller.run(
+            "run-lua",
+            ["--code", wait_code, "--session", str(session_id)],
+            timeout=poll_command_timeout,
+        )
+        result_value = _extract_run_lua_result(poll_result.payload)
+        if result_value is True:
+            return {
+                "mode": "macro_key",
+                "macro_key": macro_key,
+                "completed": True,
+                "polls": polls,
+                "waited_seconds": round(loop.time() - started_at, 3),
+            }
+
+        if settle_timeout <= 0 or loop.time() >= deadline:
+            return {
+                "mode": "macro_key",
+                "macro_key": macro_key,
+                "completed": False,
+                "polls": polls,
+                "waited_seconds": round(loop.time() - started_at, 3),
+            }
+
+        await asyncio.sleep(poll_interval)
+
+
 async def _run_with_snapshot(
     tool_name: str,
     live_command: str,
@@ -156,17 +234,29 @@ async def _run_with_snapshot(
         return [_text_content(payload)]
 
     if ensure_post_lua_settle:
-        # For run-lua calls, issue a no-op Lua command before screenshot capture
-        # so the image reflects state after the Lua command has fully completed.
-        try:
-            await _controller.run(
-                "run-lua",
-                ["--code", "return true", "--session", str(resolved_session)],
-                timeout=max(timeout, 20.0),
-            )
-        except Exception as exc:
-            # Keep primary command responses usable even if settle fails.
-            payload["screenshot_settle_error"] = str(exc)
+        macro_key = _extract_run_lua_macro_key(command_result.payload)
+        if macro_key:
+            try:
+                payload["screenshot_settle"] = await _wait_for_macro_completion(
+                    session_id=str(resolved_session),
+                    macro_key=macro_key,
+                    timeout=max(timeout, 20.0),
+                )
+            except Exception as exc:
+                # Keep primary command responses usable even if settle fails.
+                payload["screenshot_settle_error"] = str(exc)
+        else:
+            # For run-lua calls, issue a no-op Lua command before screenshot capture
+            # so the image reflects state after the Lua command has fully completed.
+            try:
+                await _controller.run(
+                    "run-lua",
+                    ["--code", "return true", "--session", str(resolved_session)],
+                    timeout=max(timeout, 20.0),
+                )
+            except Exception as exc:
+                # Keep primary command responses usable even if settle fails.
+                payload["screenshot_settle_error"] = str(exc)
 
     shot_args = ["--session", str(resolved_session), "--text-format", snapshot_text_format]
     if snapshot_max_bytes > 0:
@@ -302,8 +392,8 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="mgba_live_screenshot",
-            description="Capture screenshot from a live session.",
+            name="mgba_live_export_screenshot",
+            description="Export a screenshot from a live session.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -493,7 +583,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             next_step="Call mgba_live_status after input to assess the post-input view.",
         )
 
-    if name == "mgba_live_screenshot":
+    # Backward-compatible alias for older clients that still call mgba_live_screenshot.
+    if name in {"mgba_live_export_screenshot", "mgba_live_screenshot"}:
+        tool_name = "mgba_live_export_screenshot"
         text_format = str(args.get("text_format", "hex")).lower()
         if text_format not in {"hex", "base64", "none"}:
             raise ValueError("text_format must be one of: hex, base64, none")
@@ -510,7 +602,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             cmd_args.extend(["--text-max-bytes", str(int(text_max))])
         cmd_args.extend(_build_session_arg(args))
         command_result = await _controller.run("screenshot", cmd_args, timeout=timeout)
-        contents = [_text_content({"tool": name, "command": "screenshot", "result": command_result.payload})]
+        contents = [_text_content({"tool": tool_name, "command": "screenshot", "result": command_result.payload})]
         shot_image = _image_content(command_result.payload)
         if shot_image is not None:
             contents.append(shot_image)

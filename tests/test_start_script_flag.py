@@ -159,3 +159,123 @@ def test_mcp_start_tool_forwards_script_flag() -> None:
     assert captured["command_args"][:2] == ["--rom", str(rom)]
     assert "--script" in captured["command_args"]
     assert captured["command_args"][captured["command_args"].index("--script") + 1] == "/tmp/custom-startup.lua"
+
+
+def _write_session_fixture(runtime_root: Path, session_id: str, pid: int) -> None:
+    session_dir = runtime_root / "sessions" / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "id": session_id,
+        "pid": pid,
+        "rom": "/tmp/test.gb",
+        "fps_target": 120.0,
+        "session_dir": str(session_dir),
+        "command_path": str(session_dir / "command.lua"),
+        "response_path": str(session_dir / "response.json"),
+        "heartbeat_path": str(session_dir / "heartbeat.json"),
+        "stdout_log": str(session_dir / "stdout.log"),
+        "stderr_log": str(session_dir / "stderr.log"),
+    }
+    (session_dir / "session.json").write_text(json.dumps(payload))
+
+
+def test_cmd_status_all_prunes_dead_sessions(tmp_path: Path, monkeypatch: Any) -> None:
+    runtime_root = tmp_path / ".runtime"
+    monkeypatch.setattr(mgba_live, "RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(mgba_live, "SESSIONS_DIR", runtime_root / "sessions")
+    monkeypatch.setattr(mgba_live, "ACTIVE_SESSION_FILE", runtime_root / "active_session")
+
+    _write_session_fixture(runtime_root, "dead-session", 1001)
+    _write_session_fixture(runtime_root, "alive-session", 1002)
+
+    monkeypatch.setattr(mgba_live, "pid_alive", lambda pid: pid == 1002)
+
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(mgba_live, "print_json", lambda payload: captured.setdefault("value", payload))
+
+    mgba_live.cmd_status(argparse.Namespace(all=True, session=None))
+
+    sessions = captured["value"]
+    assert isinstance(sessions, list)
+    assert len(sessions) == 1
+    assert sessions[0]["session_id"] == "alive-session"
+    assert sessions[0]["alive"] is True
+
+
+def test_cmd_status_skips_dead_active_session(tmp_path: Path, monkeypatch: Any) -> None:
+    runtime_root = tmp_path / ".runtime"
+    monkeypatch.setattr(mgba_live, "RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(mgba_live, "SESSIONS_DIR", runtime_root / "sessions")
+    monkeypatch.setattr(mgba_live, "ACTIVE_SESSION_FILE", runtime_root / "active_session")
+
+    _write_session_fixture(runtime_root, "dead-session", 2001)
+    _write_session_fixture(runtime_root, "alive-session", 2002)
+    mgba_live.ACTIVE_SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mgba_live.ACTIVE_SESSION_FILE.write_text("dead-session")
+
+    monkeypatch.setattr(mgba_live, "pid_alive", lambda pid: pid == 2002)
+
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(mgba_live, "print_json", lambda payload: captured.update(payload))
+
+    mgba_live.cmd_status(argparse.Namespace(all=False, session=None))
+
+    assert captured["session_id"] == "alive-session"
+    assert captured["alive"] is True
+    assert mgba_live.ACTIVE_SESSION_FILE.read_text() == "alive-session"
+
+
+def test_prune_dead_sessions_removes_dead_session_directory(tmp_path: Path, monkeypatch: Any) -> None:
+    runtime_root = tmp_path / ".runtime"
+    monkeypatch.setattr(mgba_live, "RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(mgba_live, "SESSIONS_DIR", runtime_root / "sessions")
+    monkeypatch.setattr(mgba_live, "ACTIVE_SESSION_FILE", runtime_root / "active_session")
+
+    _write_session_fixture(runtime_root, "dead-session", 3001)
+    _write_session_fixture(runtime_root, "alive-session", 3002)
+    mgba_live.ACTIVE_SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mgba_live.ACTIVE_SESSION_FILE.write_text("dead-session")
+
+    monkeypatch.setattr(mgba_live, "pid_alive", lambda pid: pid == 3002)
+
+    removed = mgba_live.prune_dead_sessions()
+
+    assert removed == ["dead-session"]
+    assert not (runtime_root / "sessions" / "dead-session").exists()
+    assert (runtime_root / "sessions" / "alive-session").exists()
+    assert mgba_live.ACTIVE_SESSION_FILE.read_text() == "alive-session"
+
+
+def test_prune_dead_sessions_clears_stale_active_pointer_when_no_sessions(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    runtime_root = tmp_path / ".runtime"
+    monkeypatch.setattr(mgba_live, "RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(mgba_live, "SESSIONS_DIR", runtime_root / "sessions")
+    monkeypatch.setattr(mgba_live, "ACTIVE_SESSION_FILE", runtime_root / "active_session")
+
+    mgba_live.ACTIVE_SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mgba_live.ACTIVE_SESSION_FILE.write_text("missing-session")
+    monkeypatch.setattr(mgba_live, "pid_alive", lambda _pid: False)
+
+    removed = mgba_live.prune_dead_sessions()
+
+    assert removed == []
+    assert not mgba_live.ACTIVE_SESSION_FILE.exists()
+
+
+def test_main_prunes_sessions_before_dispatch(monkeypatch: Any) -> None:
+    calls: list[str] = []
+
+    class DummyParser:
+        def parse_args(self) -> argparse.Namespace:
+            return argparse.Namespace(func=lambda _args: calls.append("dispatch"))
+
+    monkeypatch.setattr(mgba_live, "build_parser", lambda: DummyParser())
+    monkeypatch.setattr(mgba_live, "ensure_runtime_dirs", lambda: calls.append("ensure"))
+    monkeypatch.setattr(mgba_live, "prune_dead_sessions", lambda: calls.append("prune"))
+
+    mgba_live.main()
+
+    assert calls == ["ensure", "prune", "dispatch"]

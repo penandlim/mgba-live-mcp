@@ -116,6 +116,59 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
+def _refresh_active_session() -> None:
+    active = get_active_session_id()
+    if not active:
+        return
+
+    active_path = session_file(active)
+    if active_path.exists():
+        try:
+            active_session = json.loads(active_path.read_text())
+            if pid_alive(int(active_session["pid"])):
+                return
+        except Exception:
+            pass
+
+    for candidate in iter_sessions():
+        try:
+            if pid_alive(int(candidate["pid"])):
+                set_active_session(candidate["id"])
+                return
+        except Exception:
+            continue
+
+    if ACTIVE_SESSION_FILE.exists():
+        ACTIVE_SESSION_FILE.unlink()
+
+
+def prune_dead_sessions() -> list[str]:
+    removed: list[str] = []
+    if not SESSIONS_DIR.exists():
+        _refresh_active_session()
+        return removed
+
+    for candidate in SESSIONS_DIR.glob("*/session.json"):
+        try:
+            session = json.loads(candidate.read_text())
+            pid = int(session["pid"])
+        except Exception:
+            continue
+
+        if pid_alive(pid):
+            continue
+
+        session_id = str(session.get("id") or candidate.parent.name)
+        try:
+            shutil.rmtree(candidate.parent)
+            removed.append(session_id)
+        except OSError:
+            continue
+
+    _refresh_active_session()
+    return removed
+
+
 def set_active_session(session_id: str) -> None:
     ACTIVE_SESSION_FILE.write_text(session_id)
 
@@ -425,6 +478,9 @@ def cmd_status(args: argparse.Namespace) -> None:
     if args.all:
         out = []
         for s in iter_sessions():
+            alive = pid_alive(int(s["pid"]))
+            if not alive:
+                continue
             hb_path = Path(s["heartbeat_path"])
             heartbeat = None
             if hb_path.exists():
@@ -436,7 +492,7 @@ def cmd_status(args: argparse.Namespace) -> None:
                 {
                     "session_id": s["id"],
                     "pid": s["pid"],
-                    "alive": pid_alive(int(s["pid"])),
+                    "alive": alive,
                     "rom": s["rom"],
                     "fps_target": s["fps_target"],
                     "heartbeat": heartbeat,
@@ -445,7 +501,7 @@ def cmd_status(args: argparse.Namespace) -> None:
         print_json(out)
         return
 
-    session = resolve_session(args, require_alive=False)
+    session = resolve_session(args, require_alive=True)
     heartbeat = None
     hb_path = Path(session["heartbeat_path"])
     if hb_path.exists():
@@ -812,6 +868,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    ensure_runtime_dirs()
+    prune_dead_sessions()
     args.func(args)
 
 

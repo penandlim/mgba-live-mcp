@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from dataclasses import dataclass
 import importlib.util
 import json
 from pathlib import Path
@@ -9,6 +10,7 @@ from types import ModuleType
 from typing import Any
 
 from mgba_live_mcp import server as mcp_server
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +33,18 @@ def pokemon_red_rom_path() -> Path:
     matches = sorted(roms_dir.glob("*Red Version.gb"))
     assert matches, f"Pokemon Red ROM fixture not found in {roms_dir}"
     return matches[0].resolve()
+
+
+def _first_payload(contents: list[Any]) -> dict[str, Any]:
+    assert contents
+    first = contents[0]
+    assert getattr(first, "type", None) == "text"
+    return json.loads(first.text)
+
+
+@dataclass
+class _Result:
+    payload: dict[str, Any]
 
 
 def test_start_parser_accepts_script_flag_with_known_pokemon_rom() -> None:
@@ -120,7 +134,34 @@ def test_cmd_start_passes_startup_script_to_mgba_process(tmp_path: Path, monkeyp
     assert session_json["startup_scripts"] == [str(startup_script.resolve())]
 
 
-def test_mcp_start_tool_forwards_script_flag() -> None:
+def test_list_tools_exposes_start_with_lua_and_hides_start_script() -> None:
+    tools = asyncio.run(mcp_server.list_tools())
+    by_name = {tool.name: tool for tool in tools}
+
+    assert "mgba_live_start_with_lua" in by_name
+    start_props = by_name["mgba_live_start"].inputSchema["properties"]
+    assert "script" not in start_props
+    start_with_lua_props = by_name["mgba_live_start_with_lua"].inputSchema["properties"]
+    assert "file" in start_with_lua_props
+    assert "code" in start_with_lua_props
+
+
+def test_mcp_start_tool_rejects_script_flag() -> None:
+    rom = pokemon_red_rom_path()
+
+    with pytest.raises(ValueError, match="mgba_live_start_with_lua"):
+        asyncio.run(
+            mcp_server.call_tool(
+                "mgba_live_start",
+                {
+                    "rom": str(rom),
+                    "script": "/tmp/custom-startup.lua",
+                },
+            )
+        )
+
+
+def test_mcp_start_tool_forwards_core_start_args(monkeypatch: Any) -> None:
     rom = pokemon_red_rom_path()
     captured: dict[str, Any] = {}
 
@@ -146,7 +187,10 @@ def test_mcp_start_tool_forwards_script_flag() -> None:
                 "mgba_live_start",
                 {
                     "rom": str(rom),
-                    "script": "/tmp/custom-startup.lua",
+                    "savestate": "/tmp/custom.sav",
+                    "fps_target": 240,
+                    "session_id": "custom-session",
+                    "mgba_path": "/usr/local/bin/mgba-qt",
                     "timeout": 9.0,
                 },
             )
@@ -157,8 +201,111 @@ def test_mcp_start_tool_forwards_script_flag() -> None:
     assert captured["tool_name"] == "mgba_live_start"
     assert captured["live_command"] == "start"
     assert captured["command_args"][:2] == ["--rom", str(rom)]
-    assert "--script" in captured["command_args"]
-    assert captured["command_args"][captured["command_args"].index("--script") + 1] == "/tmp/custom-startup.lua"
+    assert "--script" not in captured["command_args"]
+    assert captured["command_args"] == [
+        "--rom",
+        str(rom),
+        "--savestate",
+        "/tmp/custom.sav",
+        "--fps-target",
+        "240.0",
+        "--session-id",
+        "custom-session",
+        "--mgba-path",
+        "/usr/local/bin/mgba-qt",
+    ]
+    assert captured["timeout"] == 9.0
+
+
+class _StartWithLuaController:
+    def __init__(self, *, fail_lua: bool = False) -> None:
+        self.fail_lua = fail_lua
+        self.calls: list[dict[str, Any]] = []
+
+    async def run(self, command: str, args: list[str], *, timeout: float = 20.0) -> _Result:
+        self.calls.append({"command": command, "args": list(args), "timeout": timeout})
+        if command == "start":
+            return _Result({"status": "started", "session_id": "session-123", "pid": 4321})
+        if command == "run-lua":
+            if self.fail_lua and args[:2] != ["--code", "return true"]:
+                raise RuntimeError("run-lua failed")
+            if args[:2] == ["--code", "return true"]:
+                return _Result({"frame": 101, "data": {"settled": True}})
+            return _Result({"frame": 100, "data": {"result": {"ok": True}}})
+        if command == "screenshot":
+            return _Result({"frame": 102, "text": {"format": "none"}})
+        raise AssertionError(f"unexpected command: {command}")
+
+
+def test_mcp_start_with_lua_file_mode_runs_start_lua_and_screenshot(monkeypatch: Any) -> None:
+    rom = pokemon_red_rom_path()
+    fake = _StartWithLuaController()
+    monkeypatch.setattr(mcp_server, "_controller", fake)
+
+    contents = asyncio.run(
+        mcp_server.call_tool(
+            "mgba_live_start_with_lua",
+            {
+                "rom": str(rom),
+                "file": "/tmp/startup.lua",
+                "timeout": 7.0,
+            },
+        )
+    )
+    payload = _first_payload(contents)
+
+    assert payload["tool"] == "mgba_live_start_with_lua"
+    assert payload["command"] == "start-with-lua"
+    assert payload["start_result"] == {"status": "started", "session_id": "session-123", "pid": 4321}
+    assert payload["lua_result"] == {"frame": 100, "data": {"result": {"ok": True}}}
+    assert payload["screenshot"] == {"frame": 102, "text": {"format": "none"}}
+    assert [call["command"] for call in fake.calls] == ["start", "run-lua", "run-lua", "screenshot"]
+    assert fake.calls[1]["args"] == ["--file", "/tmp/startup.lua", "--session", "session-123"]
+    assert fake.calls[2]["args"] == ["--code", "return true", "--session", "session-123"]
+    assert fake.calls[3]["args"] == ["--session", "session-123", "--text-format", "hex"]
+
+
+def test_mcp_start_with_lua_code_mode_runs_start_lua_and_screenshot(monkeypatch: Any) -> None:
+    rom = pokemon_red_rom_path()
+    fake = _StartWithLuaController()
+    monkeypatch.setattr(mcp_server, "_controller", fake)
+
+    contents = asyncio.run(
+        mcp_server.call_tool(
+            "mgba_live_start_with_lua",
+            {
+                "rom": str(rom),
+                "code": "return 77",
+                "timeout": 7.0,
+            },
+        )
+    )
+    payload = _first_payload(contents)
+
+    assert payload["tool"] == "mgba_live_start_with_lua"
+    assert payload["lua_result"] == {"frame": 100, "data": {"result": {"ok": True}}}
+    assert payload["screenshot"] == {"frame": 102, "text": {"format": "none"}}
+    assert [call["command"] for call in fake.calls] == ["start", "run-lua", "run-lua", "screenshot"]
+    assert fake.calls[1]["args"] == ["--code", "return 77", "--session", "session-123"]
+
+
+def test_mcp_start_with_lua_leaves_session_running_when_lua_step_fails(monkeypatch: Any) -> None:
+    rom = pokemon_red_rom_path()
+    fake = _StartWithLuaController(fail_lua=True)
+    monkeypatch.setattr(mcp_server, "_controller", fake)
+
+    with pytest.raises(RuntimeError, match="session-123"):
+        asyncio.run(
+            mcp_server.call_tool(
+                "mgba_live_start_with_lua",
+                {
+                    "rom": str(rom),
+                    "code": "return 1",
+                    "timeout": 7.0,
+                },
+            )
+        )
+    assert [call["command"] for call in fake.calls] == ["start", "run-lua"]
 
 
 def _write_session_fixture(runtime_root: Path, session_id: str, pid: int) -> None:

@@ -23,6 +23,24 @@ def _text_content(payload: dict[str, Any]) -> TextContent:
     return TextContent(type="text", text=json.dumps(payload, indent=2))
 
 
+def _text_payload(content: TextContent | ImageContent) -> dict[str, Any]:
+    if getattr(content, "type", None) != "text":
+        raise RuntimeError("Expected text payload in tool response.")
+
+    text_value = getattr(content, "text", None)
+    if not isinstance(text_value, str):
+        raise RuntimeError("Text payload is missing JSON content.")
+
+    try:
+        payload = json.loads(text_value)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Failed to parse JSON tool payload.") from exc
+
+    if not isinstance(payload, dict):
+        raise RuntimeError("Tool payload JSON must be an object.")
+    return payload
+
+
 def _parse_args_list(value: list[str] | None) -> list[str]:
     if not value:
         return []
@@ -281,6 +299,26 @@ def _build_session_arg(args: dict[str, Any]) -> list[str]:
     return result
 
 
+def _build_start_command_args(args: dict[str, Any]) -> list[str]:
+    if "rom" not in args:
+        raise ValueError("rom is required")
+
+    cmd_args: list[str] = ["--rom", str(args["rom"])]
+    if savestate := args.get("savestate"):
+        cmd_args += ["--savestate", str(savestate)]
+    if "fps_target" in args:
+        fps_target = args["fps_target"]
+        if fps_target is not None:
+            cmd_args += ["--fps-target", str(float(fps_target))]
+    if args.get("fast"):
+        cmd_args.append("--fast")
+    if session_id := args.get("session_id"):
+        cmd_args.extend(["--session-id", str(session_id)])
+    if mgba_path := args.get("mgba_path"):
+        cmd_args += ["--mgba-path", str(mgba_path)]
+    return cmd_args
+
+
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     return [
@@ -292,11 +330,29 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "rom": {"type": "string", "description": "Path to ROM (.gba/.gb/.gbc)."},
                     "savestate": {"type": "string", "description": "Optional savestate path."},
-                    "script": {"type": "string", "description": "Optional startup Lua script path passed to mGBA with --script."},
                     "fps_target": {"type": "number", "description": "Explicit fpsTarget. Defaults to 120 when omitted."},
                     "fast": {"type": "boolean", "description": "Shortcut for fps_target=600."},
                     "session_id": {"type": "string", "description": "Optional explicit session id."},
                     "mgba_path": {"type": "string", "description": "Optional mgba-qt path."},
+                    "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
+                },
+                "required": ["rom"],
+            },
+        ),
+        Tool(
+            name="mgba_live_start_with_lua",
+            description="Start a live session, run Lua immediately, then return the post-Lua screenshot.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "rom": {"type": "string", "description": "Path to ROM (.gba/.gb/.gbc)."},
+                    "savestate": {"type": "string", "description": "Optional savestate path."},
+                    "fps_target": {"type": "number", "description": "Explicit fpsTarget. Defaults to 120 when omitted."},
+                    "fast": {"type": "boolean", "description": "Shortcut for fps_target=600."},
+                    "session_id": {"type": "string", "description": "Optional explicit session id."},
+                    "mgba_path": {"type": "string", "description": "Optional mgba-qt path."},
+                    "file": {"type": "string", "description": "Lua file path."},
+                    "code": {"type": "string", "description": "Inline Lua code."},
                     "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
                 },
                 "required": ["rom"],
@@ -484,21 +540,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
     timeout = float(args.get("timeout", 20.0))
 
     if name == "mgba_live_start":
-        cmd_args: list[str] = ["--rom", str(args["rom"]) ]
-        if savestate := args.get("savestate"):
-            cmd_args += ["--savestate", str(savestate)]
-        if script := args.get("script"):
-            cmd_args += ["--script", str(script)]
-        if "fps_target" in args:
-            fps_target = args["fps_target"]
-            if fps_target is not None:
-                cmd_args += ["--fps-target", str(float(fps_target))]
-        if args.get("fast"):
-            cmd_args.append("--fast")
-        if session_id := args.get("session_id"):
-            cmd_args.extend(["--session-id", str(session_id)])
-        if mgba_path := args.get("mgba_path"):
-            cmd_args += ["--mgba-path", str(mgba_path)]
+        if args.get("script") is not None:
+            raise ValueError(
+                "mgba_live_start no longer accepts script. "
+                "Use mgba_live_start_with_lua with file or code."
+            )
+        cmd_args = _build_start_command_args(args)
         return await _run_with_snapshot(
             "mgba_live_start",
             "start",
@@ -506,6 +553,57 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             timeout=timeout,
             include_snapshot=False,
         )
+    if name == "mgba_live_start_with_lua":
+        file_arg = args.get("file")
+        code_arg = args.get("code")
+        has_file = bool(file_arg)
+        has_code = bool(code_arg)
+        if has_file == has_code:
+            raise ValueError("Exactly one of file or code is required.")
+
+        start_args = _build_start_command_args(args)
+        start_result = await _controller.run("start", start_args, timeout=timeout)
+        start_payload = start_result.payload
+        session_id = start_payload.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise RuntimeError("Start command did not return session_id.")
+
+        lua_args: list[str] = []
+        if has_file:
+            lua_args.extend(["--file", str(file_arg)])
+        else:
+            lua_args.extend(["--code", str(code_arg)])
+        lua_args.extend(["--session", session_id])
+        try:
+            lua_contents = await _run_with_snapshot(
+                "mgba_live_run_lua",
+                "run-lua",
+                lua_args,
+                timeout=timeout,
+                session_id=session_id,
+                ensure_post_lua_settle=True,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Lua execution failed after starting session '{session_id}'. "
+                "Session is still running; use mgba_live_attach or mgba_live_status to inspect. "
+                f"Original error: {exc}"
+            ) from exc
+
+        lua_payload = _text_payload(lua_contents[0])
+        combined_payload = {
+            "tool": "mgba_live_start_with_lua",
+            "command": "start-with-lua",
+            "start_result": start_payload,
+            "lua_result": lua_payload.get("result"),
+        }
+        for key, value in lua_payload.items():
+            if key in {"tool", "command", "result"}:
+                continue
+            combined_payload[key] = value
+
+        image_contents = [content for content in lua_contents if getattr(content, "type", None) == "image"]
+        return [_text_content(combined_payload), *image_contents]
     if name == "mgba_live_attach":
         cmd_args = _build_session_arg(args)
         if pid := args.get("pid"):

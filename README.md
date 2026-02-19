@@ -2,7 +2,7 @@
 
 MCP server for persistent live control of mGBA using the script bridge workflow.
 Commands return structured JSON, and visual snapshots are provided by
-`mgba_live_status`/`mgba_live_start`/`mgba_live_attach` and `mgba_live_export_screenshot`.
+`mgba_live_status`/`mgba_live_attach`/`mgba_live_start_with_lua` and `mgba_live_export_screenshot`.
 
 ## Features
 
@@ -38,8 +38,11 @@ args = [
 
 Notes:
 - Start defaults to `120` FPS unless `fps_target` is provided.
-- Start accepts optional startup Lua script path(s) via `--script`; these are passed through to mGBA in addition to the live bridge script.
+- `mgba_live_start` is MCP bootstrap-only and does not accept `script` or return a screenshot.
+- `mgba_live_start_with_lua` starts a new session, runs `file` or `code`, then returns the post-Lua screenshot/image.
+- CLI `scripts/mgba_live.py start` still supports `--script` startup Lua paths passed directly to mGBA.
 - Input commands (`mgba_live_input_*`) return action data and a next-step hint; call `mgba_live_status` for post-input visual assessment.
+- `mgba_live_export_screenshot` is the preferred screenshot tool name. `mgba_live_screenshot` remains a backward-compatible alias.
 - `mgba_live_export_screenshot` defaults to `text_format = "hex"`.
 - A PNG file is only written when `png` is true (or `out` is provided).
-- For callback-based Lua macros, return a table with `macro_key` (for example `{ status = "started", macro_key = "__my_macro" }`) so `mgba_live_run_lua` can wait for completion before returning its snapshot.
+- For callback-based Lua macros, return a table with `macro_key` (for example `{ status = "started", macro_key = "__my_macro" }`) and set `_G[macro_key].active = false` when done so `mgba_live_run_lua` can wait for completion before returning its snapshot.

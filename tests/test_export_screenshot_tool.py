@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,7 +29,10 @@ def _first_payload(result: Any) -> dict[str, Any]:
         _, payload = result
         assert isinstance(payload, dict)
         return payload
-    raise AssertionError("Expected structured MCP tuple response")
+    assert result
+    first = result[0]
+    assert getattr(first, "type", None) == "text"
+    return json.loads(first.text)
 
 
 def test_export_screenshot_tool_maps_to_screenshot_command(monkeypatch: Any) -> None:

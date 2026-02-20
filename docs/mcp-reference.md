@@ -60,36 +60,7 @@ Start a persistent live mGBA session.
 
 ### Output Schema
 
-```json
-{
-  "additionalProperties": true,
-  "properties": {
-    "fps_target": {
-      "type": "number"
-    },
-    "pid": {
-      "type": "integer"
-    },
-    "session_dir": {
-      "type": "string"
-    },
-    "session_id": {
-      "type": "string"
-    },
-    "status": {
-      "type": "string"
-    }
-  },
-  "required": [
-    "status",
-    "session_id",
-    "pid",
-    "fps_target",
-    "session_dir"
-  ],
-  "type": "object"
-}
-```
+_Not declared._
 
 ## `mgba_live_start_with_lua`
 
@@ -149,37 +120,7 @@ Start a live session, run Lua immediately, then return the post-Lua screenshot.
 
 ### Output Schema
 
-```json
-{
-  "additionalProperties": true,
-  "properties": {
-    "lua": {},
-    "pid": {
-      "type": "integer"
-    },
-    "screenshot": {
-      "additionalProperties": true,
-      "properties": {
-        "frame": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "frame"
-      ],
-      "type": "object"
-    },
-    "session_id": {
-      "type": "string"
-    }
-  },
-  "required": [
-    "session_id",
-    "lua"
-  ],
-  "type": "object"
-}
-```
+_Not declared._
 
 ## `mgba_live_attach`
 
@@ -212,48 +153,7 @@ Attach to an existing managed live session.
 
 ### Output Schema
 
-```json
-{
-  "additionalProperties": true,
-  "properties": {
-    "fps_target": {
-      "type": "number"
-    },
-    "pid": {
-      "type": "integer"
-    },
-    "rom": {
-      "type": "string"
-    },
-    "screenshot": {
-      "additionalProperties": true,
-      "properties": {
-        "frame": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "frame"
-      ],
-      "type": "object"
-    },
-    "session_id": {
-      "type": "string"
-    },
-    "status": {
-      "type": "string"
-    }
-  },
-  "required": [
-    "status",
-    "session_id",
-    "pid",
-    "rom",
-    "fps_target"
-  ],
-  "type": "object"
-}
-```
+_Not declared._
 
 ## `mgba_live_status`
 
@@ -286,132 +186,7 @@ Show status for one session or all managed sessions.
 
 ### Output Schema
 
-```json
-{
-  "additionalProperties": true,
-  "properties": {
-    "alive": {
-      "type": "boolean"
-    },
-    "fps_target": {
-      "type": "number"
-    },
-    "heartbeat": {
-      "oneOf": [
-        {
-          "additionalProperties": true,
-          "properties": {
-            "frame": {
-              "type": "integer"
-            },
-            "keys": {
-              "type": "integer"
-            },
-            "unix_time": {
-              "type": "number"
-            }
-          },
-          "required": [
-            "frame",
-            "keys",
-            "unix_time"
-          ],
-          "type": "object"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "pid": {
-      "type": "integer"
-    },
-    "rom": {
-      "type": "string"
-    },
-    "screenshot": {
-      "additionalProperties": true,
-      "properties": {
-        "frame": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "frame"
-      ],
-      "type": "object"
-    },
-    "session_dir": {
-      "type": "string"
-    },
-    "session_id": {
-      "type": "string"
-    },
-    "value": {
-      "items": {
-        "additionalProperties": true,
-        "properties": {
-          "alive": {
-            "type": "boolean"
-          },
-          "fps_target": {
-            "type": "number"
-          },
-          "heartbeat": {
-            "oneOf": [
-              {
-                "additionalProperties": true,
-                "properties": {
-                  "frame": {
-                    "type": "integer"
-                  },
-                  "keys": {
-                    "type": "integer"
-                  },
-                  "unix_time": {
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "frame",
-                  "keys",
-                  "unix_time"
-                ],
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "pid": {
-            "type": "integer"
-          },
-          "rom": {
-            "type": "string"
-          },
-          "session_dir": {
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "session_id",
-          "pid",
-          "alive",
-          "rom",
-          "fps_target"
-        ],
-        "type": "object"
-      },
-      "type": "array"
-    }
-  },
-  "type": "object"
-}
-```
+_Not declared._
 
 ## `mgba_live_stop`
 
@@ -444,36 +219,7 @@ Stop one managed session.
 
 ### Output Schema
 
-```json
-{
-  "additionalProperties": true,
-  "properties": {
-    "alive_after": {
-      "type": "boolean"
-    },
-    "alive_before": {
-      "type": "boolean"
-    },
-    "pid": {
-      "type": "integer"
-    },
-    "session_id": {
-      "type": "string"
-    },
-    "stopped": {
-      "type": "boolean"
-    }
-  },
-  "required": [
-    "session_id",
-    "pid",
-    "alive_before",
-    "alive_after",
-    "stopped"
-  ],
-  "type": "object"
-}
-```
+_Not declared._
 
 ## `mgba_live_run_lua`
 
@@ -511,40 +257,7 @@ Execute Lua in a running live session.
 
 ### Output Schema
 
-```json
-{
-  "additionalProperties": true,
-  "properties": {
-    "data": {
-      "additionalProperties": true,
-      "properties": {
-        "result": {}
-      },
-      "type": "object"
-    },
-    "frame": {
-      "type": "integer"
-    },
-    "screenshot": {
-      "additionalProperties": true,
-      "properties": {
-        "frame": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "frame"
-      ],
-      "type": "object"
-    }
-  },
-  "required": [
-    "frame",
-    "data"
-  ],
-  "type": "object"
-}
-```
+_Not declared._
 
 ## `mgba_live_input_tap`
 
@@ -589,50 +302,7 @@ Tap a key for N frames, optionally wait additional frames after release, then re
 
 ### Output Schema
 
-```json
-{
-  "additionalProperties": true,
-  "properties": {
-    "data": {
-      "additionalProperties": true,
-      "properties": {
-        "duration": {
-          "type": "integer"
-        },
-        "key": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "key",
-        "duration"
-      ],
-      "type": "object"
-    },
-    "frame": {
-      "type": "integer"
-    },
-    "screenshot": {
-      "additionalProperties": true,
-      "properties": {
-        "frame": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "frame"
-      ],
-      "type": "object"
-    }
-  },
-  "required": [
-    "frame",
-    "data",
-    "screenshot"
-  ],
-  "type": "object"
-}
-```
+_Not declared._
 
 ## `mgba_live_input_set`
 
@@ -670,36 +340,7 @@ Set currently held keys for live session. Use mgba_live_status after input for v
 
 ### Output Schema
 
-```json
-{
-  "additionalProperties": true,
-  "properties": {
-    "data": {
-      "additionalProperties": true,
-      "properties": {
-        "keys": {
-          "items": {
-            "type": "integer"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "keys"
-      ],
-      "type": "object"
-    },
-    "frame": {
-      "type": "integer"
-    }
-  },
-  "required": [
-    "frame",
-    "data"
-  ],
-  "type": "object"
-}
-```
+_Not declared._
 
 ## `mgba_live_input_clear`
 
@@ -734,52 +375,7 @@ Clear held keys from live session. Use mgba_live_status after input for visual v
 
 ### Output Schema
 
-```json
-{
-  "additionalProperties": true,
-  "properties": {
-    "data": {
-      "oneOf": [
-        {
-          "additionalProperties": true,
-          "properties": {
-            "keys": {
-              "items": {
-                "type": "integer"
-              },
-              "type": "array"
-            }
-          },
-          "required": [
-            "keys"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": true,
-          "properties": {
-            "cleared": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "cleared"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "frame": {
-      "type": "integer"
-    }
-  },
-  "required": [
-    "frame",
-    "data"
-  ],
-  "type": "object"
-}
-```
+_Not declared._
 
 ## `mgba_live_export_screenshot`
 
@@ -813,24 +409,7 @@ Export a screenshot from a live session.
 
 ### Output Schema
 
-```json
-{
-  "additionalProperties": true,
-  "properties": {
-    "frame": {
-      "type": "integer"
-    },
-    "path": {
-      "type": "string"
-    }
-  },
-  "required": [
-    "frame",
-    "path"
-  ],
-  "type": "object"
-}
-```
+_Not declared._
 
 ## `mgba_live_read_memory`
 
@@ -868,48 +447,7 @@ Read memory addresses from live session.
 
 ### Output Schema
 
-```json
-{
-  "additionalProperties": true,
-  "properties": {
-    "frame": {
-      "type": "integer"
-    },
-    "memory": {
-      "additionalProperties": {
-        "maximum": 255,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "patternProperties": {
-        "^0x[0-9a-fA-F]+$": {
-          "maximum": 255,
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "type": "object"
-    },
-    "screenshot": {
-      "additionalProperties": true,
-      "properties": {
-        "frame": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "frame"
-      ],
-      "type": "object"
-    }
-  },
-  "required": [
-    "frame",
-    "memory"
-  ],
-  "type": "object"
-}
-```
+_Not declared._
 
 ## `mgba_live_read_range`
 
@@ -949,58 +487,7 @@ Read contiguous memory range from live session.
 
 ### Output Schema
 
-```json
-{
-  "additionalProperties": true,
-  "properties": {
-    "frame": {
-      "type": "integer"
-    },
-    "range": {
-      "additionalProperties": true,
-      "properties": {
-        "data": {
-          "items": {
-            "maximum": 255,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "type": "array"
-        },
-        "length": {
-          "type": "integer"
-        },
-        "start": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "start",
-        "length",
-        "data"
-      ],
-      "type": "object"
-    },
-    "screenshot": {
-      "additionalProperties": true,
-      "properties": {
-        "frame": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "frame"
-      ],
-      "type": "object"
-    }
-  },
-  "required": [
-    "frame",
-    "range"
-  ],
-  "type": "object"
-}
-```
+_Not declared._
 
 ## `mgba_live_dump_pointers`
 
@@ -1044,77 +531,7 @@ Dump pointer table entries from live session.
 
 ### Output Schema
 
-```json
-{
-  "additionalProperties": true,
-  "properties": {
-    "frame": {
-      "type": "integer"
-    },
-    "pointers": {
-      "additionalProperties": true,
-      "properties": {
-        "count": {
-          "type": "integer"
-        },
-        "pointers": {
-          "items": {
-            "additionalProperties": true,
-            "properties": {
-              "address": {
-                "type": "integer"
-              },
-              "index": {
-                "type": "integer"
-              },
-              "value": {
-                "type": "integer"
-              }
-            },
-            "required": [
-              "index",
-              "address",
-              "value"
-            ],
-            "type": "object"
-          },
-          "type": "array"
-        },
-        "start": {
-          "type": "integer"
-        },
-        "width": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "start",
-        "count",
-        "width",
-        "pointers"
-      ],
-      "type": "object"
-    },
-    "screenshot": {
-      "additionalProperties": true,
-      "properties": {
-        "frame": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "frame"
-      ],
-      "type": "object"
-    }
-  },
-  "required": [
-    "frame",
-    "pointers"
-  ],
-  "type": "object"
-}
-```
+_Not declared._
 
 ## `mgba_live_dump_oam`
 
@@ -1146,81 +563,7 @@ Dump OAM entries from live session.
 
 ### Output Schema
 
-```json
-{
-  "additionalProperties": true,
-  "properties": {
-    "frame": {
-      "type": "integer"
-    },
-    "oam": {
-      "additionalProperties": true,
-      "properties": {
-        "base": {
-          "type": "integer"
-        },
-        "count": {
-          "type": "integer"
-        },
-        "sprites": {
-          "items": {
-            "additionalProperties": true,
-            "properties": {
-              "address": {
-                "type": "integer"
-              },
-              "attr0": {
-                "type": "integer"
-              },
-              "attr1": {
-                "type": "integer"
-              },
-              "attr2": {
-                "type": "integer"
-              },
-              "index": {
-                "type": "integer"
-              }
-            },
-            "required": [
-              "index",
-              "address",
-              "attr0",
-              "attr1",
-              "attr2"
-            ],
-            "type": "object"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "base",
-        "count",
-        "sprites"
-      ],
-      "type": "object"
-    },
-    "screenshot": {
-      "additionalProperties": true,
-      "properties": {
-        "frame": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "frame"
-      ],
-      "type": "object"
-    }
-  },
-  "required": [
-    "frame",
-    "oam"
-  ],
-  "type": "object"
-}
-```
+_Not declared._
 
 ## `mgba_live_dump_entities`
 
@@ -1260,79 +603,4 @@ Dump structured entity bytes from live session.
 
 ### Output Schema
 
-```json
-{
-  "additionalProperties": true,
-  "properties": {
-    "entities": {
-      "additionalProperties": true,
-      "properties": {
-        "base": {
-          "type": "integer"
-        },
-        "count": {
-          "type": "integer"
-        },
-        "entities": {
-          "items": {
-            "additionalProperties": true,
-            "properties": {
-              "address": {
-                "type": "integer"
-              },
-              "bytes": {
-                "items": {
-                  "maximum": 255,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "type": "array"
-              },
-              "index": {
-                "type": "integer"
-              }
-            },
-            "required": [
-              "index",
-              "address",
-              "bytes"
-            ],
-            "type": "object"
-          },
-          "type": "array"
-        },
-        "size": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "base",
-        "size",
-        "count",
-        "entities"
-      ],
-      "type": "object"
-    },
-    "frame": {
-      "type": "integer"
-    },
-    "screenshot": {
-      "additionalProperties": true,
-      "properties": {
-        "frame": {
-          "type": "integer"
-        }
-      },
-      "required": [
-        "frame"
-      ],
-      "type": "object"
-    }
-  },
-  "required": [
-    "frame",
-    "entities"
-  ],
-  "type": "object"
-}
-```
+_Not declared._

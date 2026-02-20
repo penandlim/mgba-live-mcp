@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import json
 from pathlib import Path
 from typing import Any
 
@@ -18,11 +19,26 @@ server = Server("mgba-live-mcp")
 _controller = LiveControllerClient()
 
 
-def _structured_result(
-    payload: dict[str, Any],
-    unstructured: list[TextContent | ImageContent] | None = None,
-) -> tuple[list[TextContent | ImageContent], dict[str, Any]]:
-    return (list(unstructured or []), payload)
+def _text_content(payload: Any) -> TextContent:
+    return TextContent(type="text", text=json.dumps(payload, separators=(",", ":")))
+
+
+def _text_payload(content: TextContent | ImageContent) -> dict[str, Any]:
+    if getattr(content, "type", None) != "text":
+        raise RuntimeError("Expected text payload in tool response.")
+
+    text_value = getattr(content, "text", None)
+    if not isinstance(text_value, str):
+        raise RuntimeError("Text payload is missing JSON content.")
+
+    try:
+        payload = json.loads(text_value)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Failed to parse JSON tool payload.") from exc
+
+    if not isinstance(payload, dict):
+        raise RuntimeError("Tool payload JSON must be an object.")
+    return payload
 
 
 def _parse_args_list(value: list[str] | None) -> list[str]:
@@ -267,17 +283,17 @@ async def _run_with_snapshot(
     require_snapshot_session: bool = False,
     require_screenshot: bool = False,
     input_tap_wait_frames: int | None = None,
-) -> tuple[list[TextContent | ImageContent], dict[str, Any]]:
+) -> list[TextContent | ImageContent]:
     command_result = await _controller.run(live_command, command_args, timeout=timeout)
     payload: dict[str, Any]
     if isinstance(command_result.payload, dict):
         payload = dict(command_result.payload)
     else:
         payload = {"value": command_result.payload}
-    image_contents: list[TextContent | ImageContent] = []
+    image_contents: list[ImageContent] = []
 
     if not include_snapshot:
-        return _structured_result(payload)
+        return [_text_content(payload)]
 
     resolved_session = session_id or await _resolve_snapshot_session(
         command_args,
@@ -291,7 +307,7 @@ async def _run_with_snapshot(
                 f"Unable to resolve session_id for screenshot capture after '{live_command}' "
                 f"(requested_session={requested_session})."
             )
-        return _structured_result(payload)
+        return [_text_content(payload)]
 
     if input_tap_wait_frames is not None:
         tap_frame = _extract_response_frame(command_result.payload)
@@ -358,7 +374,7 @@ async def _run_with_snapshot(
                 f"Screenshot capture failed for session '{resolved_session}'. Original error: {exc}"
             ) from exc
 
-    return _structured_result(payload, image_contents)
+    return [_text_content(payload), *image_contents]
 
 
 def _build_session_arg(args: dict[str, Any]) -> list[str]:
@@ -388,327 +404,12 @@ def _build_start_command_args(args: dict[str, Any]) -> list[str]:
     return cmd_args
 
 
-def _object_schema(
-    properties: dict[str, Any],
-    *,
-    required: list[str] | None = None,
-    additional_properties: bool = True,
-) -> dict[str, Any]:
-    schema: dict[str, Any] = {
-        "type": "object",
-        "properties": properties,
-        "additionalProperties": additional_properties,
-    }
-    if required is not None:
-        schema["required"] = required
-    return schema
-
-
-def _with_screenshot(schema: dict[str, Any], *, required: bool = False) -> dict[str, Any]:
-    if schema.get("type") != "object":
-        raise ValueError("Screenshot schemas can only extend object schemas.")
-
-    properties = dict(schema.get("properties", {}))
-    properties["screenshot"] = _SNAPSHOT_OUTPUT_SCHEMA
-
-    merged = dict(schema)
-    merged["properties"] = properties
-
-    required_fields = list(schema.get("required", []))
-    if required and "screenshot" not in required_fields:
-        required_fields.append("screenshot")
-    if required_fields:
-        merged["required"] = required_fields
-    return merged
-
-
-_SNAPSHOT_OUTPUT_SCHEMA = _object_schema(
-    {
-        "frame": {"type": "integer"},
-    },
-    required=["frame"],
-)
-
-_EXPORT_SCREENSHOT_OUTPUT_SCHEMA = _object_schema(
-    {
-        "frame": {"type": "integer"},
-        "path": {"type": "string"},
-    },
-    required=["frame", "path"],
-)
-
-_START_OUTPUT_SCHEMA = _object_schema(
-    {
-        "status": {"type": "string"},
-        "session_id": {"type": "string"},
-        "pid": {"type": "integer"},
-        "fps_target": {"type": "number"},
-        "session_dir": {"type": "string"},
-    },
-    required=["status", "session_id", "pid", "fps_target", "session_dir"],
-)
-
-_START_WITH_LUA_OUTPUT_SCHEMA = _object_schema(
-    {
-        "session_id": {"type": "string"},
-        "pid": {"type": "integer"},
-        "lua": {},
-        "screenshot": _SNAPSHOT_OUTPUT_SCHEMA,
-    },
-    required=["session_id", "lua"],
-)
-
-_ATTACH_OUTPUT_SCHEMA = _with_screenshot(
-    _object_schema(
-        {
-            "status": {"type": "string"},
-            "session_id": {"type": "string"},
-            "pid": {"type": "integer"},
-            "rom": {"type": "string"},
-            "fps_target": {"type": "number"},
-        },
-        required=["status", "session_id", "pid", "rom", "fps_target"],
-    )
-)
-
-_HEARTBEAT_SCHEMA = _object_schema(
-    {
-        "frame": {"type": "integer"},
-        "keys": {"type": "integer"},
-        "unix_time": {"type": "number"},
-    },
-    required=["frame", "keys", "unix_time"],
-)
-
-_STATUS_ITEM_SCHEMA = _object_schema(
-    {
-        "session_id": {"type": "string"},
-        "pid": {"type": "integer"},
-        "alive": {"type": "boolean"},
-        "rom": {"type": "string"},
-        "fps_target": {"type": "number"},
-        "heartbeat": {"oneOf": [_HEARTBEAT_SCHEMA, {"type": "null"}]},
-        "session_dir": {"type": "string"},
-    },
-    required=["session_id", "pid", "alive", "rom", "fps_target"],
-)
-
-_STATUS_OUTPUT_SCHEMA = _with_screenshot(
-    _object_schema(
-        {
-            "session_id": {"type": "string"},
-            "pid": {"type": "integer"},
-            "alive": {"type": "boolean"},
-            "rom": {"type": "string"},
-            "fps_target": {"type": "number"},
-            "heartbeat": {"oneOf": [_HEARTBEAT_SCHEMA, {"type": "null"}]},
-            "session_dir": {"type": "string"},
-            "value": {"type": "array", "items": _STATUS_ITEM_SCHEMA},
-        }
-    )
-)
-
-_STOP_OUTPUT_SCHEMA = _object_schema(
-    {
-        "session_id": {"type": "string"},
-        "pid": {"type": "integer"},
-        "alive_before": {"type": "boolean"},
-        "alive_after": {"type": "boolean"},
-        "stopped": {"type": "boolean"},
-    },
-    required=["session_id", "pid", "alive_before", "alive_after", "stopped"],
-)
-
-_RUN_LUA_OUTPUT_SCHEMA = _with_screenshot(
-    _object_schema(
-        {
-            "frame": {"type": "integer"},
-            "data": _object_schema({"result": {}}),
-        },
-        required=["frame", "data"],
-    )
-)
-
-_INPUT_TAP_OUTPUT_SCHEMA = _with_screenshot(
-    _object_schema(
-        {
-            "frame": {"type": "integer"},
-            "data": _object_schema(
-                {
-                    "key": {"type": "integer"},
-                    "duration": {"type": "integer"},
-                },
-                required=["key", "duration"],
-            ),
-        },
-        required=["frame", "data"],
-    ),
-    required=True,
-)
-
-_INPUT_SET_OUTPUT_SCHEMA = _object_schema(
-    {
-        "frame": {"type": "integer"},
-        "data": _object_schema(
-            {"keys": {"type": "array", "items": {"type": "integer"}}},
-            required=["keys"],
-        ),
-    },
-    required=["frame", "data"],
-)
-
-_INPUT_CLEAR_OUTPUT_SCHEMA = _object_schema(
-    {
-        "frame": {"type": "integer"},
-        "data": {
-            "oneOf": [
-                _object_schema(
-                    {"keys": {"type": "array", "items": {"type": "integer"}}},
-                    required=["keys"],
-                ),
-                _object_schema({"cleared": {"type": "string"}}, required=["cleared"]),
-            ]
-        },
-    },
-    required=["frame", "data"],
-)
-
-_READ_MEMORY_OUTPUT_SCHEMA = _with_screenshot(
-    _object_schema(
-        {
-            "frame": {"type": "integer"},
-            "memory": {
-                "type": "object",
-                "patternProperties": {
-                    "^0x[0-9a-fA-F]+$": {"type": "integer", "minimum": 0, "maximum": 255}
-                },
-                "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 255},
-            },
-        },
-        required=["frame", "memory"],
-    )
-)
-
-_READ_RANGE_OUTPUT_SCHEMA = _with_screenshot(
-    _object_schema(
-        {
-            "frame": {"type": "integer"},
-            "range": _object_schema(
-                {
-                    "start": {"type": "integer"},
-                    "length": {"type": "integer"},
-                    "data": {
-                        "type": "array",
-                        "items": {"type": "integer", "minimum": 0, "maximum": 255},
-                    },
-                },
-                required=["start", "length", "data"],
-            ),
-        },
-        required=["frame", "range"],
-    )
-)
-
-_DUMP_POINTERS_OUTPUT_SCHEMA = _with_screenshot(
-    _object_schema(
-        {
-            "frame": {"type": "integer"},
-            "pointers": _object_schema(
-                {
-                    "start": {"type": "integer"},
-                    "count": {"type": "integer"},
-                    "width": {"type": "integer"},
-                    "pointers": {
-                        "type": "array",
-                        "items": _object_schema(
-                            {
-                                "index": {"type": "integer"},
-                                "address": {"type": "integer"},
-                                "value": {"type": "integer"},
-                            },
-                            required=["index", "address", "value"],
-                        ),
-                    },
-                },
-                required=["start", "count", "width", "pointers"],
-            ),
-        },
-        required=["frame", "pointers"],
-    )
-)
-
-_DUMP_OAM_OUTPUT_SCHEMA = _with_screenshot(
-    _object_schema(
-        {
-            "frame": {"type": "integer"},
-            "oam": _object_schema(
-                {
-                    "base": {"type": "integer"},
-                    "count": {"type": "integer"},
-                    "sprites": {
-                        "type": "array",
-                        "items": _object_schema(
-                            {
-                                "index": {"type": "integer"},
-                                "address": {"type": "integer"},
-                                "attr0": {"type": "integer"},
-                                "attr1": {"type": "integer"},
-                                "attr2": {"type": "integer"},
-                            },
-                            required=["index", "address", "attr0", "attr1", "attr2"],
-                        ),
-                    },
-                },
-                required=["base", "count", "sprites"],
-            ),
-        },
-        required=["frame", "oam"],
-    )
-)
-
-_DUMP_ENTITIES_OUTPUT_SCHEMA = _with_screenshot(
-    _object_schema(
-        {
-            "frame": {"type": "integer"},
-            "entities": _object_schema(
-                {
-                    "base": {"type": "integer"},
-                    "size": {"type": "integer"},
-                    "count": {"type": "integer"},
-                    "entities": {
-                        "type": "array",
-                        "items": _object_schema(
-                            {
-                                "index": {"type": "integer"},
-                                "address": {"type": "integer"},
-                                "bytes": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "integer",
-                                        "minimum": 0,
-                                        "maximum": 255,
-                                    },
-                                },
-                            },
-                            required=["index", "address", "bytes"],
-                        ),
-                    },
-                },
-                required=["base", "size", "count", "entities"],
-            ),
-        },
-        required=["frame", "entities"],
-    )
-)
-
-
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="mgba_live_start",
             description="Start a persistent live mGBA session.",
-            outputSchema=_START_OUTPUT_SCHEMA,
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -738,7 +439,6 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Start a live session, run Lua immediately, then return the post-Lua screenshot."
             ),
-            outputSchema=_START_WITH_LUA_OUTPUT_SCHEMA,
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -768,7 +468,6 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="mgba_live_attach",
             description="Attach to an existing managed live session.",
-            outputSchema=_ATTACH_OUTPUT_SCHEMA,
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -785,7 +484,6 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="mgba_live_status",
             description="Show status for one session or all managed sessions.",
-            outputSchema=_STATUS_OUTPUT_SCHEMA,
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -802,7 +500,6 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="mgba_live_stop",
             description="Stop one managed session.",
-            outputSchema=_STOP_OUTPUT_SCHEMA,
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -819,7 +516,6 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="mgba_live_run_lua",
             description="Execute Lua in a running live session.",
-            outputSchema=_RUN_LUA_OUTPUT_SCHEMA,
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -841,7 +537,6 @@ async def list_tools() -> list[Tool]:
                 "Tap a key for N frames, optionally wait additional frames "
                 "after release, then return a screenshot."
             ),
-            outputSchema=_INPUT_TAP_OUTPUT_SCHEMA,
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -874,7 +569,6 @@ async def list_tools() -> list[Tool]:
                 "Set currently held keys for live session. Use "
                 "mgba_live_status after input for visual verification."
             ),
-            outputSchema=_INPUT_SET_OUTPUT_SCHEMA,
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -899,7 +593,6 @@ async def list_tools() -> list[Tool]:
                 "Clear held keys from live session. Use mgba_live_status "
                 "after input for visual verification."
             ),
-            outputSchema=_INPUT_CLEAR_OUTPUT_SCHEMA,
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -920,7 +613,6 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="mgba_live_export_screenshot",
             description="Export a screenshot from a live session.",
-            outputSchema=_EXPORT_SCREENSHOT_OUTPUT_SCHEMA,
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -938,7 +630,6 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="mgba_live_read_memory",
             description="Read memory addresses from live session.",
-            outputSchema=_READ_MEMORY_OUTPUT_SCHEMA,
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -960,7 +651,6 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="mgba_live_read_range",
             description="Read contiguous memory range from live session.",
-            outputSchema=_READ_RANGE_OUTPUT_SCHEMA,
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -979,7 +669,6 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="mgba_live_dump_pointers",
             description="Dump pointer table entries from live session.",
-            outputSchema=_DUMP_POINTERS_OUTPUT_SCHEMA,
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -999,7 +688,6 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="mgba_live_dump_oam",
             description="Dump OAM entries from live session.",
-            outputSchema=_DUMP_OAM_OUTPUT_SCHEMA,
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1016,7 +704,6 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="mgba_live_dump_entities",
             description="Dump structured entity bytes from live session.",
-            outputSchema=_DUMP_ENTITIES_OUTPUT_SCHEMA,
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1036,10 +723,7 @@ async def list_tools() -> list[Tool]:
 
 
 @server.call_tool()
-async def call_tool(
-    name: str,
-    arguments: dict[str, Any],
-) -> tuple[list[TextContent | ImageContent], dict[str, Any]] | list[TextContent | ImageContent]:
+async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | ImageContent]:
     args = arguments or {}
     timeout = float(args.get("timeout", 20.0))
 
@@ -1092,7 +776,7 @@ async def call_tool(
                 f"Original error: {exc}"
             ) from exc
 
-        lua_unstructured, lua_payload = lua_contents
+        lua_payload = _text_payload(lua_contents[0])
         combined_payload: dict[str, Any] = {"session_id": session_id}
         if isinstance(start_payload, dict) and "pid" in start_payload:
             combined_payload["pid"] = start_payload["pid"]
@@ -1102,10 +786,10 @@ async def call_tool(
         if "screenshot" in lua_payload:
             combined_payload["screenshot"] = lua_payload["screenshot"]
 
-        image_contents: list[TextContent | ImageContent] = [
-            content for content in lua_unstructured if getattr(content, "type", None) == "image"
+        image_contents = [
+            content for content in lua_contents if getattr(content, "type", None) == "image"
         ]
-        return _structured_result(combined_payload, image_contents)
+        return [_text_content(combined_payload), *image_contents]
     if name == "mgba_live_attach":
         cmd_args = _build_session_arg(args)
         if pid := args.get("pid"):
@@ -1206,7 +890,7 @@ async def call_tool(
             payload = dict(command_result.payload)
         else:
             payload = {"value": command_result.payload}
-        contents: list[TextContent | ImageContent] = []
+        contents = [_text_content(payload)]
         shot_image = (
             _image_content(command_result.payload)
             if isinstance(command_result.payload, dict)
@@ -1214,7 +898,7 @@ async def call_tool(
         )
         if shot_image is not None:
             contents.append(shot_image)
-        return _structured_result(payload, contents)
+        return contents
 
     if name == "mgba_live_read_memory":
         cmd_args = ["--addresses", *_parse_args_list(args.get("addresses"))]

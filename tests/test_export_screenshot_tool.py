@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,11 +23,12 @@ class _FakeController:
         return _Result({"frame": 99, "path": "/tmp/screenshot.png"})
 
 
-def _first_payload(contents: list[Any]) -> dict[str, Any]:
-    assert contents
-    first = contents[0]
-    assert getattr(first, "type", None) == "text"
-    return json.loads(first.text)
+def _first_payload(result: Any) -> dict[str, Any]:
+    if isinstance(result, tuple):
+        _, payload = result
+        assert isinstance(payload, dict)
+        return payload
+    raise AssertionError("Expected structured MCP tuple response")
 
 
 def test_export_screenshot_tool_maps_to_screenshot_command(monkeypatch: Any) -> None:

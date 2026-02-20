@@ -36,7 +36,12 @@ def pokemon_red_rom_path() -> Path:
     return matches[0].resolve()
 
 
-def _first_payload(contents: list[Any]) -> dict[str, Any]:
+def _first_payload(contents: Any) -> dict[str, Any]:
+    if isinstance(contents, tuple):
+        _, payload = contents
+        assert isinstance(payload, dict)
+        return payload
+
     assert contents
     first = contents[0]
     assert getattr(first, "type", None) == "text"

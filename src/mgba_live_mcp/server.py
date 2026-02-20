@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import json
 from pathlib import Path
 from typing import Any
 
@@ -19,26 +18,11 @@ server = Server("mgba-live-mcp")
 _controller = LiveControllerClient()
 
 
-def _text_content(payload: Any) -> TextContent:
-    return TextContent(type="text", text=json.dumps(payload, separators=(",", ":")))
-
-
-def _text_payload(content: TextContent | ImageContent) -> dict[str, Any]:
-    if getattr(content, "type", None) != "text":
-        raise RuntimeError("Expected text payload in tool response.")
-
-    text_value = getattr(content, "text", None)
-    if not isinstance(text_value, str):
-        raise RuntimeError("Text payload is missing JSON content.")
-
-    try:
-        payload = json.loads(text_value)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("Failed to parse JSON tool payload.") from exc
-
-    if not isinstance(payload, dict):
-        raise RuntimeError("Tool payload JSON must be an object.")
-    return payload
+def _structured_result(
+    payload: dict[str, Any],
+    unstructured: list[TextContent | ImageContent] | None = None,
+) -> tuple[list[TextContent | ImageContent], dict[str, Any]]:
+    return (list(unstructured or []), payload)
 
 
 def _parse_args_list(value: list[str] | None) -> list[str]:
@@ -283,17 +267,17 @@ async def _run_with_snapshot(
     require_snapshot_session: bool = False,
     require_screenshot: bool = False,
     input_tap_wait_frames: int | None = None,
-) -> list[TextContent | ImageContent]:
+) -> tuple[list[TextContent | ImageContent], dict[str, Any]]:
     command_result = await _controller.run(live_command, command_args, timeout=timeout)
     payload: dict[str, Any]
     if isinstance(command_result.payload, dict):
         payload = dict(command_result.payload)
     else:
         payload = {"value": command_result.payload}
-    image_contents: list[ImageContent] = []
+    image_contents: list[TextContent | ImageContent] = []
 
     if not include_snapshot:
-        return [_text_content(payload)]
+        return _structured_result(payload)
 
     resolved_session = session_id or await _resolve_snapshot_session(
         command_args,
@@ -307,7 +291,7 @@ async def _run_with_snapshot(
                 f"Unable to resolve session_id for screenshot capture after '{live_command}' "
                 f"(requested_session={requested_session})."
             )
-        return [_text_content(payload)]
+        return _structured_result(payload)
 
     if input_tap_wait_frames is not None:
         tap_frame = _extract_response_frame(command_result.payload)
@@ -374,7 +358,7 @@ async def _run_with_snapshot(
                 f"Screenshot capture failed for session '{resolved_session}'. Original error: {exc}"
             ) from exc
 
-    return [_text_content(payload), *image_contents]
+    return _structured_result(payload, image_contents)
 
 
 def _build_session_arg(args: dict[str, Any]) -> list[str]:
@@ -490,7 +474,7 @@ _ATTACH_OUTPUT_SCHEMA = _with_screenshot(
 _HEARTBEAT_SCHEMA = _object_schema(
     {
         "frame": {"type": "integer"},
-        "keys": {"type": "array", "items": {"type": "integer"}},
+        "keys": {"type": "integer"},
         "unix_time": {"type": "number"},
     },
     required=["frame", "keys", "unix_time"],
@@ -1052,7 +1036,10 @@ async def list_tools() -> list[Tool]:
 
 
 @server.call_tool()
-async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | ImageContent]:
+async def call_tool(
+    name: str,
+    arguments: dict[str, Any],
+) -> tuple[list[TextContent | ImageContent], dict[str, Any]] | list[TextContent | ImageContent]:
     args = arguments or {}
     timeout = float(args.get("timeout", 20.0))
 
@@ -1105,7 +1092,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
                 f"Original error: {exc}"
             ) from exc
 
-        lua_payload = _text_payload(lua_contents[0])
+        lua_unstructured, lua_payload = lua_contents
         combined_payload: dict[str, Any] = {"session_id": session_id}
         if isinstance(start_payload, dict) and "pid" in start_payload:
             combined_payload["pid"] = start_payload["pid"]
@@ -1115,10 +1102,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         if "screenshot" in lua_payload:
             combined_payload["screenshot"] = lua_payload["screenshot"]
 
-        image_contents = [
-            content for content in lua_contents if getattr(content, "type", None) == "image"
+        image_contents: list[TextContent | ImageContent] = [
+            content for content in lua_unstructured if getattr(content, "type", None) == "image"
         ]
-        return [_text_content(combined_payload), *image_contents]
+        return _structured_result(combined_payload, image_contents)
     if name == "mgba_live_attach":
         cmd_args = _build_session_arg(args)
         if pid := args.get("pid"):
@@ -1219,7 +1206,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             payload = dict(command_result.payload)
         else:
             payload = {"value": command_result.payload}
-        contents = [_text_content(payload)]
+        contents: list[TextContent | ImageContent] = []
         shot_image = (
             _image_content(command_result.payload)
             if isinstance(command_result.payload, dict)
@@ -1227,7 +1214,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         )
         if shot_image is not None:
             contents.append(shot_image)
-        return contents
+        return _structured_result(payload, contents)
 
     if name == "mgba_live_read_memory":
         cmd_args = ["--addresses", *_parse_args_list(args.get("addresses"))]

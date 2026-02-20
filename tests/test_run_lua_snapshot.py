@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,11 +32,12 @@ class _FakeController:
         raise AssertionError(f"unexpected command: {command}")
 
 
-def _first_payload(contents: list[Any]) -> dict[str, Any]:
-    assert contents
-    first = contents[0]
-    assert getattr(first, "type", None) == "text"
-    return json.loads(first.text)
+def _first_payload(result: Any) -> dict[str, Any]:
+    if isinstance(result, tuple):
+        _, payload = result
+        assert isinstance(payload, dict)
+        return payload
+    raise AssertionError("Expected structured MCP tuple response")
 
 
 def test_run_lua_snapshot_uses_status_fallback_when_session_not_provided(monkeypatch: Any) -> None:

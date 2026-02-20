@@ -305,10 +305,7 @@ Show status for one session or all managed sessions.
               "type": "integer"
             },
             "keys": {
-              "items": {
-                "type": "integer"
-              },
-              "type": "array"
+              "type": "integer"
             },
             "unix_time": {
               "type": "number"
@@ -369,10 +366,7 @@ Show status for one session or all managed sessions.
                     "type": "integer"
                   },
                   "keys": {
-                    "items": {
-                      "type": "integer"
-                    },
-                    "type": "array"
+                    "type": "integer"
                   },
                   "unix_time": {
                     "type": "number"

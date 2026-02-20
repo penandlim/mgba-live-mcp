@@ -4,6 +4,83 @@ MCP server for persistent live control of mGBA using the script bridge workflow.
 Commands return structured JSON, and visual snapshots are provided by
 `mgba_live_status`/`mgba_live_attach`/`mgba_live_start_with_lua` and `mgba_live_export_screenshot`.
 
+## Requirements
+
+- Python `>=3.11` and `uv`
+- A scriptable mGBA Qt build (`mGBA`/`mgba-qt`) with:
+  - `BUILD_QT=ON`
+  - `ENABLE_SCRIPTING=ON`
+  - `USE_LUA=ON`
+- Screenshot support (`libpng`/`zlib`, enabled by default in upstream mGBA builds)
+- A ROM file (`.gba`/`.gb`/`.gbc`)
+
+This project auto-detects the emulator binary from `PATH` in this order:
+`mgba-qt`, `mgba`, `mGBA`.
+If your binary is not on `PATH`, pass `mgba_path` to `mgba_live_start` / `mgba_live_start_with_lua`.
+
+## Installation
+
+### 1) Install Python deps for this MCP server
+
+```bash
+cd /path/to/mgba-live-mcp
+uv sync
+```
+
+### 2) Build mGBA with scripting + Qt (macOS example)
+
+Set source/build locations first:
+
+```bash
+export MGBA_SRC=/path/to/mgba-source
+export MGBA_BUILD="$MGBA_SRC/build-qtllvm"
+```
+
+Then build:
+
+```bash
+brew install cmake ffmpeg libzip qt@5 sdl2 libedit lua pkg-config
+
+cd "$MGBA_SRC"
+cmake -S . -B "$MGBA_BUILD" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="$(brew --prefix qt@5)" \
+  -DBUILD_QT=ON \
+  -DENABLE_SCRIPTING=ON \
+  -DUSE_LUA=ON \
+  -DBUILD_HEADLESS=ON \
+  -DBUILD_SDL=OFF \
+  -DBUILD_SHARED=ON \
+  -DBUILD_STATIC=OFF
+cmake --build "$MGBA_BUILD" -j"$(sysctl -n hw.ncpu)"
+```
+
+### 3) Verify the build has required capabilities
+
+```bash
+rg -n "^(BUILD_QT|ENABLE_SCRIPTING|USE_LUA):BOOL=ON" \
+  "$MGBA_BUILD/CMakeCache.txt"
+
+"$MGBA_BUILD/qt/mGBA.app/Contents/MacOS/mGBA" --help | rg -- "--script"
+```
+
+### 4) Make the binary discoverable (optional)
+
+If you want auto-detection to work without passing `mgba_path` every time:
+
+```bash
+ln -sf "$MGBA_BUILD/qt/mGBA.app/Contents/MacOS/mGBA" /usr/local/bin/mgba-qt
+```
+
+Or set `mgba_path` per tool call, for example:
+
+```json
+{
+  "rom": "/path/to/game.gba",
+  "mgba_path": "/absolute/path/to/mGBA"
+}
+```
+
 ## Features
 
 - Start/attach/stop/manage long-lived `mgba-qt` sessions.
@@ -17,7 +94,7 @@ Commands return structured JSON, and visual snapshots are provided by
 ## Run
 
 ```bash
-cd ~/Documents/mgba-live-mcp
+cd /path/to/mgba-live-mcp
 uv run mgba-live-mcp
 ```
 
@@ -31,7 +108,7 @@ command = "uv"
 args = [
   "run",
   "--directory",
-  "/Users/jongseunglim/Documents/mgba-live-mcp",
+  "/absolute/path/to/mgba-live-mcp",
   "mgba-live-mcp",
 ]
 ```

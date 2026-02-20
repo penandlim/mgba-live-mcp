@@ -5,8 +5,9 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from mgba_live_mcp import server as mcp_server
 import pytest
+
+from mgba_live_mcp import server as mcp_server
 
 
 @dataclass
@@ -84,7 +85,13 @@ def test_input_tap_waits_after_release_then_returns_screenshot(monkeypatch: Any)
     assert payload["frame"] == 100
     assert payload["data"]["duration"] == 3
     assert payload["screenshot"] == {"frame": 200, "path": "/tmp/input-tap.png"}
-    assert [call["command"] for call in fake.calls] == ["input-tap", "run-lua", "run-lua", "run-lua", "screenshot"]
+    assert [call["command"] for call in fake.calls] == [
+        "input-tap",
+        "run-lua",
+        "run-lua",
+        "run-lua",
+        "screenshot",
+    ]
     assert fake.calls[0]["args"] == ["--key", "A", "--frames", "3", "--session", "session-123"]
     assert fake.calls[1]["args"] == ["--code", "return true", "--session", "session-123"]
     assert fake.calls[2]["args"] == ["--code", "return true", "--session", "session-123"]
@@ -111,7 +118,12 @@ def test_input_tap_wait_frames_zero_still_waits_through_tap_duration(monkeypatch
     payload = _first_payload(contents)
 
     assert payload["screenshot"] == {"frame": 200, "path": "/tmp/input-tap.png"}
-    assert [call["command"] for call in fake.calls] == ["input-tap", "run-lua", "run-lua", "screenshot"]
+    assert [call["command"] for call in fake.calls] == [
+        "input-tap",
+        "run-lua",
+        "run-lua",
+        "screenshot",
+    ]
 
 
 def test_input_tap_rejects_negative_wait_frames() -> None:
@@ -196,4 +208,3 @@ def test_input_set_and_clear_remain_no_snapshot(monkeypatch: Any) -> None:
     assert "screenshot" not in set_payload
     assert "screenshot" not in clear_payload
     assert [call["command"] for call in fake.calls] == ["input-set", "input-clear"]
-

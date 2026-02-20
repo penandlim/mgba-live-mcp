@@ -107,9 +107,13 @@ def test_status_all_uses_session_from_payload_for_snapshot(monkeypatch: Any) -> 
         async def run(self, command: str, args: list[str], *, timeout: float = 20.0) -> _Result:
             self.calls.append({"command": command, "args": list(args), "timeout": timeout})
             if command == "status" and args == ["--all"]:
-                return _Result({"value": [{"session_id": "session-a"}, {"session_id": "session-b"}]})
+                return _Result(
+                    {"value": [{"session_id": "session-a"}, {"session_id": "session-b"}]}
+                )
             if command == "status":
-                raise AssertionError("status fallback should not run for --all when payload has sessions")
+                raise AssertionError(
+                    "status fallback should not run for --all when payload has sessions"
+                )
             if command == "screenshot":
                 return _Result({"frame": 200, "path": "/tmp/status-all.png"})
             raise AssertionError(f"unexpected command: {command}")

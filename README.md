@@ -1,107 +1,38 @@
 # mgba-live-mcp
 
-MCP server for persistent live control of mGBA using the script bridge workflow.
-Commands return structured JSON, and visual snapshots are provided by
-`mgba_live_status`/`mgba_live_attach`/`mgba_live_start_with_lua` and `mgba_live_export_screenshot`.
+MCP server for persistent, live mGBA control. It is designed for agent workflows
+that need to keep one emulator process running across multiple tool calls
+(input, Lua, memory reads, OAM/entity dumps, screenshots).
 
-## Requirements
+If you need one-shot/headless runs instead of persistent sessions, see
+[struktured-labs/mgba-mcp](https://github.com/struktured-labs/mgba-mcp).
 
-- Python `>=3.11` and `uv`
-- A scriptable mGBA Qt build (`mGBA`/`mgba-qt`) with:
-  - `BUILD_QT=ON`
-  - `ENABLE_SCRIPTING=ON`
-  - `USE_LUA=ON`
-- Screenshot support (`libpng`/`zlib`, enabled by default in upstream mGBA builds)
-- A ROM file (`.gba`/`.gb`/`.gbc`)
+## What You Get (MCP Context)
 
-This project auto-detects the emulator binary from `PATH` in this order:
-`mgba-qt`, `mgba`, `mGBA`.
-If your binary is not on `PATH`, pass `mgba_path` to `mgba_live_start` / `mgba_live_start_with_lua`.
+- Long-lived session lifecycle: `mgba_live_start`, `mgba_live_attach`,
+  `mgba_live_status`, `mgba_live_stop`
+- Live control: `mgba_live_input_tap`, `mgba_live_input_set`,
+  `mgba_live_input_clear`, `mgba_live_run_lua`
+- Inspection: `mgba_live_read_memory`, `mgba_live_read_range`,
+  `mgba_live_dump_pointers`, `mgba_live_dump_oam`, `mgba_live_dump_entities`
+- Snapshot output: `mgba_live_export_screenshot` plus image snapshots returned
+  by `status`/`attach`/`start_with_lua`/most live commands
 
-## Installation
+## Quick Start
 
-### 1) Install Python deps for this MCP server
+1. Install dependencies for this repo:
 
 ```bash
-cd /path/to/mgba-live-mcp
 uv sync
 ```
 
-### 2) Build mGBA with scripting + Qt (macOS example)
-
-Set source/build locations first:
+2. Run the MCP server:
 
 ```bash
-export MGBA_SRC=/path/to/mgba-source
-export MGBA_BUILD="$MGBA_SRC/build-qtllvm"
-```
-
-Then build:
-
-```bash
-brew install cmake ffmpeg libzip qt@5 sdl2 libedit lua pkg-config
-
-cd "$MGBA_SRC"
-cmake -S . -B "$MGBA_BUILD" \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH="$(brew --prefix qt@5)" \
-  -DBUILD_QT=ON \
-  -DENABLE_SCRIPTING=ON \
-  -DUSE_LUA=ON \
-  -DBUILD_HEADLESS=ON \
-  -DBUILD_SDL=OFF \
-  -DBUILD_SHARED=ON \
-  -DBUILD_STATIC=OFF
-cmake --build "$MGBA_BUILD" -j"$(sysctl -n hw.ncpu)"
-```
-
-### 3) Verify the build has required capabilities
-
-```bash
-rg -n "^(BUILD_QT|ENABLE_SCRIPTING|USE_LUA):BOOL=ON" \
-  "$MGBA_BUILD/CMakeCache.txt"
-
-"$MGBA_BUILD/qt/mGBA.app/Contents/MacOS/mGBA" --help | rg -- "--script"
-```
-
-### 4) Make the binary discoverable (optional)
-
-If you want auto-detection to work without passing `mgba_path` every time:
-
-```bash
-ln -sf "$MGBA_BUILD/qt/mGBA.app/Contents/MacOS/mGBA" /usr/local/bin/mgba-qt
-```
-
-Or set `mgba_path` per tool call, for example:
-
-```json
-{
-  "rom": "/path/to/game.gba",
-  "mgba_path": "/absolute/path/to/mGBA"
-}
-```
-
-## Features
-
-- Start/attach/stop/manage long-lived `mgba-qt` sessions.
-- Frame-accurate input (`A/B/Start/Select/Up/Down/Left/Right/L/R`).
-- Execute Lua against a running process.
-- Read memory and pointer tables.
-- Dump OAM and entity data.
-- `mgba_live_input_tap` supports `wait_frames` and returns post-input screenshot/image.
-- Use `mgba_live_status` after `mgba_live_input_set` / `mgba_live_input_clear` for post-input view checks.
-- PNG screenshot exports with optional custom `out` path.
-
-## Run
-
-```bash
-cd /path/to/mgba-live-mcp
 uv run mgba-live-mcp
 ```
 
-## Claude Code MCP Config
-
-Set in `~/.codex/config.toml`:
+3. Register it in your MCP client (Codex example):
 
 ```toml
 [mcp_servers.mgba]
@@ -114,15 +45,109 @@ args = [
 ]
 ```
 
+## Requirements And Setup Links
+
+- [mGBA](https://github.com/mgba-emu/mgba):
+  Build/install a Qt + Lua-capable binary (`mgba-qt`/`mGBA`) with these required
+  CMake flags:
+  `-DBUILD_QT=ON -DENABLE_SCRIPTING=ON -DUSE_LUA=ON`
+- [uv](https://docs.astral.sh/uv/):
+  Python package/runtime manager used by this repo (`uv sync`, `uv run ...`)
+- [Model Context Protocol](https://modelcontextprotocol.io):
+  Protocol used by the server; configure this process as an MCP server in your client
+
+Important runtime notes:
+
+- A ROM path is required to start (`.gba`, `.gb`, `.gbc`).
+- Binary auto-discovery order: `mgba-qt`, `mgba`, `mGBA`.
+- If auto-discovery fails, pass `mgba_path` in `mgba_live_start` or
+  `mgba_live_start_with_lua`.
+
+## Common MCP Flows
+
+### 1) Start a session
+
+```json
+{
+  "rom": "/absolute/path/to/game.gba",
+  "fast": true
+}
+```
+
 Notes:
-- Start defaults to `120` FPS unless `fps_target` is provided.
-- `mgba_live_start` is MCP bootstrap-only and does not accept `script` or return a screenshot.
-- `mgba_live_start_with_lua` starts a new session, runs `file` or `code`, then returns the post-Lua screenshot/image.
-- CLI `scripts/mgba_live.py start` still supports `--script` startup Lua paths passed directly to mGBA.
-- MCP tool text payloads return direct command fields (no `tool`/`command`/`result` wrapper).
-- `mgba_live_input_tap` returns screenshot/image and accepts `wait_frames` (capture at `input_frame + tap_duration + wait_frames`).
-- `mgba_live_input_set` / `mgba_live_input_clear` return action data; call `mgba_live_status` for visual assessment.
-- `mgba_live_export_screenshot` is the screenshot tool name.
-- Screenshot responses do not include encoded image text blocks.
-- `mgba_live_export_screenshot` always writes and returns a PNG `path` (defaults to session screenshots directory when `out` is omitted).
-- For callback-based Lua macros, return a table with `macro_key` (for example `{ status = "started", macro_key = "__my_macro" }`) and set `_G[macro_key].active = false` when done so `mgba_live_run_lua` can wait for completion before returning its snapshot.
+
+- `fast: true` maps to `fps_target=600`
+- default when omitted is `fps_target=120`
+
+### 2) Start + run Lua immediately
+
+Use `mgba_live_start_with_lua` when you need first-frame setup and a post-Lua
+snapshot in one call.
+
+```json
+{
+  "rom": "/absolute/path/to/game.gba",
+  "code": "return emu:currentFrame()"
+}
+```
+
+### 3) Tap input and capture after settle
+
+```json
+{
+  "session": "20260220-120000",
+  "key": "A",
+  "frames": 2,
+  "wait_frames": 6
+}
+```
+
+`wait_frames` is applied after release before the screenshot is captured.
+
+### 4) Read memory
+
+```json
+{
+  "session": "20260220-120000",
+  "start": 49664,
+  "length": 64
+}
+```
+
+### 5) Save screenshot to a known path
+
+```json
+{
+  "session": "20260220-120000",
+  "out": "/tmp/mgba-shot.png"
+}
+```
+
+## Important Behavior
+
+- `mgba_live_start` is bootstrap-only (no Lua arg, no screenshot return).
+- `mgba_live_start_with_lua` requires exactly one of `file` or `code`.
+- `mgba_live_run_lua` supports callback-style macros by returning
+  `{ macro_key = "..." }` and setting `_G[macro_key].active = false` when done;
+  the tool waits for completion before returning its snapshot.
+- `mgba_live_input_set` and `mgba_live_input_clear` update held keys but do not
+  include a snapshot; call `mgba_live_status` to verify visually.
+
+## Local CLI (Dev/Debug)
+
+The MCP server wraps `scripts/mgba_live.py`.
+
+```bash
+uv run python scripts/mgba_live.py --help
+uv run python scripts/mgba_live.py start --help
+uv run pytest
+```
+
+Quality commands:
+
+```bash
+make lint
+make typecheck
+make test
+make check
+```

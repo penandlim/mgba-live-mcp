@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from pathlib import Path
 import json
+from pathlib import Path
 from typing import Any
 
 from mcp.server import Server
@@ -13,7 +13,6 @@ from mcp.server.stdio import stdio_server
 from mcp.types import ImageContent, TextContent, Tool
 
 from .live_controller import LiveControllerClient
-
 
 server = Server("mgba-live-mcp")
 _controller = LiveControllerClient()
@@ -249,7 +248,9 @@ async def _wait_for_target_frame(
             return current_frame
 
         if settle_timeout <= 0 or loop.time() >= deadline:
-            raise TimeoutError(f"Timed out waiting for frame >= {target_frame}; last_frame={current_frame}")
+            raise TimeoutError(
+                f"Timed out waiting for frame >= {target_frame}; last_frame={current_frame}"
+            )
 
         await asyncio.sleep(poll_interval)
 
@@ -339,7 +340,9 @@ async def _run_with_snapshot(
         shot_result = await _controller.run("screenshot", shot_args, timeout=max(timeout, 20.0))
         screenshot_payload = shot_result.payload
         payload["screenshot"] = screenshot_payload
-        shot_image = _image_content(screenshot_payload) if isinstance(screenshot_payload, dict) else None
+        shot_image = (
+            _image_content(screenshot_payload) if isinstance(screenshot_payload, dict) else None
+        )
         if shot_image is not None:
             image_contents.append(shot_image)
     except Exception as exc:
@@ -389,30 +392,52 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "rom": {"type": "string", "description": "Path to ROM (.gba/.gb/.gbc)."},
                     "savestate": {"type": "string", "description": "Optional savestate path."},
-                    "fps_target": {"type": "number", "description": "Explicit fpsTarget. Defaults to 120 when omitted."},
+                    "fps_target": {
+                        "type": "number",
+                        "description": "Explicit fpsTarget. Defaults to 120 when omitted.",
+                    },
                     "fast": {"type": "boolean", "description": "Shortcut for fps_target=600."},
-                    "session_id": {"type": "string", "description": "Optional explicit session id."},
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional explicit session id.",
+                    },
                     "mgba_path": {"type": "string", "description": "Optional mgba-qt path."},
-                    "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
+                    "timeout": {
+                        "type": "number",
+                        "description": "Command timeout in seconds.",
+                        "default": 20.0,
+                    },
                 },
                 "required": ["rom"],
             },
         ),
         Tool(
             name="mgba_live_start_with_lua",
-            description="Start a live session, run Lua immediately, then return the post-Lua screenshot.",
+            description=(
+                "Start a live session, run Lua immediately, then return the post-Lua screenshot."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "rom": {"type": "string", "description": "Path to ROM (.gba/.gb/.gbc)."},
                     "savestate": {"type": "string", "description": "Optional savestate path."},
-                    "fps_target": {"type": "number", "description": "Explicit fpsTarget. Defaults to 120 when omitted."},
+                    "fps_target": {
+                        "type": "number",
+                        "description": "Explicit fpsTarget. Defaults to 120 when omitted.",
+                    },
                     "fast": {"type": "boolean", "description": "Shortcut for fps_target=600."},
-                    "session_id": {"type": "string", "description": "Optional explicit session id."},
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional explicit session id.",
+                    },
                     "mgba_path": {"type": "string", "description": "Optional mgba-qt path."},
                     "file": {"type": "string", "description": "Lua file path."},
                     "code": {"type": "string", "description": "Inline Lua code."},
-                    "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
+                    "timeout": {
+                        "type": "number",
+                        "description": "Command timeout in seconds.",
+                        "default": 20.0,
+                    },
                 },
                 "required": ["rom"],
             },
@@ -425,7 +450,11 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "session": {"type": "string", "description": "Session id."},
                     "pid": {"type": "integer", "description": "PID of a managed session."},
-                    "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
+                    "timeout": {
+                        "type": "number",
+                        "description": "Command timeout in seconds.",
+                        "default": 20.0,
+                    },
                 },
             },
         ),
@@ -437,7 +466,11 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "session": {"type": "string", "description": "Optional session id."},
                     "all": {"type": "boolean", "description": "Whether to include all sessions."},
-                    "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
+                    "timeout": {
+                        "type": "number",
+                        "description": "Command timeout in seconds.",
+                        "default": 20.0,
+                    },
                 },
             },
         ),
@@ -449,7 +482,11 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "session": {"type": "string", "description": "Session id to stop."},
                     "grace": {"type": "number", "description": "Kill grace period in seconds."},
-                    "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
+                    "timeout": {
+                        "type": "number",
+                        "description": "Command timeout in seconds.",
+                        "default": 20.0,
+                    },
                 },
             },
         ),
@@ -462,53 +499,91 @@ async def list_tools() -> list[Tool]:
                     "session": {"type": "string", "description": "Optional session id."},
                     "file": {"type": "string", "description": "Lua file path."},
                     "code": {"type": "string", "description": "Inline Lua code."},
-                    "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
+                    "timeout": {
+                        "type": "number",
+                        "description": "Command timeout in seconds.",
+                        "default": 20.0,
+                    },
                 },
                 "required": [],
             },
         ),
         Tool(
             name="mgba_live_input_tap",
-            description="Tap a key for N frames, optionally wait additional frames after release, then return a screenshot.",
+            description=(
+                "Tap a key for N frames, optionally wait additional frames "
+                "after release, then return a screenshot."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session": {"type": "string"},
-                    "key": {"type": "string", "description": "A/B/START/SELECT/UP/DOWN/LEFT/RIGHT/L/R."},
+                    "key": {
+                        "type": "string",
+                        "description": "A/B/START/SELECT/UP/DOWN/LEFT/RIGHT/L/R.",
+                    },
                     "frames": {"type": "integer", "default": 1},
                     "wait_frames": {
                         "type": "integer",
                         "default": 0,
                         "minimum": 0,
-                        "description": "Additional frames to wait after tap release before screenshot capture.",
+                        "description": (
+                            "Additional frames to wait after tap release before screenshot capture."
+                        ),
                     },
-                    "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
+                    "timeout": {
+                        "type": "number",
+                        "description": "Command timeout in seconds.",
+                        "default": 20.0,
+                    },
                 },
                 "required": ["key"],
             },
         ),
         Tool(
             name="mgba_live_input_set",
-            description="Set currently held keys for live session. Use mgba_live_status after input for visual verification.",
+            description=(
+                "Set currently held keys for live session. Use "
+                "mgba_live_status after input for visual verification."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session": {"type": "string"},
-                    "keys": {"type": "array", "items": {"type": "string"}, "description": "Keys to hold."},
-                    "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
+                    "keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Keys to hold.",
+                    },
+                    "timeout": {
+                        "type": "number",
+                        "description": "Command timeout in seconds.",
+                        "default": 20.0,
+                    },
                 },
                 "required": ["keys"],
             },
         ),
         Tool(
             name="mgba_live_input_clear",
-            description="Clear held keys from live session. Use mgba_live_status after input for visual verification.",
+            description=(
+                "Clear held keys from live session. Use mgba_live_status "
+                "after input for visual verification."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session": {"type": "string"},
-                    "keys": {"type": "array", "items": {"type": "string"}, "description": "Optional keys to clear; omit to clear all."},
-                    "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
+                    "keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional keys to clear; omit to clear all.",
+                    },
+                    "timeout": {
+                        "type": "number",
+                        "description": "Command timeout in seconds.",
+                        "default": 20.0,
+                    },
                 },
             },
         ),
@@ -519,7 +594,11 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "session": {"type": "string", "description": "Optional session id."},
-                    "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
+                    "timeout": {
+                        "type": "number",
+                        "description": "Command timeout in seconds.",
+                        "default": 20.0,
+                    },
                     "out": {"type": "string", "description": "Optional persisted PNG output path."},
                 },
                 "required": [],
@@ -532,8 +611,16 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "session": {"type": "string"},
-                    "addresses": {"type": "array", "items": {"type": "integer"}, "description": "Addresses to read."},
-                    "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
+                    "addresses": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Addresses to read.",
+                    },
+                    "timeout": {
+                        "type": "number",
+                        "description": "Command timeout in seconds.",
+                        "default": 20.0,
+                    },
                 },
                 "required": ["addresses"],
             },
@@ -547,7 +634,11 @@ async def list_tools() -> list[Tool]:
                     "session": {"type": "string"},
                     "start": {"type": "integer", "description": "Range start address."},
                     "length": {"type": "integer", "description": "Byte length."},
-                    "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
+                    "timeout": {
+                        "type": "number",
+                        "description": "Command timeout in seconds.",
+                        "default": 20.0,
+                    },
                 },
                 "required": ["start", "length"],
             },
@@ -562,7 +653,11 @@ async def list_tools() -> list[Tool]:
                     "start": {"type": "integer", "description": "Pointer table start address."},
                     "count": {"type": "integer", "description": "Entries to read."},
                     "width": {"type": "integer", "default": 4},
-                    "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
+                    "timeout": {
+                        "type": "number",
+                        "description": "Command timeout in seconds.",
+                        "default": 20.0,
+                    },
                 },
                 "required": ["start", "count"],
             },
@@ -575,7 +670,11 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "session": {"type": "string"},
                     "count": {"type": "integer", "default": 40},
-                    "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
+                    "timeout": {
+                        "type": "number",
+                        "description": "Command timeout in seconds.",
+                        "default": 20.0,
+                    },
                 },
             },
         ),
@@ -589,7 +688,11 @@ async def list_tools() -> list[Tool]:
                     "base": {"type": "integer", "default": 49664},
                     "size": {"type": "integer", "default": 24},
                     "count": {"type": "integer", "default": 10},
-                    "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
+                    "timeout": {
+                        "type": "number",
+                        "description": "Command timeout in seconds.",
+                        "default": 20.0,
+                    },
                 },
             },
         ),
@@ -660,7 +763,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         if "screenshot" in lua_payload:
             combined_payload["screenshot"] = lua_payload["screenshot"]
 
-        image_contents = [content for content in lua_contents if getattr(content, "type", None) == "image"]
+        image_contents = [
+            content for content in lua_contents if getattr(content, "type", None) == "image"
+        ]
         return [_text_content(combined_payload), *image_contents]
     if name == "mgba_live_attach":
         cmd_args = _build_session_arg(args)
@@ -763,7 +868,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         else:
             payload = {"value": command_result.payload}
         contents = [_text_content(payload)]
-        shot_image = _image_content(command_result.payload) if isinstance(command_result.payload, dict) else None
+        shot_image = (
+            _image_content(command_result.payload)
+            if isinstance(command_result.payload, dict)
+            else None
+        )
         if shot_image is not None:
             contents.append(shot_image)
         return contents

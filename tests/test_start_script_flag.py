@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from dataclasses import dataclass
 import importlib.util
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from mgba_live_mcp import server as mcp_server
 import pytest
 
+from mgba_live_mcp import server as mcp_server
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,7 +50,9 @@ class _Result:
 def test_start_parser_accepts_script_flag_with_known_pokemon_rom() -> None:
     rom = pokemon_red_rom_path()
     parser = mgba_live.build_parser()
-    args = parser.parse_args(["start", "--rom", str(rom), "--script", "boot.lua", "--script", "hud.lua"])
+    args = parser.parse_args(
+        ["start", "--rom", str(rom), "--script", "boot.lua", "--script", "hud.lua"]
+    )
     assert args.script == ["boot.lua", "hud.lua"]
 
 
@@ -138,7 +140,9 @@ def test_cmd_start_passes_startup_script_to_mgba_process(tmp_path: Path, monkeyp
     assert cmd[-1] == str(rom)
     assert output["status"] == "started"
 
-    session_json = json.loads((runtime_root / "sessions" / "test-session" / "session.json").read_text())
+    session_json = json.loads(
+        (runtime_root / "sessions" / "test-session" / "session.json").read_text()
+    )
     assert session_json["startup_scripts"] == [str(startup_script.resolve())]
 
 
@@ -185,24 +189,20 @@ def test_mcp_start_tool_forwards_core_start_args(monkeypatch: Any) -> None:
         captured["timeout"] = timeout
         return []
 
-    original = mcp_server._run_with_snapshot
-    mcp_server._run_with_snapshot = fake_run_with_snapshot
-    try:
-        asyncio.run(
-            mcp_server.call_tool(
-                "mgba_live_start",
-                {
-                    "rom": str(rom),
-                    "savestate": "/tmp/custom.sav",
-                    "fps_target": 240,
-                    "session_id": "custom-session",
-                    "mgba_path": "/usr/local/bin/mgba-qt",
-                    "timeout": 9.0,
-                },
-            )
+    monkeypatch.setattr(mcp_server, "_run_with_snapshot", fake_run_with_snapshot)
+    asyncio.run(
+        mcp_server.call_tool(
+            "mgba_live_start",
+            {
+                "rom": str(rom),
+                "savestate": "/tmp/custom.sav",
+                "fps_target": 240,
+                "session_id": "custom-session",
+                "mgba_path": "/usr/local/bin/mgba-qt",
+                "timeout": 9.0,
+            },
         )
-    finally:
-        mcp_server._run_with_snapshot = original
+    )
 
     assert captured["live_command"] == "start"
     assert captured["command_args"][:2] == ["--rom", str(rom)]
@@ -342,7 +342,9 @@ def test_cmd_status_all_prunes_dead_sessions(tmp_path: Path, monkeypatch: Any) -
     monkeypatch.setattr(mgba_live, "pid_alive", lambda pid: pid == 1002)
 
     captured: dict[str, Any] = {}
-    monkeypatch.setattr(mgba_live, "print_json", lambda payload: captured.setdefault("value", payload))
+    monkeypatch.setattr(
+        mgba_live, "print_json", lambda payload: captured.setdefault("value", payload)
+    )
 
     mgba_live.cmd_status(argparse.Namespace(all=True, session=None))
 
@@ -376,7 +378,9 @@ def test_cmd_status_skips_dead_active_session(tmp_path: Path, monkeypatch: Any) 
     assert mgba_live.ACTIVE_SESSION_FILE.read_text() == "alive-session"
 
 
-def test_prune_dead_sessions_removes_dead_session_directory(tmp_path: Path, monkeypatch: Any) -> None:
+def test_prune_dead_sessions_removes_dead_session_directory(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
     runtime_root = tmp_path / ".runtime"
     monkeypatch.setattr(mgba_live, "RUNTIME_ROOT", runtime_root)
     monkeypatch.setattr(mgba_live, "SESSIONS_DIR", runtime_root / "sessions")

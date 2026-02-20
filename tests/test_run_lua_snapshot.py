@@ -56,7 +56,12 @@ def test_run_lua_snapshot_uses_status_fallback_when_session_not_provided(monkeyp
     payload = _first_payload(contents)
 
     assert payload["screenshot"] == {"frame": 102, "path": "/tmp/screenshot.png"}
-    assert [call["command"] for call in fake.calls] == ["run-lua", "status", "run-lua", "screenshot"]
+    assert [call["command"] for call in fake.calls] == [
+        "run-lua",
+        "status",
+        "run-lua",
+        "screenshot",
+    ]
     assert fake.calls[0]["args"] == ["--code", "return 7"]
     assert fake.calls[1]["args"] == []
     assert fake.calls[2]["args"] == ["--code", "return true", "--session", "active-session"]
@@ -90,7 +95,9 @@ def test_run_lua_snapshot_settles_before_screenshot_when_session_is_given(monkey
     assert fake.calls[2]["args"] == ["--session", "session-123"]
 
 
-def test_run_lua_snapshot_waits_for_macro_completion_when_macro_key_returned(monkeypatch: Any) -> None:
+def test_run_lua_snapshot_waits_for_macro_completion_when_macro_key_returned(
+    monkeypatch: Any,
+) -> None:
     class _MacroController:
         def __init__(self) -> None:
             self.calls: list[dict[str, Any]] = []
@@ -103,7 +110,9 @@ def test_run_lua_snapshot_waits_for_macro_completion_when_macro_key_returned(mon
                     return _Result(
                         {
                             "frame": 100,
-                            "data": {"result": {"status": "started", "macro_key": "__macro_wait_test"}},
+                            "data": {
+                                "result": {"status": "started", "macro_key": "__macro_wait_test"}
+                            },
                         }
                     )
                 if args[:2] == ["--code", "return true"]:
@@ -132,6 +141,12 @@ def test_run_lua_snapshot_waits_for_macro_completion_when_macro_key_returned(mon
 
     assert payload["screenshot"] == {"frame": 104, "path": "/tmp/screenshot.png"}
     assert "screenshot_settle" not in payload
-    assert [call["command"] for call in fake.calls] == ["run-lua", "run-lua", "run-lua", "run-lua", "screenshot"]
+    assert [call["command"] for call in fake.calls] == [
+        "run-lua",
+        "run-lua",
+        "run-lua",
+        "run-lua",
+        "screenshot",
+    ]
     assert fake.calls[0]["args"] == ["--code", "return 11", "--session", "session-123"]
     assert "__macro_wait_test" in fake.calls[1]["args"][1]

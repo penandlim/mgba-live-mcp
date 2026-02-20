@@ -15,10 +15,9 @@ import signal
 import subprocess
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
 
 SCRIPT_PATH = Path(__file__).resolve()
 SKILL_DIR = SCRIPT_PATH.parents[1]
@@ -29,7 +28,7 @@ ACTIVE_SESSION_FILE = RUNTIME_ROOT / "active_session"
 
 
 def now_utc() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def parse_int(value: str) -> int:
@@ -97,7 +96,9 @@ def iter_sessions() -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     if not SESSIONS_DIR.exists():
         return items
-    for candidate in sorted(SESSIONS_DIR.glob("*/session.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+    for candidate in sorted(
+        SESSIONS_DIR.glob("*/session.json"), key=lambda p: p.stat().st_mtime, reverse=True
+    ):
         try:
             items.append(json.loads(candidate.read_text()))
         except Exception:
@@ -225,7 +226,9 @@ def write_command(command_path: Path, command: dict[str, Any]) -> None:
     tmp_path.replace(command_path)
 
 
-def send_command(session: dict[str, Any], kind: str, payload: dict[str, Any] | None = None, timeout: float = 10.0) -> dict[str, Any]:
+def send_command(
+    session: dict[str, Any], kind: str, payload: dict[str, Any] | None = None, timeout: float = 10.0
+) -> dict[str, Any]:
     payload = payload or {}
     command_path = Path(session["command_path"])
     response_path = Path(session["response_path"])
@@ -309,7 +312,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     if not BRIDGE_SCRIPT.exists():
         raise SystemExit(f"Bridge script missing: {BRIDGE_SCRIPT}")
 
-    session_id = args.session_id or datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    session_id = args.session_id or datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     sdir = session_dir(session_id)
     if sdir.exists():
         raise SystemExit(f"Session already exists: {session_id}")
@@ -540,9 +543,13 @@ def cmd_run_lua(args: argparse.Namespace) -> None:
         script_path = Path(args.file).resolve()
         if not script_path.exists():
             raise SystemExit(f"Lua file not found: {script_path}")
-        response = send_command(session, "run_lua_file", {"path": str(script_path)}, timeout=args.timeout)
+        response = send_command(
+            session, "run_lua_file", {"path": str(script_path)}, timeout=args.timeout
+        )
     else:
-        response = send_command(session, "run_lua_inline", {"code": args.code}, timeout=args.timeout)
+        response = send_command(
+            session, "run_lua_inline", {"code": args.code}, timeout=args.timeout
+        )
     data = handle_response(response)
     print_json({"frame": response.get("frame"), "data": data})
 
@@ -657,11 +664,15 @@ def add_session_arg(parser: argparse.ArgumentParser) -> None:
 
 
 def add_timeout_arg(parser: argparse.ArgumentParser, default: float = 10.0) -> None:
-    parser.add_argument("--timeout", type=float, default=default, help="Command timeout in seconds.")
+    parser.add_argument(
+        "--timeout", type=float, default=default, help="Command timeout in seconds."
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Live controller for persistent mgba-qt playtest sessions.")
+    parser = argparse.ArgumentParser(
+        description="Live controller for persistent mgba-qt playtest sessions."
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_start = sub.add_parser("start", help="Start a managed mgba-qt session.")
@@ -678,8 +689,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional startup Lua script path passed to mGBA with --script (repeatable).",
     )
     p_start.add_argument("--log-level", type=int, default=0, help="mGBA log level mask.")
-    p_start.add_argument("--heartbeat-interval", type=int, default=30, help="Heartbeat write interval in frames.")
-    p_start.add_argument("--ready-timeout", type=float, default=20.0, help="Wait time for bridge readiness.")
+    p_start.add_argument(
+        "--heartbeat-interval", type=int, default=30, help="Heartbeat write interval in frames."
+    )
+    p_start.add_argument(
+        "--ready-timeout", type=float, default=20.0, help="Wait time for bridge readiness."
+    )
     p_start.add_argument(
         "--config",
         action="append",
@@ -700,7 +715,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_stop = sub.add_parser("stop", help="Stop a running session.")
     add_session_arg(p_stop)
-    p_stop.add_argument("--grace", type=float, default=1.0, help="SIGTERM grace period before SIGKILL.")
+    p_stop.add_argument(
+        "--grace", type=float, default=1.0, help="SIGTERM grace period before SIGKILL."
+    )
     p_stop.set_defaults(func=cmd_stop)
 
     p_run_lua = sub.add_parser("run-lua", help="Run additional Lua in an existing live session.")
@@ -712,7 +729,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_input_tap = sub.add_parser("input-tap", help="Tap a button for N frames.")
     add_session_arg(p_input_tap)
-    p_input_tap.add_argument("--key", required=True, help="Button key name (A/B/START/SELECT/UP/DOWN/LEFT/RIGHT/L/R).")
+    p_input_tap.add_argument(
+        "--key", required=True, help="Button key name (A/B/START/SELECT/UP/DOWN/LEFT/RIGHT/L/R)."
+    )
     p_input_tap.add_argument("--frames", type=int, default=1, help="Tap duration in frames.")
     add_timeout_arg(p_input_tap)
     p_input_tap.set_defaults(func=cmd_input_tap)
@@ -725,7 +744,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_input_clear = sub.add_parser("input-clear", help="Clear some keys or all keys.")
     add_session_arg(p_input_clear)
-    p_input_clear.add_argument("--keys", nargs="*", help="Optional keys to clear. Omit to clear all.")
+    p_input_clear.add_argument(
+        "--keys", nargs="*", help="Optional keys to clear. Omit to clear all."
+    )
     add_timeout_arg(p_input_clear)
     p_input_clear.set_defaults(func=cmd_input_clear)
 
@@ -737,7 +758,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_read_memory = sub.add_parser("read-memory", help="Read sparse memory addresses.")
     add_session_arg(p_read_memory)
-    p_read_memory.add_argument("--addresses", nargs="+", required=True, help="Addresses (hex or decimal).")
+    p_read_memory.add_argument(
+        "--addresses", nargs="+", required=True, help="Addresses (hex or decimal)."
+    )
     add_timeout_arg(p_read_memory)
     p_read_memory.set_defaults(func=cmd_read_memory)
 
@@ -748,11 +771,15 @@ def build_parser() -> argparse.ArgumentParser:
     add_timeout_arg(p_read_range)
     p_read_range.set_defaults(func=cmd_read_range)
 
-    p_dump_pointers = sub.add_parser("dump-pointers", help="Dump pointer table entries (little-endian).")
+    p_dump_pointers = sub.add_parser(
+        "dump-pointers", help="Dump pointer table entries (little-endian)."
+    )
     add_session_arg(p_dump_pointers)
     p_dump_pointers.add_argument("--start", required=True, help="Pointer table start address.")
     p_dump_pointers.add_argument("--count", type=int, required=True, help="Number of entries.")
-    p_dump_pointers.add_argument("--width", type=int, default=4, help="Pointer width in bytes (default: 4).")
+    p_dump_pointers.add_argument(
+        "--width", type=int, default=4, help="Pointer width in bytes (default: 4)."
+    )
     add_timeout_arg(p_dump_pointers)
     p_dump_pointers.set_defaults(func=cmd_dump_pointers)
 
@@ -762,7 +789,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_timeout_arg(p_dump_oam)
     p_dump_oam.set_defaults(func=cmd_dump_oam)
 
-    p_dump_entities = sub.add_parser("dump-entities", help="Dump structured entity bytes from memory.")
+    p_dump_entities = sub.add_parser(
+        "dump-entities", help="Dump structured entity bytes from memory."
+    )
     add_session_arg(p_dump_entities)
     p_dump_entities.add_argument("--base", default="0xC200", help="Entity array base address.")
     p_dump_entities.add_argument("--size", type=int, default=24, help="Entity struct byte size.")

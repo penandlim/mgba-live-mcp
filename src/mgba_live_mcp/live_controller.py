@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-import sys
 
 
 @dataclass
@@ -50,16 +50,18 @@ class LiveControllerClient:
 
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError as exc:
             proc.kill()
             stdout, stderr = await proc.communicate()
-            raise RuntimeError(f"Command timed out after {timeout}s: {' '.join(proc_args)}")
+            command_line = " ".join(proc_args)
+            raise RuntimeError(f"Command timed out after {timeout}s: {command_line}") from exc
 
         stdout_s = stdout.decode(errors="replace")
         stderr_s = stderr.decode(errors="replace")
         if proc.returncode != 0:
+            command_line = " ".join(proc_args)
             raise RuntimeError(
-                f"Command failed (exit {proc.returncode}): {' '.join(proc_args)}\n{stdout_s}\n{stderr_s}"
+                f"Command failed (exit {proc.returncode}): {command_line}\n{stdout_s}\n{stderr_s}"
             )
 
         text = stdout_s.strip()

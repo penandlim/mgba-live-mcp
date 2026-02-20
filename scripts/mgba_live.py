@@ -8,11 +8,13 @@ Lua bridge script over command/response files.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import shutil
 import signal
 import subprocess
+import tempfile
 import time
 import uuid
 from datetime import UTC, datetime
@@ -585,6 +587,37 @@ def cmd_input_clear(args: argparse.Namespace) -> None:
 
 def cmd_screenshot(args: argparse.Namespace) -> None:
     session = resolve_session(args)
+    if args.no_save and args.out:
+        raise SystemExit("Use either --out or --no-save, not both.")
+
+    if args.no_save:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            out_path = Path(tmp.name).resolve()
+        try:
+            response = send_command(
+                session, "screenshot", {"path": str(out_path)}, timeout=args.timeout
+            )
+            data = handle_response(response)
+            result_path = Path(data.get("path") if isinstance(data, dict) else str(out_path))
+            png_bytes = result_path.read_bytes()
+            print_json(
+                {
+                    "frame": response.get("frame"),
+                    "png_base64": base64.b64encode(png_bytes).decode(),
+                }
+            )
+            return
+        finally:
+            try:
+                out_path.unlink()
+            except OSError:
+                pass
+            if "result_path" in locals() and result_path != out_path:
+                try:
+                    result_path.unlink()
+                except OSError:
+                    pass
+
     if args.out:
         out_path = Path(args.out).resolve()
     else:
@@ -753,6 +786,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_screenshot = sub.add_parser("screenshot", help="Capture screenshot from running session.")
     add_session_arg(p_screenshot)
     p_screenshot.add_argument("--out", help="Optional output PNG path.")
+    p_screenshot.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Capture screenshot without persisting to disk; returns png_base64.",
+    )
     add_timeout_arg(p_screenshot, default=20.0)
     p_screenshot.set_defaults(func=cmd_screenshot)
 

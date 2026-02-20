@@ -60,7 +60,7 @@ class _InputTapController:
                 raise RuntimeError("status unavailable")
             return _Result({"session_id": "active-session"})
         if command == "screenshot":
-            return _Result({"frame": 200, "path": "/tmp/input-tap.png"})
+            return _Result({"frame": 200, "png_base64": "AA=="})
         raise AssertionError(f"unexpected command: {command}")
 
 
@@ -84,7 +84,7 @@ def test_input_tap_waits_after_release_then_returns_screenshot(monkeypatch: Any)
 
     assert payload["frame"] == 100
     assert payload["data"]["duration"] == 3
-    assert payload["screenshot"] == {"frame": 200, "path": "/tmp/input-tap.png"}
+    assert payload["screenshot"] == {"frame": 200}
     assert [call["command"] for call in fake.calls] == [
         "input-tap",
         "run-lua",
@@ -96,7 +96,7 @@ def test_input_tap_waits_after_release_then_returns_screenshot(monkeypatch: Any)
     assert fake.calls[1]["args"] == ["--code", "return true", "--session", "session-123"]
     assert fake.calls[2]["args"] == ["--code", "return true", "--session", "session-123"]
     assert fake.calls[3]["args"] == ["--code", "return true", "--session", "session-123"]
-    assert fake.calls[4]["args"] == ["--session", "session-123"]
+    assert fake.calls[4]["args"] == ["--session", "session-123", "--no-save"]
 
 
 def test_input_tap_wait_frames_zero_still_waits_through_tap_duration(monkeypatch: Any) -> None:
@@ -117,7 +117,7 @@ def test_input_tap_wait_frames_zero_still_waits_through_tap_duration(monkeypatch
     )
     payload = _first_payload(contents)
 
-    assert payload["screenshot"] == {"frame": 200, "path": "/tmp/input-tap.png"}
+    assert payload["screenshot"] == {"frame": 200}
     assert [call["command"] for call in fake.calls] == [
         "input-tap",
         "run-lua",

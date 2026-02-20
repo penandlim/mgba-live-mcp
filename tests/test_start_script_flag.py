@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import importlib.util
 import json
 from dataclasses import dataclass
@@ -62,6 +63,57 @@ def test_screenshot_parser_rejects_removed_text_flags() -> None:
         parser.parse_args(["screenshot", "--text-format", "hex"])
     with pytest.raises(SystemExit):
         parser.parse_args(["screenshot", "--png"])
+
+
+def test_cmd_screenshot_no_save_returns_base64_and_deletes_temp(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    written_paths: list[Path] = []
+    png_bytes = b"\x89PNG\r\n\x1a\n\x00"
+
+    monkeypatch.setattr(mgba_live, "resolve_session", lambda *_args, **_kwargs: {"id": "session-1"})
+
+    def fake_send_command(
+        _session: dict[str, Any],
+        kind: str,
+        payload: dict[str, Any],
+        timeout: float,
+    ) -> dict[str, Any]:
+        assert kind == "screenshot"
+        assert timeout == 7.0
+        path = Path(payload["path"])
+        written_paths.append(path)
+        path.write_bytes(png_bytes)
+        return {"ok": True, "frame": 77, "data": {"path": str(path)}}
+
+    monkeypatch.setattr(mgba_live, "send_command", fake_send_command)
+    monkeypatch.setattr(mgba_live, "print_json", lambda payload: captured.update(payload))
+
+    mgba_live.cmd_screenshot(
+        argparse.Namespace(
+            session="session-1",
+            out=None,
+            no_save=True,
+            timeout=7.0,
+        )
+    )
+
+    assert captured == {"frame": 77, "png_base64": base64.b64encode(png_bytes).decode()}
+    assert len(written_paths) == 1
+    assert not written_paths[0].exists()
+
+
+def test_cmd_screenshot_rejects_out_with_no_save(monkeypatch: Any) -> None:
+    monkeypatch.setattr(mgba_live, "resolve_session", lambda *_args, **_kwargs: {"id": "session-1"})
+
+    with pytest.raises(SystemExit, match="either --out or --no-save"):
+        mgba_live.cmd_screenshot(
+            argparse.Namespace(
+                session="session-1",
+                out="/tmp/out.png",
+                no_save=True,
+                timeout=5.0,
+            )
+        )
 
 
 def test_build_start_command_includes_user_script_and_bridge_script() -> None:
@@ -238,7 +290,7 @@ class _StartWithLuaController:
                 return _Result({"frame": 101, "data": {"settled": True}})
             return _Result({"frame": 100, "data": {"result": {"ok": True}}})
         if command == "screenshot":
-            return _Result({"frame": 102, "path": "/tmp/screenshot.png"})
+            return _Result({"frame": 102, "png_base64": "AA=="})
         raise AssertionError(f"unexpected command: {command}")
 
 
@@ -262,11 +314,11 @@ def test_mcp_start_with_lua_file_mode_runs_start_lua_and_screenshot(monkeypatch:
     assert payload["session_id"] == "session-123"
     assert payload["pid"] == 4321
     assert payload["lua"] == {"ok": True}
-    assert payload["screenshot"] == {"frame": 102, "path": "/tmp/screenshot.png"}
+    assert payload["screenshot"] == {"frame": 102}
     assert [call["command"] for call in fake.calls] == ["start", "run-lua", "run-lua", "screenshot"]
     assert fake.calls[1]["args"] == ["--file", "/tmp/startup.lua", "--session", "session-123"]
     assert fake.calls[2]["args"] == ["--code", "return true", "--session", "session-123"]
-    assert fake.calls[3]["args"] == ["--session", "session-123"]
+    assert fake.calls[3]["args"] == ["--session", "session-123", "--no-save"]
 
 
 def test_mcp_start_with_lua_code_mode_runs_start_lua_and_screenshot(monkeypatch: Any) -> None:
@@ -288,7 +340,7 @@ def test_mcp_start_with_lua_code_mode_runs_start_lua_and_screenshot(monkeypatch:
 
     assert payload["session_id"] == "session-123"
     assert payload["lua"] == {"ok": True}
-    assert payload["screenshot"] == {"frame": 102, "path": "/tmp/screenshot.png"}
+    assert payload["screenshot"] == {"frame": 102}
     assert [call["command"] for call in fake.calls] == ["start", "run-lua", "run-lua", "screenshot"]
     assert fake.calls[1]["args"] == ["--code", "return 77", "--session", "session-123"]
 

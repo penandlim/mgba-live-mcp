@@ -85,7 +85,7 @@ def test_status_tool_returns_screenshot_without_text(monkeypatch: Any) -> None:
             if command == "status":
                 return _Result({"session_id": "active-session", "alive": True})
             if command == "screenshot":
-                return _Result({"frame": 100, "path": "/tmp/status.png"})
+                return _Result({"frame": 100, "png_base64": "AA=="})
             raise AssertionError(f"unexpected command: {command}")
 
     fake = _StatusController()
@@ -96,7 +96,7 @@ def test_status_tool_returns_screenshot_without_text(monkeypatch: Any) -> None:
 
     assert payload["session_id"] == "active-session"
     assert payload["alive"] is True
-    assert payload["screenshot"] == {"frame": 100, "path": "/tmp/status.png"}
+    assert payload["screenshot"] == {"frame": 100}
 
 
 def test_status_all_uses_session_from_payload_for_snapshot(monkeypatch: Any) -> None:
@@ -115,7 +115,7 @@ def test_status_all_uses_session_from_payload_for_snapshot(monkeypatch: Any) -> 
                     "status fallback should not run for --all when payload has sessions"
                 )
             if command == "screenshot":
-                return _Result({"frame": 200, "path": "/tmp/status-all.png"})
+                return _Result({"frame": 200, "png_base64": "AA=="})
             raise AssertionError(f"unexpected command: {command}")
 
     fake = _StatusAllController()
@@ -125,8 +125,8 @@ def test_status_all_uses_session_from_payload_for_snapshot(monkeypatch: Any) -> 
     payload = _first_payload(contents)
 
     assert payload["value"] == [{"session_id": "session-a"}, {"session_id": "session-b"}]
-    assert payload["screenshot"] == {"frame": 200, "path": "/tmp/status-all.png"}
+    assert payload["screenshot"] == {"frame": 200}
     assert fake.calls == [
         {"command": "status", "args": ["--all"], "timeout": 20.0},
-        {"command": "screenshot", "args": ["--session", "session-a"], "timeout": 20.0},
+        {"command": "screenshot", "args": ["--session", "session-a", "--no-save"], "timeout": 20.0},
     ]

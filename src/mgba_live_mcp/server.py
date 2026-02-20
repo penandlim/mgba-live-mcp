@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import json
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,13 @@ def _parse_args_list(value: list[str] | None) -> list[str]:
 
 
 def _image_bytes_from_screenshot(result: dict[str, Any]) -> tuple[str, bytes] | None:
+    encoded = result.get("png_base64")
+    if isinstance(encoded, str) and encoded:
+        try:
+            return "png", base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error):
+            return None
+
     path = result.get("path")
     if isinstance(path, str) and path:
         try:
@@ -65,6 +73,15 @@ def _image_content(result: dict[str, Any]) -> ImageContent | None:
     encoded = base64.b64encode(raw).decode()
 
     return ImageContent(type="image", data=encoded, mimeType="image/png")
+
+
+def _public_snapshot_payload(result: dict[str, Any]) -> dict[str, Any]:
+    frame = result.get("frame")
+    if isinstance(frame, bool):
+        return {}
+    if isinstance(frame, (int, float)):
+        return {"frame": int(frame)}
+    return {}
 
 
 def _extract_session_id(payload: Any) -> str | None:
@@ -335,11 +352,17 @@ async def _run_with_snapshot(
             except Exception:
                 pass
 
-    shot_args = ["--session", str(resolved_session)]
+    shot_args = ["--session", str(resolved_session), "--no-save"]
     try:
         shot_result = await _controller.run("screenshot", shot_args, timeout=max(timeout, 20.0))
         screenshot_payload = shot_result.payload
-        payload["screenshot"] = screenshot_payload
+        public_snapshot = (
+            _public_snapshot_payload(screenshot_payload)
+            if isinstance(screenshot_payload, dict)
+            else {}
+        )
+        if public_snapshot:
+            payload["screenshot"] = public_snapshot
         shot_image = (
             _image_content(screenshot_payload) if isinstance(screenshot_payload, dict) else None
         )
@@ -402,7 +425,7 @@ def _with_screenshot(schema: dict[str, Any], *, required: bool = False) -> dict[
         raise ValueError("Screenshot schemas can only extend object schemas.")
 
     properties = dict(schema.get("properties", {}))
-    properties["screenshot"] = _SCREENSHOT_OUTPUT_SCHEMA
+    properties["screenshot"] = _SNAPSHOT_OUTPUT_SCHEMA
 
     merged = dict(schema)
     merged["properties"] = properties
@@ -415,7 +438,14 @@ def _with_screenshot(schema: dict[str, Any], *, required: bool = False) -> dict[
     return merged
 
 
-_SCREENSHOT_OUTPUT_SCHEMA = _object_schema(
+_SNAPSHOT_OUTPUT_SCHEMA = _object_schema(
+    {
+        "frame": {"type": "integer"},
+    },
+    required=["frame"],
+)
+
+_EXPORT_SCREENSHOT_OUTPUT_SCHEMA = _object_schema(
     {
         "frame": {"type": "integer"},
         "path": {"type": "string"},
@@ -439,7 +469,7 @@ _START_WITH_LUA_OUTPUT_SCHEMA = _object_schema(
         "session_id": {"type": "string"},
         "pid": {"type": "integer"},
         "lua": {},
-        "screenshot": _SCREENSHOT_OUTPUT_SCHEMA,
+        "screenshot": _SNAPSHOT_OUTPUT_SCHEMA,
     },
     required=["session_id", "lua"],
 )
@@ -558,8 +588,6 @@ _INPUT_CLEAR_OUTPUT_SCHEMA = _object_schema(
     },
     required=["frame", "data"],
 )
-
-_EXPORT_SCREENSHOT_OUTPUT_SCHEMA = _SCREENSHOT_OUTPUT_SCHEMA
 
 _READ_MEMORY_OUTPUT_SCHEMA = _with_screenshot(
     _object_schema(

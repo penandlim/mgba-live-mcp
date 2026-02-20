@@ -162,14 +162,10 @@ Start a live session, run Lua immediately, then return the post-Lua screenshot.
       "properties": {
         "frame": {
           "type": "integer"
-        },
-        "path": {
-          "type": "string"
         }
       },
       "required": [
-        "frame",
-        "path"
+        "frame"
       ],
       "type": "object"
     },
@@ -234,14 +230,10 @@ Attach to an existing managed live session.
       "properties": {
         "frame": {
           "type": "integer"
-        },
-        "path": {
-          "type": "string"
         }
       },
       "required": [
-        "frame",
-        "path"
+        "frame"
       ],
       "type": "object"
     },
@@ -345,14 +337,10 @@ Show status for one session or all managed sessions.
       "properties": {
         "frame": {
           "type": "integer"
-        },
-        "path": {
-          "type": "string"
         }
       },
       "required": [
-        "frame",
-        "path"
+        "frame"
       ],
       "type": "object"
     },
@@ -548,14 +536,10 @@ Execute Lua in a running live session.
       "properties": {
         "frame": {
           "type": "integer"
-        },
-        "path": {
-          "type": "string"
         }
       },
       "required": [
-        "frame",
-        "path"
+        "frame"
       ],
       "type": "object"
     }
@@ -639,14 +623,10 @@ Tap a key for N frames, optionally wait additional frames after release, then re
       "properties": {
         "frame": {
           "type": "integer"
-        },
-        "path": {
-          "type": "string"
         }
       },
       "required": [
-        "frame",
-        "path"
+        "frame"
       ],
       "type": "object"
     }
@@ -921,14 +901,10 @@ Read memory addresses from live session.
       "properties": {
         "frame": {
           "type": "integer"
-        },
-        "path": {
-          "type": "string"
         }
       },
       "required": [
-        "frame",
-        "path"
+        "frame"
       ],
       "type": "object"
     }
@@ -1016,14 +992,10 @@ Read contiguous memory range from live session.
       "properties": {
         "frame": {
           "type": "integer"
-        },
-        "path": {
-          "type": "string"
         }
       },
       "required": [
-        "frame",
-        "path"
+        "frame"
       ],
       "type": "object"
     }
@@ -1134,14 +1106,10 @@ Dump pointer table entries from live session.
       "properties": {
         "frame": {
           "type": "integer"
-        },
-        "path": {
-          "type": "string"
         }
       },
       "required": [
-        "frame",
-        "path"
+        "frame"
       ],
       "type": "object"
     }
@@ -1244,14 +1212,10 @@ Dump OAM entries from live session.
       "properties": {
         "frame": {
           "type": "integer"
-        },
-        "path": {
-          "type": "string"
         }
       },
       "required": [
-        "frame",
-        "path"
+        "frame"
       ],
       "type": "object"
     }
@@ -1363,14 +1327,10 @@ Dump structured entity bytes from live session.
       "properties": {
         "frame": {
           "type": "integer"
-        },
-        "path": {
-          "type": "string"
         }
       },
       "required": [
-        "frame",
-        "path"
+        "frame"
       ],
       "type": "object"
     }

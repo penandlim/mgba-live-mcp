@@ -132,6 +132,8 @@ snapshot in one call.
   the tool waits for completion before returning its snapshot.
 - `mgba_live_input_set` and `mgba_live_input_clear` update held keys but do not
   include a snapshot; call `mgba_live_status` to verify visually.
+- Automatic snapshots in tool responses include only `frame` metadata and image
+  content. Files are persisted only via `mgba_live_export_screenshot`.
 
 ## Local CLI (Dev/Debug)
 

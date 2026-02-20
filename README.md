@@ -18,6 +18,8 @@ If you need one-shot/headless runs instead of persistent sessions, see
 - Snapshot output: `mgba_live_export_screenshot` plus image snapshots returned
   by `status`/`attach`/`start_with_lua`/most live commands
 
+MCP reference: [docs/mcp-reference.md](docs/mcp-reference.md)
+
 ## Quick Start
 
 1. Install dependencies for this repo:
@@ -143,24 +145,6 @@ The MCP server wraps `scripts/mgba_live.py`.
 uv run python scripts/mgba_live.py --help
 uv run python scripts/mgba_live.py start --help
 uv run pytest
-```
-
-## Auto-Generated MCP Docs
-
-Generate a markdown reference of all MCP tools and schemas:
-
-```bash
-make mcp-docs
-```
-
-Output:
-
-- `docs/mcp-reference.md`
-
-CI/update check:
-
-```bash
-make mcp-docs-check
 ```
 
 Quality commands:

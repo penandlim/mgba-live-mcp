@@ -46,9 +46,7 @@ def test_export_screenshot_tool_maps_to_screenshot_command(monkeypatch: Any) -> 
     )
     payload = _first_payload(contents)
 
-    assert payload["tool"] == "mgba_live_export_screenshot"
-    assert payload["command"] == "screenshot"
-    assert payload["result"] == {"frame": 99, "path": "/tmp/screenshot.png"}
+    assert payload == {"frame": 99, "path": "/tmp/screenshot.png"}
     assert fake.calls == [
         {
             "command": "screenshot",
@@ -96,7 +94,35 @@ def test_status_tool_returns_screenshot_without_text(monkeypatch: Any) -> None:
     contents = asyncio.run(mcp_server.call_tool("mgba_live_status", {}))
     payload = _first_payload(contents)
 
-    assert payload["tool"] == "mgba_live_status"
-    assert payload["command"] == "status"
-    assert payload["result"] == {"session_id": "active-session", "alive": True}
+    assert payload["session_id"] == "active-session"
+    assert payload["alive"] is True
     assert payload["screenshot"] == {"frame": 100, "path": "/tmp/status.png"}
+
+
+def test_status_all_uses_session_from_payload_for_snapshot(monkeypatch: Any) -> None:
+    class _StatusAllController:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def run(self, command: str, args: list[str], *, timeout: float = 20.0) -> _Result:
+            self.calls.append({"command": command, "args": list(args), "timeout": timeout})
+            if command == "status" and args == ["--all"]:
+                return _Result({"value": [{"session_id": "session-a"}, {"session_id": "session-b"}]})
+            if command == "status":
+                raise AssertionError("status fallback should not run for --all when payload has sessions")
+            if command == "screenshot":
+                return _Result({"frame": 200, "path": "/tmp/status-all.png"})
+            raise AssertionError(f"unexpected command: {command}")
+
+    fake = _StatusAllController()
+    monkeypatch.setattr(mcp_server, "_controller", fake)
+
+    contents = asyncio.run(mcp_server.call_tool("mgba_live_status", {"all": True}))
+    payload = _first_payload(contents)
+
+    assert payload["value"] == [{"session_id": "session-a"}, {"session_id": "session-b"}]
+    assert payload["screenshot"] == {"frame": 200, "path": "/tmp/status-all.png"}
+    assert fake.calls == [
+        {"command": "status", "args": ["--all"], "timeout": 20.0},
+        {"command": "screenshot", "args": ["--session", "session-a"], "timeout": 20.0},
+    ]

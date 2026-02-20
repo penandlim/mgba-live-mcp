@@ -130,13 +130,8 @@ def test_run_lua_snapshot_waits_for_macro_completion_when_macro_key_returned(mon
     )
     payload = _first_payload(contents)
 
-    settle = payload["screenshot_settle"]
     assert payload["screenshot"] == {"frame": 104, "path": "/tmp/screenshot.png"}
-    assert settle["mode"] == "macro_key"
-    assert settle["macro_key"] == "__macro_wait_test"
-    assert settle["completed"] is True
-    assert settle["polls"] == 3
-    assert settle["waited_seconds"] >= 0
+    assert "screenshot_settle" not in payload
     assert [call["command"] for call in fake.calls] == ["run-lua", "run-lua", "run-lua", "run-lua", "screenshot"]
     assert fake.calls[0]["args"] == ["--code", "return 11", "--session", "session-123"]
     assert "__macro_wait_test" in fake.calls[1]["args"][1]

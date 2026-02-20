@@ -174,14 +174,12 @@ def test_mcp_start_tool_forwards_core_start_args(monkeypatch: Any) -> None:
     captured: dict[str, Any] = {}
 
     async def fake_run_with_snapshot(
-        tool_name: str,
         live_command: str,
         command_args: list[str],
         *,
         timeout: float,
         **_: Any,
     ) -> list[Any]:
-        captured["tool_name"] = tool_name
         captured["live_command"] = live_command
         captured["command_args"] = command_args
         captured["timeout"] = timeout
@@ -206,7 +204,6 @@ def test_mcp_start_tool_forwards_core_start_args(monkeypatch: Any) -> None:
     finally:
         mcp_server._run_with_snapshot = original
 
-    assert captured["tool_name"] == "mgba_live_start"
     assert captured["live_command"] == "start"
     assert captured["command_args"][:2] == ["--rom", str(rom)]
     assert "--script" not in captured["command_args"]
@@ -262,10 +259,9 @@ def test_mcp_start_with_lua_file_mode_runs_start_lua_and_screenshot(monkeypatch:
     )
     payload = _first_payload(contents)
 
-    assert payload["tool"] == "mgba_live_start_with_lua"
-    assert payload["command"] == "start-with-lua"
-    assert payload["start_result"] == {"status": "started", "session_id": "session-123", "pid": 4321}
-    assert payload["lua_result"] == {"frame": 100, "data": {"result": {"ok": True}}}
+    assert payload["session_id"] == "session-123"
+    assert payload["pid"] == 4321
+    assert payload["lua"] == {"ok": True}
     assert payload["screenshot"] == {"frame": 102, "path": "/tmp/screenshot.png"}
     assert [call["command"] for call in fake.calls] == ["start", "run-lua", "run-lua", "screenshot"]
     assert fake.calls[1]["args"] == ["--file", "/tmp/startup.lua", "--session", "session-123"]
@@ -290,8 +286,8 @@ def test_mcp_start_with_lua_code_mode_runs_start_lua_and_screenshot(monkeypatch:
     )
     payload = _first_payload(contents)
 
-    assert payload["tool"] == "mgba_live_start_with_lua"
-    assert payload["lua_result"] == {"frame": 100, "data": {"result": {"ok": True}}}
+    assert payload["session_id"] == "session-123"
+    assert payload["lua"] == {"ok": True}
     assert payload["screenshot"] == {"frame": 102, "path": "/tmp/screenshot.png"}
     assert [call["command"] for call in fake.calls] == ["start", "run-lua", "run-lua", "screenshot"]
     assert fake.calls[1]["args"] == ["--code", "return 77", "--session", "session-123"]

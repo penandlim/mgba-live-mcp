@@ -19,8 +19,8 @@ server = Server("mgba-live-mcp")
 _controller = LiveControllerClient()
 
 
-def _text_content(payload: dict[str, Any]) -> TextContent:
-    return TextContent(type="text", text=json.dumps(payload, indent=2))
+def _text_content(payload: Any) -> TextContent:
+    return TextContent(type="text", text=json.dumps(payload, separators=(",", ":")))
 
 
 def _text_payload(content: TextContent | ImageContent) -> dict[str, Any]:
@@ -68,9 +68,28 @@ def _image_content(result: dict[str, Any]) -> ImageContent | None:
     return ImageContent(type="image", data=encoded, mimeType="image/png")
 
 
+def _extract_session_id(payload: Any) -> str | None:
+    if isinstance(payload, dict):
+        session_id = payload.get("session_id")
+        if isinstance(session_id, str) and session_id:
+            return session_id
+        for key in ("sessions", "value"):
+            nested = payload.get(key)
+            nested_session = _extract_session_id(nested)
+            if nested_session:
+                return nested_session
+        return None
+    if isinstance(payload, list):
+        for item in payload:
+            nested_session = _extract_session_id(item)
+            if nested_session:
+                return nested_session
+    return None
+
+
 async def _resolve_snapshot_session(
     command_args: list[str],
-    command_payload: dict[str, Any],
+    command_payload: Any,
     *,
     timeout: float,
 ) -> str | None:
@@ -78,9 +97,9 @@ async def _resolve_snapshot_session(
         if value == "--session" and index + 1 < len(command_args):
             return str(command_args[index + 1])
 
-    session_id = command_payload.get("session_id")
-    if isinstance(session_id, str) and session_id:
-        return session_id
+    payload_session_id = _extract_session_id(command_payload)
+    if payload_session_id:
+        return payload_session_id
 
     # Some CLI responses (for example run-lua) do not include session id.
     # Fall back to status for active-session resolution before screenshot capture.
@@ -89,12 +108,7 @@ async def _resolve_snapshot_session(
     except Exception:
         return None
 
-    status_payload = status_result.payload
-    if isinstance(status_payload, dict):
-        active_session = status_payload.get("session_id")
-        if isinstance(active_session, str) and active_session:
-            return active_session
-    return None
+    return _extract_session_id(status_result.payload)
 
 
 def _extract_run_lua_result(command_payload: dict[str, Any]) -> Any:
@@ -175,7 +189,6 @@ async def _wait_for_macro_completion(
 
 
 async def _run_with_snapshot(
-    tool_name: str,
     live_command: str,
     command_args: list[str],
     *,
@@ -183,16 +196,13 @@ async def _run_with_snapshot(
     session_id: str | None = None,
     include_snapshot: bool = True,
     ensure_post_lua_settle: bool = False,
-    next_step: str | None = None,
 ) -> list[TextContent | ImageContent]:
     command_result = await _controller.run(live_command, command_args, timeout=timeout)
-    payload = {
-        "tool": tool_name,
-        "command": live_command,
-        "result": command_result.payload,
-    }
-    if next_step:
-        payload["next_step"] = next_step
+    payload: dict[str, Any]
+    if isinstance(command_result.payload, dict):
+        payload = dict(command_result.payload)
+    else:
+        payload = {"value": command_result.payload}
     image_contents: list[ImageContent] = []
 
     if not include_snapshot:
@@ -203,30 +213,20 @@ async def _run_with_snapshot(
         command_result.payload,
         timeout=timeout,
     )
-    if resolved_session is None and isinstance(command_result.payload, list) and command_result.payload:
-        first = command_result.payload[0]
-        if isinstance(first, dict):
-            first_session = first.get("session_id")
-            if isinstance(first_session, str) and first_session:
-                resolved_session = first_session
-
     if not resolved_session:
-        # no active session identified; skip screenshot capture.
-        payload["screenshot"] = "skipped-no-session"
         return [_text_content(payload)]
 
     if ensure_post_lua_settle:
         macro_key = _extract_run_lua_macro_key(command_result.payload)
         if macro_key:
             try:
-                payload["screenshot_settle"] = await _wait_for_macro_completion(
+                await _wait_for_macro_completion(
                     session_id=str(resolved_session),
                     macro_key=macro_key,
                     timeout=max(timeout, 20.0),
                 )
-            except Exception as exc:
-                # Keep primary command responses usable even if settle fails.
-                payload["screenshot_settle_error"] = str(exc)
+            except Exception:
+                pass
         else:
             # For run-lua calls, issue a no-op Lua command before screenshot capture
             # so the image reflects state after the Lua command has fully completed.
@@ -236,21 +236,19 @@ async def _run_with_snapshot(
                     ["--code", "return true", "--session", str(resolved_session)],
                     timeout=max(timeout, 20.0),
                 )
-            except Exception as exc:
-                # Keep primary command responses usable even if settle fails.
-                payload["screenshot_settle_error"] = str(exc)
+            except Exception:
+                pass
 
     shot_args = ["--session", str(resolved_session)]
     try:
         shot_result = await _controller.run("screenshot", shot_args, timeout=max(timeout, 20.0))
         screenshot_payload = shot_result.payload
         payload["screenshot"] = screenshot_payload
-        shot_image = _image_content(screenshot_payload)
+        shot_image = _image_content(screenshot_payload) if isinstance(screenshot_payload, dict) else None
         if shot_image is not None:
             image_contents.append(shot_image)
-    except Exception as exc:
-        # Keep primary command responses usable even if auto snapshot capture fails.
-        payload["screenshot_error"] = str(exc)
+    except Exception:
+        pass
 
     return [_text_content(payload), *image_contents]
 
@@ -507,7 +505,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             )
         cmd_args = _build_start_command_args(args)
         return await _run_with_snapshot(
-            "mgba_live_start",
             "start",
             cmd_args,
             timeout=timeout,
@@ -536,7 +533,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         lua_args.extend(["--session", session_id])
         try:
             lua_contents = await _run_with_snapshot(
-                "mgba_live_run_lua",
                 "run-lua",
                 lua_args,
                 timeout=timeout,
@@ -551,16 +547,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             ) from exc
 
         lua_payload = _text_payload(lua_contents[0])
-        combined_payload = {
-            "tool": "mgba_live_start_with_lua",
-            "command": "start-with-lua",
-            "start_result": start_payload,
-            "lua_result": lua_payload.get("result"),
-        }
-        for key, value in lua_payload.items():
-            if key in {"tool", "command", "result"}:
-                continue
-            combined_payload[key] = value
+        combined_payload: dict[str, Any] = {"session_id": session_id}
+        if isinstance(start_payload, dict) and "pid" in start_payload:
+            combined_payload["pid"] = start_payload["pid"]
+
+        lua_result = _extract_run_lua_result(lua_payload)
+        combined_payload["lua"] = lua_result if lua_result is not None else lua_payload
+        if "screenshot" in lua_payload:
+            combined_payload["screenshot"] = lua_payload["screenshot"]
 
         image_contents = [content for content in lua_contents if getattr(content, "type", None) == "image"]
         return [_text_content(combined_payload), *image_contents]
@@ -568,7 +562,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         cmd_args = _build_session_arg(args)
         if pid := args.get("pid"):
             cmd_args.extend(["--pid", str(int(pid))])
-        return await _run_with_snapshot("mgba_live_attach", "attach", cmd_args, timeout=timeout)
+        return await _run_with_snapshot("attach", cmd_args, timeout=timeout)
 
     if name == "mgba_live_status":
         cmd_args = []
@@ -576,7 +570,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             cmd_args.append("--all")
         cmd_args.extend(_build_session_arg(args))
         return await _run_with_snapshot(
-            "mgba_live_status",
             "status",
             cmd_args,
             timeout=timeout,
@@ -585,7 +578,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         cmd_args = _build_session_arg(args)
         if grace := args.get("grace"):
             cmd_args.extend(["--grace", str(float(grace))])
-        return await _run_with_snapshot("mgba_live_stop", "stop", cmd_args, timeout=timeout, include_snapshot=False)
+        return await _run_with_snapshot("stop", cmd_args, timeout=timeout, include_snapshot=False)
 
     if name == "mgba_live_run_lua":
         cmd_args = []
@@ -597,7 +590,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             raise ValueError("One of file or code is required")
         cmd_args.extend(_build_session_arg(args))
         return await _run_with_snapshot(
-            "mgba_live_run_lua",
             "run-lua",
             cmd_args,
             timeout=timeout,
@@ -612,24 +604,20 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             cmd_args.extend(["--frames", str(int(frames))])
         cmd_args.extend(_build_session_arg(args))
         return await _run_with_snapshot(
-            "mgba_live_input_tap",
             "input-tap",
             cmd_args,
             timeout=timeout,
             include_snapshot=False,
-            next_step="Call mgba_live_status after input to assess the post-input view.",
         )
 
     if name == "mgba_live_input_set":
         cmd_args = ["--keys", *_parse_args_list(args.get("keys"))]
         cmd_args.extend(_build_session_arg(args))
         return await _run_with_snapshot(
-            "mgba_live_input_set",
             "input-set",
             cmd_args,
             timeout=timeout,
             include_snapshot=False,
-            next_step="Call mgba_live_status after input to assess the post-input view.",
         )
 
     if name == "mgba_live_input_clear":
@@ -638,12 +626,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             cmd_args.extend(["--keys", *_parse_args_list(keys)])
         cmd_args.extend(_build_session_arg(args))
         return await _run_with_snapshot(
-            "mgba_live_input_clear",
             "input-clear",
             cmd_args,
             timeout=timeout,
             include_snapshot=False,
-            next_step="Call mgba_live_status after input to assess the post-input view.",
         )
 
     if name == "mgba_live_export_screenshot":
@@ -652,8 +638,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             cmd_args.extend(["--out", str(out)])
         cmd_args.extend(_build_session_arg(args))
         command_result = await _controller.run("screenshot", cmd_args, timeout=timeout)
-        contents = [_text_content({"tool": "mgba_live_export_screenshot", "command": "screenshot", "result": command_result.payload})]
-        shot_image = _image_content(command_result.payload)
+        payload: dict[str, Any]
+        if isinstance(command_result.payload, dict):
+            payload = dict(command_result.payload)
+        else:
+            payload = {"value": command_result.payload}
+        contents = [_text_content(payload)]
+        shot_image = _image_content(command_result.payload) if isinstance(command_result.payload, dict) else None
         if shot_image is not None:
             contents.append(shot_image)
         return contents
@@ -661,26 +652,26 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
     if name == "mgba_live_read_memory":
         cmd_args = ["--addresses", *_parse_args_list(args.get("addresses"))]
         cmd_args.extend(_build_session_arg(args))
-        return await _run_with_snapshot("mgba_live_read_memory", "read-memory", cmd_args, timeout=timeout)
+        return await _run_with_snapshot("read-memory", cmd_args, timeout=timeout)
 
     if name == "mgba_live_read_range":
         cmd_args = ["--start", str(args["start"]), "--length", str(int(args["length"]))]
         cmd_args.extend(_build_session_arg(args))
-        return await _run_with_snapshot("mgba_live_read_range", "read-range", cmd_args, timeout=timeout)
+        return await _run_with_snapshot("read-range", cmd_args, timeout=timeout)
 
     if name == "mgba_live_dump_pointers":
         cmd_args = ["--start", str(args["start"]), "--count", str(int(args["count"]))]
         if width := args.get("width"):
             cmd_args.extend(["--width", str(int(width))])
         cmd_args.extend(_build_session_arg(args))
-        return await _run_with_snapshot("mgba_live_dump_pointers", "dump-pointers", cmd_args, timeout=timeout)
+        return await _run_with_snapshot("dump-pointers", cmd_args, timeout=timeout)
 
     if name == "mgba_live_dump_oam":
         cmd_args = []
         if count := args.get("count"):
             cmd_args.extend(["--count", str(int(count))])
         cmd_args.extend(_build_session_arg(args))
-        return await _run_with_snapshot("mgba_live_dump_oam", "dump-oam", cmd_args, timeout=timeout)
+        return await _run_with_snapshot("dump-oam", cmd_args, timeout=timeout)
 
     if name == "mgba_live_dump_entities":
         cmd_args = []
@@ -691,7 +682,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         if count := args.get("count"):
             cmd_args.extend(["--count", str(count)])
         cmd_args.extend(_build_session_arg(args))
-        return await _run_with_snapshot("mgba_live_dump_entities", "dump-entities", cmd_args, timeout=timeout)
+        return await _run_with_snapshot("dump-entities", cmd_args, timeout=timeout)
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 

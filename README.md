@@ -41,7 +41,8 @@ Notes:
 - `mgba_live_start` is MCP bootstrap-only and does not accept `script` or return a screenshot.
 - `mgba_live_start_with_lua` starts a new session, runs `file` or `code`, then returns the post-Lua screenshot/image.
 - CLI `scripts/mgba_live.py start` still supports `--script` startup Lua paths passed directly to mGBA.
-- Input commands (`mgba_live_input_*`) return action data and a next-step hint; call `mgba_live_status` for post-input visual assessment.
+- MCP tool text payloads return direct command fields (no `tool`/`command`/`result` wrapper).
+- Input commands (`mgba_live_input_*`) return action data; call `mgba_live_status` for post-input visual assessment.
 - `mgba_live_export_screenshot` is the screenshot tool name.
 - Screenshot responses do not include encoded image text blocks.
 - `mgba_live_export_screenshot` always writes and returns a PNG `path` (defaults to session screenshots directory when `out` is omitted).

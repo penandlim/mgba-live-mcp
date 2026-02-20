@@ -49,7 +49,7 @@ def test_export_screenshot_tool_maps_to_screenshot_command(monkeypatch: Any) -> 
 
     assert payload["tool"] == "mgba_live_export_screenshot"
     assert payload["command"] == "screenshot"
-    assert payload["result"] == {"frame": 99, "text": {"format": "none"}}
+    assert payload["result"] == {"frame": 99}
     assert fake.calls == [
         {
             "command": "screenshot",
@@ -82,3 +82,28 @@ def test_list_tools_exposes_export_screenshot_name() -> None:
     names = {tool.name for tool in tools}
     assert "mgba_live_export_screenshot" in names
     assert "mgba_live_screenshot" not in names
+
+
+def test_status_tool_strips_screenshot_text_block(monkeypatch: Any) -> None:
+    class _StatusController:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def run(self, command: str, args: list[str], *, timeout: float = 20.0) -> _Result:
+            self.calls.append({"command": command, "args": list(args), "timeout": timeout})
+            if command == "status":
+                return _Result({"session_id": "active-session", "alive": True})
+            if command == "screenshot":
+                return _Result({"frame": 100, "text": {"format": "none"}})
+            raise AssertionError(f"unexpected command: {command}")
+
+    fake = _StatusController()
+    monkeypatch.setattr(mcp_server, "_controller", fake)
+
+    contents = asyncio.run(mcp_server.call_tool("mgba_live_status", {}))
+    payload = _first_payload(contents)
+
+    assert payload["tool"] == "mgba_live_status"
+    assert payload["command"] == "status"
+    assert payload["result"] == {"session_id": "active-session", "alive": True}
+    assert payload["screenshot"] == {"frame": 100}

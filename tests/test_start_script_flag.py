@@ -258,7 +258,7 @@ def test_mcp_start_with_lua_file_mode_runs_start_lua_and_screenshot(monkeypatch:
     assert payload["command"] == "start-with-lua"
     assert payload["start_result"] == {"status": "started", "session_id": "session-123", "pid": 4321}
     assert payload["lua_result"] == {"frame": 100, "data": {"result": {"ok": True}}}
-    assert payload["screenshot"] == {"frame": 102, "text": {"format": "none"}}
+    assert payload["screenshot"] == {"frame": 102}
     assert [call["command"] for call in fake.calls] == ["start", "run-lua", "run-lua", "screenshot"]
     assert fake.calls[1]["args"] == ["--file", "/tmp/startup.lua", "--session", "session-123"]
     assert fake.calls[2]["args"] == ["--code", "return true", "--session", "session-123"]
@@ -284,7 +284,7 @@ def test_mcp_start_with_lua_code_mode_runs_start_lua_and_screenshot(monkeypatch:
 
     assert payload["tool"] == "mgba_live_start_with_lua"
     assert payload["lua_result"] == {"frame": 100, "data": {"result": {"ok": True}}}
-    assert payload["screenshot"] == {"frame": 102, "text": {"format": "none"}}
+    assert payload["screenshot"] == {"frame": 102}
     assert [call["command"] for call in fake.calls] == ["start", "run-lua", "run-lua", "screenshot"]
     assert fake.calls[1]["args"] == ["--code", "return 77", "--session", "session-123"]
 

@@ -47,6 +47,14 @@ def _parse_args_list(value: list[str] | None) -> list[str]:
     return [str(v) for v in value]
 
 
+def _strip_screenshot_text_block(payload: dict[str, Any]) -> dict[str, Any]:
+    if "text" not in payload:
+        return payload
+    sanitized = dict(payload)
+    sanitized.pop("text", None)
+    return sanitized
+
+
 def _image_bytes_from_screenshot(result: dict[str, Any]) -> tuple[str, bytes] | None:
     text = result.get("text")
     if not isinstance(text, dict):
@@ -219,6 +227,7 @@ async def _run_with_snapshot(
     snapshot_text_format: str = "hex",
     snapshot_max_bytes: int = 0,
     ensure_post_lua_settle: bool = False,
+    strip_screenshot_text: bool = False,
     next_step: str | None = None,
 ) -> list[TextContent | ImageContent]:
     command_result = await _controller.run(live_command, command_args, timeout=timeout)
@@ -281,8 +290,12 @@ async def _run_with_snapshot(
         shot_args.extend(["--text-max-bytes", str(snapshot_max_bytes)])
     try:
         shot_result = await _controller.run("screenshot", shot_args, timeout=max(timeout, 20.0))
-        payload["screenshot"] = shot_result.payload
-        shot_image = _image_content(shot_result.payload)
+        screenshot_payload = shot_result.payload
+        if strip_screenshot_text:
+            payload["screenshot"] = _strip_screenshot_text_block(screenshot_payload)
+        else:
+            payload["screenshot"] = screenshot_payload
+        shot_image = _image_content(screenshot_payload)
         if shot_image is not None:
             image_contents.append(shot_image)
     except Exception as exc:
@@ -582,6 +595,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
                 timeout=timeout,
                 session_id=session_id,
                 ensure_post_lua_settle=True,
+                strip_screenshot_text=True,
             )
         except Exception as exc:
             raise RuntimeError(
@@ -615,7 +629,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         if args.get("all"):
             cmd_args.append("--all")
         cmd_args.extend(_build_session_arg(args))
-        return await _run_with_snapshot("mgba_live_status", "status", cmd_args, timeout=timeout)
+        return await _run_with_snapshot(
+            "mgba_live_status",
+            "status",
+            cmd_args,
+            timeout=timeout,
+            strip_screenshot_text=True,
+        )
     if name == "mgba_live_stop":
         cmd_args = _build_session_arg(args)
         if grace := args.get("grace"):
@@ -700,7 +720,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             cmd_args.extend(["--text-max-bytes", str(int(text_max))])
         cmd_args.extend(_build_session_arg(args))
         command_result = await _controller.run("screenshot", cmd_args, timeout=timeout)
-        contents = [_text_content({"tool": tool_name, "command": "screenshot", "result": command_result.payload})]
+        result_payload = _strip_screenshot_text_block(command_result.payload)
+        contents = [_text_content({"tool": tool_name, "command": "screenshot", "result": result_payload})]
         shot_image = _image_content(command_result.payload)
         if shot_image is not None:
             contents.append(shot_image)

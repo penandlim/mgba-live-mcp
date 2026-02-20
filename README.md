@@ -88,7 +88,8 @@ Or set `mgba_path` per tool call, for example:
 - Execute Lua against a running process.
 - Read memory and pointer tables.
 - Dump OAM and entity data.
-- Use `mgba_live_status` after input commands for reliable post-input view checks.
+- `mgba_live_input_tap` supports `wait_frames` and returns post-input screenshot/image.
+- Use `mgba_live_status` after `mgba_live_input_set` / `mgba_live_input_clear` for post-input view checks.
 - PNG screenshot exports with optional custom `out` path.
 
 ## Run
@@ -119,7 +120,8 @@ Notes:
 - `mgba_live_start_with_lua` starts a new session, runs `file` or `code`, then returns the post-Lua screenshot/image.
 - CLI `scripts/mgba_live.py start` still supports `--script` startup Lua paths passed directly to mGBA.
 - MCP tool text payloads return direct command fields (no `tool`/`command`/`result` wrapper).
-- Input commands (`mgba_live_input_*`) return action data; call `mgba_live_status` for post-input visual assessment.
+- `mgba_live_input_tap` returns screenshot/image and accepts `wait_frames` (capture at `input_frame + tap_duration + wait_frames`).
+- `mgba_live_input_set` / `mgba_live_input_clear` return action data; call `mgba_live_status` for visual assessment.
 - `mgba_live_export_screenshot` is the screenshot tool name.
 - Screenshot responses do not include encoded image text blocks.
 - `mgba_live_export_screenshot` always writes and returns a PNG `path` (defaults to session screenshots directory when `out` is omitted).

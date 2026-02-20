@@ -87,15 +87,22 @@ def _extract_session_id(payload: Any) -> str | None:
     return None
 
 
+def _session_arg_value(command_args: list[str]) -> str | None:
+    for index, value in enumerate(command_args):
+        if value == "--session" and index + 1 < len(command_args):
+            return str(command_args[index + 1])
+    return None
+
+
 async def _resolve_snapshot_session(
     command_args: list[str],
     command_payload: Any,
     *,
     timeout: float,
 ) -> str | None:
-    for index, value in enumerate(command_args):
-        if value == "--session" and index + 1 < len(command_args):
-            return str(command_args[index + 1])
+    session_from_args = _session_arg_value(command_args)
+    if session_from_args:
+        return session_from_args
 
     payload_session_id = _extract_session_id(command_payload)
     if payload_session_id:
@@ -129,6 +136,33 @@ def _extract_run_lua_macro_key(command_payload: dict[str, Any]) -> str | None:
     macro_key = result.get("macro_key")
     if isinstance(macro_key, str) and macro_key:
         return macro_key
+    return None
+
+
+def _extract_response_frame(command_payload: Any) -> int | None:
+    if not isinstance(command_payload, dict):
+        return None
+    frame = command_payload.get("frame")
+    if isinstance(frame, bool):
+        return None
+    if isinstance(frame, (int, float)):
+        return int(frame)
+    return None
+
+
+def _extract_input_tap_duration(command_payload: Any) -> int | None:
+    if not isinstance(command_payload, dict):
+        return None
+    data = command_payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    duration = data.get("duration")
+    if isinstance(duration, bool):
+        return None
+    if isinstance(duration, (int, float)):
+        value = int(duration)
+        if value >= 1:
+            return value
     return None
 
 
@@ -188,6 +222,38 @@ async def _wait_for_macro_completion(
         await asyncio.sleep(poll_interval)
 
 
+async def _wait_for_target_frame(
+    *,
+    session_id: str,
+    target_frame: int,
+    timeout: float,
+    poll_seconds: float = 0.05,
+) -> int:
+    settle_timeout = max(float(timeout), 0.0)
+    poll_interval = max(float(poll_seconds), 0.01)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + settle_timeout
+    poll_command_timeout = max(1.0, min(5.0, settle_timeout if settle_timeout > 0 else 1.0))
+
+    while True:
+        poll_result = await _controller.run(
+            "run-lua",
+            ["--code", "return true", "--session", str(session_id)],
+            timeout=poll_command_timeout,
+        )
+        current_frame = _extract_response_frame(poll_result.payload)
+        if current_frame is None:
+            raise RuntimeError("run-lua poll did not return a frame.")
+
+        if current_frame >= target_frame:
+            return current_frame
+
+        if settle_timeout <= 0 or loop.time() >= deadline:
+            raise TimeoutError(f"Timed out waiting for frame >= {target_frame}; last_frame={current_frame}")
+
+        await asyncio.sleep(poll_interval)
+
+
 async def _run_with_snapshot(
     live_command: str,
     command_args: list[str],
@@ -196,6 +262,9 @@ async def _run_with_snapshot(
     session_id: str | None = None,
     include_snapshot: bool = True,
     ensure_post_lua_settle: bool = False,
+    require_snapshot_session: bool = False,
+    require_screenshot: bool = False,
+    input_tap_wait_frames: int | None = None,
 ) -> list[TextContent | ImageContent]:
     command_result = await _controller.run(live_command, command_args, timeout=timeout)
     payload: dict[str, Any]
@@ -214,7 +283,33 @@ async def _run_with_snapshot(
         timeout=timeout,
     )
     if not resolved_session:
+        if require_snapshot_session:
+            requested_session = session_id or _session_arg_value(command_args) or "unknown"
+            raise RuntimeError(
+                f"Unable to resolve session_id for screenshot capture after '{live_command}' "
+                f"(requested_session={requested_session})."
+            )
         return [_text_content(payload)]
+
+    if input_tap_wait_frames is not None:
+        tap_frame = _extract_response_frame(command_result.payload)
+        tap_duration = _extract_input_tap_duration(command_result.payload)
+        if tap_frame is None or tap_duration is None:
+            raise RuntimeError(
+                f"Input-tap response missing frame/duration for session '{resolved_session}'."
+            )
+        target_frame = tap_frame + tap_duration + int(input_tap_wait_frames)
+        try:
+            await _wait_for_target_frame(
+                session_id=str(resolved_session),
+                target_frame=target_frame,
+                timeout=max(timeout, 20.0),
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Post-tap wait failed for session '{resolved_session}' "
+                f"(target_frame={target_frame}). Original error: {exc}"
+            ) from exc
 
     if ensure_post_lua_settle:
         macro_key = _extract_run_lua_macro_key(command_result.payload)
@@ -247,8 +342,11 @@ async def _run_with_snapshot(
         shot_image = _image_content(screenshot_payload) if isinstance(screenshot_payload, dict) else None
         if shot_image is not None:
             image_contents.append(shot_image)
-    except Exception:
-        pass
+    except Exception as exc:
+        if require_screenshot:
+            raise RuntimeError(
+                f"Screenshot capture failed for session '{resolved_session}'. Original error: {exc}"
+            ) from exc
 
     return [_text_content(payload), *image_contents]
 
@@ -371,13 +469,19 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="mgba_live_input_tap",
-            description="Tap a key for N frames. Use mgba_live_status after input for visual verification.",
+            description="Tap a key for N frames, optionally wait additional frames after release, then return a screenshot.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session": {"type": "string"},
                     "key": {"type": "string", "description": "A/B/START/SELECT/UP/DOWN/LEFT/RIGHT/L/R."},
                     "frames": {"type": "integer", "default": 1},
+                    "wait_frames": {
+                        "type": "integer",
+                        "default": 0,
+                        "minimum": 0,
+                        "description": "Additional frames to wait after tap release before screenshot capture.",
+                    },
                     "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
                 },
                 "required": ["key"],
@@ -599,6 +703,19 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
     if name == "mgba_live_input_tap":
         if "key" not in args:
             raise ValueError("key is required")
+        wait_frames_raw = args.get("wait_frames", 0)
+        if wait_frames_raw is None:
+            wait_frames = 0
+        elif isinstance(wait_frames_raw, bool):
+            raise ValueError("wait_frames must be a non-negative integer")
+        elif isinstance(wait_frames_raw, int):
+            wait_frames = wait_frames_raw
+        elif isinstance(wait_frames_raw, float) and wait_frames_raw.is_integer():
+            wait_frames = int(wait_frames_raw)
+        else:
+            raise ValueError("wait_frames must be a non-negative integer")
+        if wait_frames < 0:
+            raise ValueError("wait_frames must be >= 0")
         cmd_args = ["--key", str(args["key"])]
         if frames := args.get("frames"):
             cmd_args.extend(["--frames", str(int(frames))])
@@ -607,7 +724,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             "input-tap",
             cmd_args,
             timeout=timeout,
-            include_snapshot=False,
+            require_snapshot_session=True,
+            require_screenshot=True,
+            input_tap_wait_frames=wait_frames,
         )
 
     if name == "mgba_live_input_set":

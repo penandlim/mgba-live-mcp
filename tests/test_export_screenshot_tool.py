@@ -21,7 +21,7 @@ class _FakeController:
         self.calls.append({"command": command, "args": list(args), "timeout": timeout})
         if command != "screenshot":
             raise AssertionError(f"unexpected command: {command}")
-        return _Result({"frame": 99, "text": {"format": "none"}})
+        return _Result({"frame": 99, "path": "/tmp/screenshot.png"})
 
 
 def _first_payload(contents: list[Any]) -> dict[str, Any]:
@@ -40,7 +40,6 @@ def test_export_screenshot_tool_maps_to_screenshot_command(monkeypatch: Any) -> 
             "mgba_live_export_screenshot",
             {
                 "session": "session-123",
-                "text_format": "none",
                 "timeout": 9.0,
             },
         )
@@ -49,42 +48,36 @@ def test_export_screenshot_tool_maps_to_screenshot_command(monkeypatch: Any) -> 
 
     assert payload["tool"] == "mgba_live_export_screenshot"
     assert payload["command"] == "screenshot"
-    assert payload["result"] == {"frame": 99}
+    assert payload["result"] == {"frame": 99, "path": "/tmp/screenshot.png"}
     assert fake.calls == [
         {
             "command": "screenshot",
-            "args": ["--text-format", "none", "--session", "session-123"],
+            "args": ["--session", "session-123"],
             "timeout": 9.0,
         }
     ]
 
 
-def test_legacy_screenshot_tool_name_is_an_alias(monkeypatch: Any) -> None:
-    fake = _FakeController()
-    monkeypatch.setattr(mcp_server, "_controller", fake)
-
-    contents = asyncio.run(
-        mcp_server.call_tool(
-            "mgba_live_screenshot",
-            {
-                "text_format": "none",
-            },
-        )
-    )
-    payload = _first_payload(contents)
-
-    assert payload["tool"] == "mgba_live_export_screenshot"
-    assert payload["command"] == "screenshot"
+def test_legacy_screenshot_tool_name_is_removed() -> None:
+    contents = asyncio.run(mcp_server.call_tool("mgba_live_screenshot", {}))
+    first = contents[0]
+    assert getattr(first, "type", None) == "text"
+    assert first.text == "Unknown tool: mgba_live_screenshot"
 
 
 def test_list_tools_exposes_export_screenshot_name() -> None:
     tools = asyncio.run(mcp_server.list_tools())
-    names = {tool.name for tool in tools}
+    by_name = {tool.name: tool for tool in tools}
+    names = set(by_name)
     assert "mgba_live_export_screenshot" in names
     assert "mgba_live_screenshot" not in names
+    screenshot_props = by_name["mgba_live_export_screenshot"].inputSchema["properties"]
+    assert "text_format" not in screenshot_props
+    assert "text_max_bytes" not in screenshot_props
+    assert "png" not in screenshot_props
 
 
-def test_status_tool_strips_screenshot_text_block(monkeypatch: Any) -> None:
+def test_status_tool_returns_screenshot_without_text(monkeypatch: Any) -> None:
     class _StatusController:
         def __init__(self) -> None:
             self.calls: list[dict[str, Any]] = []
@@ -94,7 +87,7 @@ def test_status_tool_strips_screenshot_text_block(monkeypatch: Any) -> None:
             if command == "status":
                 return _Result({"session_id": "active-session", "alive": True})
             if command == "screenshot":
-                return _Result({"frame": 100, "text": {"format": "none"}})
+                return _Result({"frame": 100, "path": "/tmp/status.png"})
             raise AssertionError(f"unexpected command: {command}")
 
     fake = _StatusController()
@@ -106,4 +99,4 @@ def test_status_tool_strips_screenshot_text_block(monkeypatch: Any) -> None:
     assert payload["tool"] == "mgba_live_status"
     assert payload["command"] == "status"
     assert payload["result"] == {"session_id": "active-session", "alive": True}
-    assert payload["screenshot"] == {"frame": 100}
+    assert payload["screenshot"] == {"frame": 100, "path": "/tmp/status.png"}

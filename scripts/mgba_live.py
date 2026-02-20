@@ -8,7 +8,6 @@ Lua bridge script over command/response files.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 import shutil
@@ -27,8 +26,6 @@ BRIDGE_SCRIPT = SCRIPT_PATH.with_name("mgba_live_bridge.lua")
 RUNTIME_ROOT = SKILL_DIR / ".runtime"
 SESSIONS_DIR = RUNTIME_ROOT / "sessions"
 ACTIVE_SESSION_FILE = RUNTIME_ROOT / "active_session"
-PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-PNG_IEND = b"\x00\x00\x00\x00IEND\xaeB`\x82"
 
 
 def now_utc() -> str:
@@ -183,42 +180,6 @@ def get_active_session_id() -> str | None:
 def default_fps_target() -> float:
     # Default to 120 so script mode avoids common half-speed behavior at 60.
     return 120.0
-
-
-def read_stable_png(path: Path, timeout: float = 2.0, poll_interval: float = 0.05) -> bytes:
-    """Read a screenshot after file size settles and PNG markers look complete."""
-    deadline = time.time() + timeout
-    last_size = -1
-    stable_count = 0
-
-    while time.time() < deadline:
-        try:
-            if path.exists():
-                size = path.stat().st_size
-                if size > 0 and size == last_size:
-                    stable_count += 1
-                else:
-                    stable_count = 0
-                    last_size = size
-
-                if stable_count >= 2:
-                    raw = path.read_bytes()
-                    if raw.startswith(PNG_SIGNATURE) and raw.endswith(PNG_IEND):
-                        return raw
-        except OSError:
-            pass
-        time.sleep(poll_interval)
-
-    try:
-        raw = path.read_bytes()
-    except OSError as exc:
-        raise SystemExit(f"Failed to read screenshot file: {path} ({exc})") from exc
-
-    if not raw.startswith(PNG_SIGNATURE):
-        raise SystemExit(f"Screenshot is not a valid PNG header: {path}")
-    if not raw.endswith(PNG_IEND):
-        raise SystemExit(f"Screenshot PNG appears incomplete: {path}")
-    return raw
 
 
 def detect_mgba_binary() -> str:
@@ -617,52 +578,16 @@ def cmd_input_clear(args: argparse.Namespace) -> None:
 
 def cmd_screenshot(args: argparse.Namespace) -> None:
     session = resolve_session(args)
-    if args.out and not args.png:
-        raise SystemExit("--out requires --png.")
-
-    if args.png and args.out:
+    if args.out:
         out_path = Path(args.out).resolve()
-    elif args.png:
+    else:
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         out_path = Path(session["session_dir"]) / "screenshots" / f"screenshot-{ts}.png"
-    else:
-        out_path = Path(session["session_dir"]) / "screenshots" / f".tmp-screenshot-{uuid.uuid4().hex}.png"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     response = send_command(session, "screenshot", {"path": str(out_path)}, timeout=args.timeout)
     data = handle_response(response)
     result_path = Path(data.get("path") if isinstance(data, dict) else str(out_path))
-    try:
-        payload: dict[str, Any] = {"frame": response.get("frame")}
-        if args.png:
-            payload["path"] = str(result_path)
-
-        if args.text_format != "none":
-            raw = read_stable_png(result_path)
-            clipped = raw
-            truncated = False
-            if args.text_max_bytes > 0 and len(raw) > args.text_max_bytes:
-                clipped = raw[: args.text_max_bytes]
-                truncated = True
-
-            if args.text_format == "base64":
-                text_data = base64.b64encode(clipped).decode("ascii")
-            else:
-                text_data = clipped.hex()
-
-            payload["text"] = {
-                "format": args.text_format,
-                "data": text_data,
-                "total_bytes": len(raw),
-                "encoded_source_bytes": len(clipped),
-                "truncated": truncated,
-            }
-        print_json(payload)
-    finally:
-        if not args.png:
-            try:
-                result_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+    print_json({"frame": response.get("frame"), "path": str(result_path)})
 
 
 def cmd_read_memory(args: argparse.Namespace) -> None:
@@ -806,24 +731,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_screenshot = sub.add_parser("screenshot", help="Capture screenshot from running session.")
     add_session_arg(p_screenshot)
-    p_screenshot.add_argument(
-        "--png",
-        action="store_true",
-        help="Persist screenshot as a PNG file and return path in response.",
-    )
-    p_screenshot.add_argument("--out", help="Output PNG path. Requires --png.")
-    p_screenshot.add_argument(
-        "--text-format",
-        choices=["none", "base64", "hex"],
-        default="hex",
-        help="Include screenshot bytes as text in response.",
-    )
-    p_screenshot.add_argument(
-        "--text-max-bytes",
-        type=int,
-        default=0,
-        help="Max raw bytes to encode for text output (0 = full file).",
-    )
+    p_screenshot.add_argument("--out", help="Optional output PNG path.")
     add_timeout_arg(p_screenshot, default=20.0)
     p_screenshot.set_defaults(func=cmd_screenshot)
 

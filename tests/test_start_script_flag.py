@@ -54,6 +54,14 @@ def test_start_parser_accepts_script_flag_with_known_pokemon_rom() -> None:
     assert args.script == ["boot.lua", "hud.lua"]
 
 
+def test_screenshot_parser_rejects_removed_text_flags() -> None:
+    parser = mgba_live.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["screenshot", "--text-format", "hex"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["screenshot", "--png"])
+
+
 def test_build_start_command_includes_user_script_and_bridge_script() -> None:
     rom = pokemon_red_rom_path()
     startup_script = Path(__file__).resolve()
@@ -233,7 +241,7 @@ class _StartWithLuaController:
                 return _Result({"frame": 101, "data": {"settled": True}})
             return _Result({"frame": 100, "data": {"result": {"ok": True}}})
         if command == "screenshot":
-            return _Result({"frame": 102, "text": {"format": "none"}})
+            return _Result({"frame": 102, "path": "/tmp/screenshot.png"})
         raise AssertionError(f"unexpected command: {command}")
 
 
@@ -258,11 +266,11 @@ def test_mcp_start_with_lua_file_mode_runs_start_lua_and_screenshot(monkeypatch:
     assert payload["command"] == "start-with-lua"
     assert payload["start_result"] == {"status": "started", "session_id": "session-123", "pid": 4321}
     assert payload["lua_result"] == {"frame": 100, "data": {"result": {"ok": True}}}
-    assert payload["screenshot"] == {"frame": 102}
+    assert payload["screenshot"] == {"frame": 102, "path": "/tmp/screenshot.png"}
     assert [call["command"] for call in fake.calls] == ["start", "run-lua", "run-lua", "screenshot"]
     assert fake.calls[1]["args"] == ["--file", "/tmp/startup.lua", "--session", "session-123"]
     assert fake.calls[2]["args"] == ["--code", "return true", "--session", "session-123"]
-    assert fake.calls[3]["args"] == ["--session", "session-123", "--text-format", "hex"]
+    assert fake.calls[3]["args"] == ["--session", "session-123"]
 
 
 def test_mcp_start_with_lua_code_mode_runs_start_lua_and_screenshot(monkeypatch: Any) -> None:
@@ -284,7 +292,7 @@ def test_mcp_start_with_lua_code_mode_runs_start_lua_and_screenshot(monkeypatch:
 
     assert payload["tool"] == "mgba_live_start_with_lua"
     assert payload["lua_result"] == {"frame": 100, "data": {"result": {"ok": True}}}
-    assert payload["screenshot"] == {"frame": 102}
+    assert payload["screenshot"] == {"frame": 102, "path": "/tmp/screenshot.png"}
     assert [call["command"] for call in fake.calls] == ["start", "run-lua", "run-lua", "screenshot"]
     assert fake.calls[1]["args"] == ["--code", "return 77", "--session", "session-123"]
 

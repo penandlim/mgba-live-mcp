@@ -29,7 +29,7 @@ class _FakeController:
                 raise AssertionError("status fallback should not have been used")
             return _Result({"session_id": "active-session"})
         if command == "screenshot":
-            return _Result({"frame": 102, "text": {"format": "none"}})
+            return _Result({"frame": 102, "path": "/tmp/screenshot.png"})
         raise AssertionError(f"unexpected command: {command}")
 
 
@@ -55,12 +55,12 @@ def test_run_lua_snapshot_uses_status_fallback_when_session_not_provided(monkeyp
     )
     payload = _first_payload(contents)
 
-    assert payload["screenshot"] == {"frame": 102, "text": {"format": "none"}}
+    assert payload["screenshot"] == {"frame": 102, "path": "/tmp/screenshot.png"}
     assert [call["command"] for call in fake.calls] == ["run-lua", "status", "run-lua", "screenshot"]
     assert fake.calls[0]["args"] == ["--code", "return 7"]
     assert fake.calls[1]["args"] == []
     assert fake.calls[2]["args"] == ["--code", "return true", "--session", "active-session"]
-    assert fake.calls[3]["args"] == ["--session", "active-session", "--text-format", "hex"]
+    assert fake.calls[3]["args"] == ["--session", "active-session"]
     assert fake.calls[0]["timeout"] == 7.0
     assert fake.calls[1]["timeout"] == 20.0
     assert fake.calls[2]["timeout"] == 20.0
@@ -83,11 +83,11 @@ def test_run_lua_snapshot_settles_before_screenshot_when_session_is_given(monkey
     )
     payload = _first_payload(contents)
 
-    assert payload["screenshot"] == {"frame": 102, "text": {"format": "none"}}
+    assert payload["screenshot"] == {"frame": 102, "path": "/tmp/screenshot.png"}
     assert [call["command"] for call in fake.calls] == ["run-lua", "run-lua", "screenshot"]
     assert fake.calls[0]["args"] == ["--code", "return 9", "--session", "session-123"]
     assert fake.calls[1]["args"] == ["--code", "return true", "--session", "session-123"]
-    assert fake.calls[2]["args"] == ["--session", "session-123", "--text-format", "hex"]
+    assert fake.calls[2]["args"] == ["--session", "session-123"]
 
 
 def test_run_lua_snapshot_waits_for_macro_completion_when_macro_key_returned(monkeypatch: Any) -> None:
@@ -112,7 +112,7 @@ def test_run_lua_snapshot_waits_for_macro_completion_when_macro_key_returned(mon
                     self.polls += 1
                     return _Result({"frame": 100 + self.polls, "data": {"result": self.polls >= 3}})
             if command == "screenshot":
-                return _Result({"frame": 104, "text": {"format": "none"}})
+                return _Result({"frame": 104, "path": "/tmp/screenshot.png"})
             raise AssertionError(f"unexpected command: {command}")
 
     fake = _MacroController()
@@ -131,7 +131,7 @@ def test_run_lua_snapshot_waits_for_macro_completion_when_macro_key_returned(mon
     payload = _first_payload(contents)
 
     settle = payload["screenshot_settle"]
-    assert payload["screenshot"] == {"frame": 104, "text": {"format": "none"}}
+    assert payload["screenshot"] == {"frame": 104, "path": "/tmp/screenshot.png"}
     assert settle["mode"] == "macro_key"
     assert settle["macro_key"] == "__macro_wait_test"
     assert settle["completed"] is True

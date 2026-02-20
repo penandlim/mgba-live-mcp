@@ -12,7 +12,7 @@ Commands return structured JSON, and visual snapshots are provided by
 - Read memory and pointer tables.
 - Dump OAM and entity data.
 - Use `mgba_live_status` after input commands for reliable post-input view checks.
-- Optional on-disk PNG persistence via `png`/`out` options for `mgba_live_export_screenshot`.
+- PNG screenshot exports with optional custom `out` path.
 
 ## Run
 
@@ -42,7 +42,7 @@ Notes:
 - `mgba_live_start_with_lua` starts a new session, runs `file` or `code`, then returns the post-Lua screenshot/image.
 - CLI `scripts/mgba_live.py start` still supports `--script` startup Lua paths passed directly to mGBA.
 - Input commands (`mgba_live_input_*`) return action data and a next-step hint; call `mgba_live_status` for post-input visual assessment.
-- `mgba_live_export_screenshot` is the preferred screenshot tool name. `mgba_live_screenshot` remains a backward-compatible alias.
-- `mgba_live_export_screenshot` defaults to `text_format = "hex"`.
-- A PNG file is only written when `png` is true (or `out` is provided).
+- `mgba_live_export_screenshot` is the screenshot tool name.
+- Screenshot responses do not include encoded image text blocks.
+- `mgba_live_export_screenshot` always writes and returns a PNG `path` (defaults to session screenshots directory when `out` is omitted).
 - For callback-based Lua macros, return a table with `macro_key` (for example `{ status = "started", macro_key = "__my_macro" }`) and set `_G[macro_key].active = false` when done so `mgba_live_run_lua` can wait for completion before returning its snapshot.

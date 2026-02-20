@@ -47,50 +47,13 @@ def _parse_args_list(value: list[str] | None) -> list[str]:
     return [str(v) for v in value]
 
 
-def _strip_screenshot_text_block(payload: dict[str, Any]) -> dict[str, Any]:
-    if "text" not in payload:
-        return payload
-    sanitized = dict(payload)
-    sanitized.pop("text", None)
-    return sanitized
-
-
 def _image_bytes_from_screenshot(result: dict[str, Any]) -> tuple[str, bytes] | None:
-    text = result.get("text")
-    if not isinstance(text, dict):
-        path = result.get("path")
-        if isinstance(path, str) and path:
-            try:
-                return "png", Path(path).read_bytes()
-            except OSError:
-                return None
-        return None
-
-    encoded = text.get("data")
-    if not isinstance(encoded, str):
-        if text.get("format") == "none":
-            path = result.get("path")
-            if isinstance(path, str) and path:
-                try:
-                    return "png", Path(path).read_bytes()
-                except OSError:
-                    return None
-        return None
-
-    fmt = str(text.get("format", "")).lower()
-    if fmt == "base64":
+    path = result.get("path")
+    if isinstance(path, str) and path:
         try:
-            return fmt, base64.b64decode(encoded.encode("ascii"), validate=True)
-        except Exception:
+            return "png", Path(path).read_bytes()
+        except OSError:
             return None
-
-    if fmt == "hex":
-        try:
-            # image payload is textual hex dump
-            return fmt, bytes.fromhex(encoded)
-        except Exception:
-            return None
-
     return None
 
 
@@ -99,13 +62,8 @@ def _image_content(result: dict[str, Any]) -> ImageContent | None:
     if parsed is None:
         return None
 
-    fmt, raw = parsed
-    if fmt == "base64":
-        encoded = (result.get("text") or {}).get("data")
-        if not isinstance(encoded, str):
-            return None
-    else:
-        encoded = base64.b64encode(raw).decode()
+    _, raw = parsed
+    encoded = base64.b64encode(raw).decode()
 
     return ImageContent(type="image", data=encoded, mimeType="image/png")
 
@@ -224,10 +182,7 @@ async def _run_with_snapshot(
     timeout: float,
     session_id: str | None = None,
     include_snapshot: bool = True,
-    snapshot_text_format: str = "hex",
-    snapshot_max_bytes: int = 0,
     ensure_post_lua_settle: bool = False,
-    strip_screenshot_text: bool = False,
     next_step: str | None = None,
 ) -> list[TextContent | ImageContent]:
     command_result = await _controller.run(live_command, command_args, timeout=timeout)
@@ -285,16 +240,11 @@ async def _run_with_snapshot(
                 # Keep primary command responses usable even if settle fails.
                 payload["screenshot_settle_error"] = str(exc)
 
-    shot_args = ["--session", str(resolved_session), "--text-format", snapshot_text_format]
-    if snapshot_max_bytes > 0:
-        shot_args.extend(["--text-max-bytes", str(snapshot_max_bytes)])
+    shot_args = ["--session", str(resolved_session)]
     try:
         shot_result = await _controller.run("screenshot", shot_args, timeout=max(timeout, 20.0))
         screenshot_payload = shot_result.payload
-        if strip_screenshot_text:
-            payload["screenshot"] = _strip_screenshot_text_block(screenshot_payload)
-        else:
-            payload["screenshot"] = screenshot_payload
+        payload["screenshot"] = screenshot_payload
         shot_image = _image_content(screenshot_payload)
         if shot_image is not None:
             image_contents.append(shot_image)
@@ -467,11 +417,8 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "session": {"type": "string", "description": "Optional session id."},
-                    "text_format": {"type": "string", "enum": ["hex", "base64", "none"], "default": "hex"},
-                    "text_max_bytes": {"type": "integer", "description": "Limit bytes to encode in text payload."},
                     "timeout": {"type": "number", "description": "Command timeout in seconds.", "default": 20.0},
                     "out": {"type": "string", "description": "Optional persisted PNG output path."},
-                    "png": {"type": "boolean", "description": "Persist PNG and include path in output."},
                 },
                 "required": [],
             },
@@ -595,7 +542,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
                 timeout=timeout,
                 session_id=session_id,
                 ensure_post_lua_settle=True,
-                strip_screenshot_text=True,
             )
         except Exception as exc:
             raise RuntimeError(
@@ -634,7 +580,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             "status",
             cmd_args,
             timeout=timeout,
-            strip_screenshot_text=True,
         )
     if name == "mgba_live_stop":
         cmd_args = _build_session_arg(args)
@@ -701,27 +646,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             next_step="Call mgba_live_status after input to assess the post-input view.",
         )
 
-    # Backward-compatible alias for older clients that still call mgba_live_screenshot.
-    if name in {"mgba_live_export_screenshot", "mgba_live_screenshot"}:
-        tool_name = "mgba_live_export_screenshot"
-        text_format = str(args.get("text_format", "hex")).lower()
-        if text_format not in {"hex", "base64", "none"}:
-            raise ValueError("text_format must be one of: hex, base64, none")
-
-        persist_png = bool(args.get("png", False))
-        cmd_args = ["--text-format", text_format]
+    if name == "mgba_live_export_screenshot":
+        cmd_args = []
         if out := args.get("out"):
             cmd_args.extend(["--out", str(out)])
-            if not persist_png:
-                raise ValueError("--out requires --png.")
-        if persist_png:
-            cmd_args.append("--png")
-        if text_max := args.get("text_max_bytes"):
-            cmd_args.extend(["--text-max-bytes", str(int(text_max))])
         cmd_args.extend(_build_session_arg(args))
         command_result = await _controller.run("screenshot", cmd_args, timeout=timeout)
-        result_payload = _strip_screenshot_text_block(command_result.payload)
-        contents = [_text_content({"tool": tool_name, "command": "screenshot", "result": result_payload})]
+        contents = [_text_content({"tool": "mgba_live_export_screenshot", "command": "screenshot", "result": command_result.payload})]
         shot_image = _image_content(command_result.payload)
         if shot_image is not None:
             contents.append(shot_image)

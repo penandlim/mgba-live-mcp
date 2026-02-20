@@ -143,6 +143,24 @@ uv run python scripts/mgba_live.py start --help
 uv run pytest
 ```
 
+## Auto-Generated MCP Docs
+
+Generate a markdown reference of all MCP tools and schemas:
+
+```bash
+make mcp-docs
+```
+
+Output:
+
+- `docs/mcp-reference.md`
+
+CI/update check:
+
+```bash
+make mcp-docs-check
+```
+
 Quality commands:
 
 ```bash

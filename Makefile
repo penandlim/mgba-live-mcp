@@ -1,4 +1,4 @@
-.PHONY: dev lint format typecheck test check
+.PHONY: dev lint format typecheck test check mcp-docs mcp-docs-check
 
 dev:
 	uv sync --group dev
@@ -17,4 +17,10 @@ typecheck:
 test:
 	uv run pytest
 
-check: lint typecheck test
+check: lint typecheck test mcp-docs-check
+
+mcp-docs:
+	uv run python scripts/generate_mcp_reference.py
+
+mcp-docs-check:
+	uv run python scripts/generate_mcp_reference.py --check

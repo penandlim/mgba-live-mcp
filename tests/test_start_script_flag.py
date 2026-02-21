@@ -23,11 +23,10 @@ def load_mgba_live_module() -> Any:
 mgba_live = load_mgba_live_module()
 
 
-def pokemon_red_rom_path() -> Path:
-    roms_dir = REPO_ROOT / "roms"
-    matches = sorted(roms_dir.glob("*Red Version.gb"))
-    assert matches, f"Pokemon Red ROM fixture not found in {roms_dir}"
-    return matches[0].resolve()
+def rom_fixture_path() -> Path:
+    synthetic_rom = REPO_ROOT / "tests" / "fixtures" / "synthetic.gb"
+    assert synthetic_rom.exists(), f"Synthetic ROM fixture not found in {synthetic_rom}"
+    return synthetic_rom.resolve()
 
 
 def _first_payload(contents: Any) -> dict[str, Any]:
@@ -47,8 +46,8 @@ class _Result:
     payload: dict[str, Any]
 
 
-def test_start_parser_accepts_script_flag_with_known_pokemon_rom() -> None:
-    rom = pokemon_red_rom_path()
+def test_start_parser_accepts_script_flag_with_synthetic_rom() -> None:
+    rom = rom_fixture_path()
     parser = mgba_live.build_parser()
     args = parser.parse_args(
         ["start", "--rom", str(rom), "--script", "boot.lua", "--script", "hud.lua"]
@@ -116,7 +115,7 @@ def test_cmd_screenshot_rejects_out_with_no_save(monkeypatch: Any) -> None:
 
 
 def test_build_start_command_includes_user_script_and_bridge_script() -> None:
-    rom = pokemon_red_rom_path()
+    rom = rom_fixture_path()
     startup_script = Path(__file__).resolve()
     cmd = mgba_live.build_start_command(
         mgba_path="/usr/local/bin/mgba-qt",
@@ -134,7 +133,7 @@ def test_build_start_command_includes_user_script_and_bridge_script() -> None:
 
 
 def test_cmd_start_passes_startup_script_to_mgba_process(tmp_path: Path, monkeypatch: Any) -> None:
-    rom = pokemon_red_rom_path()
+    rom = rom_fixture_path()
     startup_script = tmp_path / "startup.lua"
     startup_script.write_text("-- startup script\n")
 
@@ -215,7 +214,7 @@ def test_list_tools_exposes_start_with_lua_and_hides_start_script() -> None:
 
 
 def test_mcp_start_tool_rejects_script_flag() -> None:
-    rom = pokemon_red_rom_path()
+    rom = rom_fixture_path()
 
     with pytest.raises(ValueError, match="mgba_live_start_with_lua"):
         asyncio.run(
@@ -230,7 +229,7 @@ def test_mcp_start_tool_rejects_script_flag() -> None:
 
 
 def test_mcp_start_tool_forwards_core_start_args(monkeypatch: Any) -> None:
-    rom = pokemon_red_rom_path()
+    rom = rom_fixture_path()
     captured: dict[str, Any] = {}
 
     async def fake_run_with_snapshot(
@@ -299,7 +298,7 @@ class _StartWithLuaController:
 
 
 def test_mcp_start_with_lua_file_mode_runs_start_lua_and_screenshot(monkeypatch: Any) -> None:
-    rom = pokemon_red_rom_path()
+    rom = rom_fixture_path()
     fake = _StartWithLuaController()
     monkeypatch.setattr(mcp_server, "_controller", fake)
 
@@ -326,7 +325,7 @@ def test_mcp_start_with_lua_file_mode_runs_start_lua_and_screenshot(monkeypatch:
 
 
 def test_mcp_start_with_lua_code_mode_runs_start_lua_and_screenshot(monkeypatch: Any) -> None:
-    rom = pokemon_red_rom_path()
+    rom = rom_fixture_path()
     fake = _StartWithLuaController()
     monkeypatch.setattr(mcp_server, "_controller", fake)
 
@@ -350,7 +349,7 @@ def test_mcp_start_with_lua_code_mode_runs_start_lua_and_screenshot(monkeypatch:
 
 
 def test_mcp_start_with_lua_leaves_session_running_when_lua_step_fails(monkeypatch: Any) -> None:
-    rom = pokemon_red_rom_path()
+    rom = rom_fixture_path()
     fake = _StartWithLuaController(fail_lua=True)
     monkeypatch.setattr(mcp_server, "_controller", fake)
 

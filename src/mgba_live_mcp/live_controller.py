@@ -7,7 +7,6 @@ import json
 import os
 import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 
@@ -21,15 +20,10 @@ class LiveCommandResult:
 
 
 class LiveControllerClient:
-    """Run `scripts/mgba_live.py` commands via subprocess and parse JSON output."""
+    """Run `mgba_live_mcp.live_cli` commands via subprocess and parse JSON output."""
 
-    def __init__(self, script_path: str | Path | None = None) -> None:
-        if script_path is None:
-            script_path = Path(__file__).resolve().parents[2] / "scripts" / "mgba_live.py"
-        self.script_path = Path(script_path)
-
-        if not self.script_path.exists():
-            raise FileNotFoundError(f"mgba_live.py not found: {self.script_path}")
+    def __init__(self, module_name: str = "mgba_live_mcp.live_cli") -> None:
+        self.module_name = module_name
 
     async def run(
         self,
@@ -40,7 +34,7 @@ class LiveControllerClient:
     ) -> LiveCommandResult:
         """Run one CLI command and return parsed JSON payload."""
 
-        proc_args = [sys.executable, str(self.script_path), command] + args
+        proc_args = [sys.executable, "-m", self.module_name, command] + args
         proc = await asyncio.create_subprocess_exec(
             *proc_args,
             stdout=asyncio.subprocess.PIPE,

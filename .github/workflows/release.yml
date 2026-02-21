@@ -1,0 +1,65 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v4
+      - name: Install dev dependencies
+        run: uv sync --group dev
+      - name: Run checks
+        run: make check
+      - name: Build distributions
+        run: uv build
+      - name: Validate wheel contains packaged bridge script
+        run: |
+          uv run python - <<'PY'
+          import pathlib
+          import zipfile
+
+          wheels = sorted(pathlib.Path("dist").glob("*.whl"))
+          if not wheels:
+              raise SystemExit("No wheel artifact found in dist/")
+
+          target = "mgba_live_mcp/resources/mgba_live_bridge.lua"
+          with zipfile.ZipFile(wheels[0]) as zf:
+              names = set(zf.namelist())
+
+          if target not in names:
+              raise SystemExit(f"Missing required wheel resource: {target}")
+          print(f"Validated wheel resource: {target}")
+          PY
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  publish-pypi:
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

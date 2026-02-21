@@ -3,11 +3,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
-import importlib.util
+import importlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
@@ -17,13 +16,8 @@ from mgba_live_mcp import server as mcp_server
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def load_mgba_live_module() -> ModuleType:
-    module_path = REPO_ROOT / "scripts" / "mgba_live.py"
-    spec = importlib.util.spec_from_file_location("mgba_live_script", module_path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def load_mgba_live_module() -> Any:
+    return importlib.import_module("mgba_live_mcp.live_cli")
 
 
 mgba_live = load_mgba_live_module()
@@ -193,9 +187,12 @@ def test_cmd_start_passes_startup_script_to_mgba_process(tmp_path: Path, monkeyp
 
     cmd = captured["cmd"]
     script_values = [cmd[index + 1] for index, value in enumerate(cmd) if value == "--script"]
-    assert script_values == [str(startup_script.resolve()), str(mgba_live.BRIDGE_SCRIPT)]
+    expected_bridge = runtime_root / "sessions" / "test-session" / "scripts" / "mgba_live_bridge.lua"
+    assert script_values == [str(startup_script.resolve()), str(expected_bridge)]
     assert cmd[-1] == str(rom)
     assert output["status"] == "started"
+    assert expected_bridge.exists()
+    assert expected_bridge.read_text() == mgba_live.BRIDGE_SCRIPT.read_text()
 
     session_json = json.loads(
         (runtime_root / "sessions" / "test-session" / "session.json").read_text()
@@ -491,3 +488,7 @@ def test_main_prunes_sessions_before_dispatch(monkeypatch: Any) -> None:
     mgba_live.main()
 
     assert calls == ["ensure", "prune", "dispatch"]
+
+
+def test_runtime_root_defaults_to_home_directory() -> None:
+    assert mgba_live.RUNTIME_ROOT == Path.home() / ".mgba-live-mcp" / "runtime"

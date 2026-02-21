@@ -1,0 +1,49 @@
+name: publish-testpypi
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-build-and-publish:
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v4
+      - name: Install dev dependencies
+        run: uv sync --group dev
+      - name: Run checks
+        run: make check
+      - name: Build distributions
+        run: uv build
+      - name: Validate wheel contains packaged bridge script
+        run: |
+          uv run python - <<'PY'
+          import pathlib
+          import zipfile
+
+          wheels = sorted(pathlib.Path("dist").glob("*.whl"))
+          if not wheels:
+              raise SystemExit("No wheel artifact found in dist/")
+
+          target = "mgba_live_mcp/resources/mgba_live_bridge.lua"
+          with zipfile.ZipFile(wheels[0]) as zf:
+              names = set(zf.namelist())
+
+          if target not in names:
+              raise SystemExit(f"Missing required wheel resource: {target}")
+          print(f"Validated wheel resource: {target}")
+          PY
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/

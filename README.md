@@ -20,7 +20,37 @@ If you need one-shot/headless runs instead of persistent sessions, see
 
 MCP reference: [docs/mcp-reference.md](docs/mcp-reference.md)
 
-## Quick Start
+## Quick Start (uvx)
+
+1. Run directly from PyPI with `uvx`:
+
+```bash
+uvx mgba-live-mcp
+```
+
+2. If you want to run from git (for unreleased changes), use:
+
+```bash
+uvx --from git+https://github.com/penandlim/mgba-live-mcp mgba-live-mcp
+```
+
+3. Register in an MCP client (Codex example):
+
+```toml
+[mcp_servers.mgba]
+command = "uvx"
+args = ["mgba-live-mcp"]
+```
+
+Git fallback (if package is not yet published):
+
+```toml
+[mcp_servers.mgba]
+command = "uvx"
+args = ["--from", "git+https://github.com/penandlim/mgba-live-mcp", "mgba-live-mcp"]
+```
+
+## Local Development
 
 1. Install dependencies for this repo:
 
@@ -64,6 +94,13 @@ Important runtime notes:
 - Binary auto-discovery order: `mgba-qt`, `mgba`, `mGBA`.
 - If auto-discovery fails, pass `mgba_path` in `mgba_live_start` or
   `mgba_live_start_with_lua`.
+- Runtime state is stored at `~/.mgba-live-mcp/runtime` (sessions, logs, command/response files).
+- This is a hard cutover from repo-local `.runtime`; no hybrid fallback is used.
+- If you have old repo-local sessions, migrate manually by copying `.runtime/*` to
+  `~/.mgba-live-mcp/runtime/`.
+- `mgba_live_status` with `all=true` lists sessions from this shared user-level runtime root.
+- `scripts/mgba_live_bridge.lua` is transitional for local workflows; packaged
+  `src/mgba_live_mcp/resources/mgba_live_bridge.lua` is the runtime source of truth.
 
 ## Common MCP Flows
 
@@ -139,7 +176,8 @@ snapshot in one call.
 
 ## Local CLI (Dev/Debug)
 
-The MCP server wraps `scripts/mgba_live.py`.
+The MCP server wraps `scripts/mgba_live.py`. This script is a compatibility shim
+that delegates to the packaged module CLI.
 
 ```bash
 uv run python scripts/mgba_live.py --help
@@ -155,3 +193,14 @@ make typecheck
 make test
 make check
 ```
+
+## Release Checklist
+
+1. Update version in `pyproject.toml` and `src/mgba_live_mcp/__init__.py`.
+2. Add release notes in `CHANGELOG.md`.
+3. Run local checks:
+`uv sync --group dev && make check && uv build`
+4. Trigger TestPyPI publish workflow (`publish-testpypi`) and verify install from TestPyPI.
+5. Push tag `vX.Y.Z` to trigger the PyPI release workflow.
+6. Smoke test:
+`uvx mgba-live-mcp` and `uvx --from git+https://github.com/penandlim/mgba-live-mcp mgba-live-mcp`.

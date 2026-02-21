@@ -1,0 +1,16 @@
+# Changelog
+
+## 0.2.0
+
+- Switched live-controller subprocess execution to packaged module invocation
+  (`python -m mgba_live_mcp.live_cli`) for install-safe `uvx` usage.
+- Moved runtime CLI implementation into `src/mgba_live_mcp/live_cli.py` and kept
+  `scripts/mgba_live.py` as a compatibility shim.
+- Hard cutover of runtime root to `~/.mgba-live-mcp/runtime`.
+- Packaged Lua bridge resource under `src/mgba_live_mcp/resources/` and now stage
+  a session-local copy before launching mGBA.
+- Added `mgba-live-cli` entrypoint in `pyproject.toml`.
+- Added CI and release checks to validate wheel artifacts contain
+  `mgba_live_mcp/resources/mgba_live_bridge.lua`.
+- Added manual TestPyPI publishing workflow.
+- Updated README for `uvx`-first usage, migration notes, and release checklist.

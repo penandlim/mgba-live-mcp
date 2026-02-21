@@ -1,4 +1,4 @@
-.PHONY: dev lint format typecheck test check mcp-docs mcp-docs-check
+.PHONY: dev lint format typecheck test check mcp-docs mcp-docs-check precommit-install precommit-run
 
 dev:
 	uv sync --group dev
@@ -24,3 +24,9 @@ mcp-docs:
 
 mcp-docs-check:
 	uv run python scripts/generate_mcp_reference.py --check
+
+precommit-install:
+	uv run pre-commit install
+
+precommit-run:
+	uv run pre-commit run --all-files

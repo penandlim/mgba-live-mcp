@@ -78,6 +78,13 @@ args = [
 ]
 ```
 
+4. Install and run pre-commit hooks (lint/checks via `uv run`):
+
+```bash
+make precommit-install
+make precommit-run
+```
+
 ## Requirements And Setup Links
 
 - [mGBA](https://github.com/mgba-emu/mgba):

@@ -1,0 +1,18 @@
+repos:
+  - repo: local
+    hooks:
+      - id: lint
+        name: lint
+        entry: uv run make lint
+        language: system
+        pass_filenames: false
+      - id: typecheck
+        name: typecheck
+        entry: uv run make typecheck
+        language: system
+        pass_filenames: false
+      - id: mcp-docs-check
+        name: mcp-docs-check
+        entry: uv run make mcp-docs-check
+        language: system
+        pass_filenames: false

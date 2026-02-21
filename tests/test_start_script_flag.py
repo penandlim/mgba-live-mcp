@@ -187,7 +187,9 @@ def test_cmd_start_passes_startup_script_to_mgba_process(tmp_path: Path, monkeyp
 
     cmd = captured["cmd"]
     script_values = [cmd[index + 1] for index, value in enumerate(cmd) if value == "--script"]
-    expected_bridge = runtime_root / "sessions" / "test-session" / "scripts" / "mgba_live_bridge.lua"
+    expected_bridge = (
+        runtime_root / "sessions" / "test-session" / "scripts" / "mgba_live_bridge.lua"
+    )
     assert script_values == [str(startup_script.resolve()), str(expected_bridge)]
     assert cmd[-1] == str(rom)
     assert output["status"] == "started"

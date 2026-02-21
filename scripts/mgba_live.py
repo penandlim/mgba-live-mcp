@@ -7,6 +7,5 @@ This file is intentionally thin to preserve existing dev commands such as:
 
 from mgba_live_mcp.live_cli import main
 
-
 if __name__ == "__main__":
     main()

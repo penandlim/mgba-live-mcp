@@ -1,4 +1,5 @@
 # mgba-live-mcp
+[![codecov](https://codecov.io/gh/penandlim/mgba-live-mcp/graph/badge.svg?branch=master)](https://codecov.io/gh/penandlim/mgba-live-mcp)
 
 MCP server for persistent, live mGBA control. It is designed for agent workflows
 that need to keep one emulator process running across multiple tool calls

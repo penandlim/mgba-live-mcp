@@ -7,7 +7,7 @@ Reusable Lua templates for `mgba_live_run_lua`.
 Use the `file` argument with an absolute path (recommended):
 
 ```json
-{"session":"<session-id>","file":"/Users/jongseunglim/Documents/mgba-live-mcp/scripts/lua_templates/kamaitachi_fresh_start_to_help_info_page1.lua"}
+{"session":"<session-id>","file":"/absolute/path/to/mgba-live-mcp/scripts/lua_templates/kamaitachi_fresh_start_to_help_info_page1.lua"}
 ```
 
 ## Templates

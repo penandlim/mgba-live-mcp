@@ -6,6 +6,7 @@ import asyncio
 import base64
 import binascii
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,18 @@ from .live_controller import LiveControllerClient
 
 server = Server("mgba-live-mcp")
 _controller = LiveControllerClient()
+_TIMEOUT_FLAG_COMMANDS = {
+    "run-lua",
+    "input-tap",
+    "input-set",
+    "input-clear",
+    "screenshot",
+    "read-memory",
+    "read-range",
+    "dump-pointers",
+    "dump-oam",
+    "dump-entities",
+}
 
 
 def _text_content(payload: Any) -> TextContent:
@@ -108,6 +121,119 @@ def _session_arg_value(command_args: list[str]) -> str | None:
         if value == "--session" and index + 1 < len(command_args):
             return str(command_args[index + 1])
     return None
+
+
+def _append_cli_timeout(command: str, command_args: list[str], timeout: float) -> list[str]:
+    if command not in _TIMEOUT_FLAG_COMMANDS:
+        return list(command_args)
+    if "--timeout" in command_args:
+        return list(command_args)
+    timeout_value = max(float(timeout), 0.0)
+    return [*command_args, "--timeout", f"{timeout_value:g}"]
+
+
+def _looks_like_stall_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return (
+        "timed out" in msg
+        or "bridge is busy" in msg
+        or "command.lua still present" in msg
+        or "no response from bridge" in msg
+    )
+
+
+async def _collect_stall_diagnostics(*, session_id: str, timeout: float) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {"session_id": session_id}
+    try:
+        status_result = await _controller.run(
+            "status",
+            ["--session", str(session_id)],
+            timeout=max(timeout, 20.0),
+        )
+    except Exception as exc:
+        diagnostics["status_error"] = str(exc)
+        return diagnostics
+
+    payload = status_result.payload
+    status_payload: dict[str, Any] | None = None
+    if isinstance(payload, dict):
+        status_payload = payload
+    elif isinstance(payload, list):
+        for item in payload:
+            if (
+                isinstance(item, dict)
+                and isinstance(item.get("session_id"), str)
+                and item.get("session_id") == session_id
+            ):
+                status_payload = item
+                break
+        if status_payload is None:
+            diagnostics["alive"] = False
+            diagnostics["status_missing_session"] = True
+            return diagnostics
+    else:
+        return diagnostics
+
+    status_session_id = status_payload.get("session_id")
+    if isinstance(status_session_id, str) and status_session_id:
+        diagnostics["status_session_id"] = status_session_id
+        if status_session_id != session_id:
+            diagnostics["status_session_mismatch"] = True
+            diagnostics["alive"] = False
+            return diagnostics
+
+    alive = status_payload.get("alive")
+    if isinstance(alive, bool):
+        diagnostics["alive"] = alive
+
+    heartbeat = status_payload.get("heartbeat")
+    if isinstance(heartbeat, dict):
+        frame = heartbeat.get("frame")
+        if isinstance(frame, (int, float)) and not isinstance(frame, bool):
+            diagnostics["heartbeat_frame"] = int(frame)
+        hb_unix_time = heartbeat.get("unix_time")
+        if isinstance(hb_unix_time, (int, float)) and not isinstance(hb_unix_time, bool):
+            hb_unix = int(hb_unix_time)
+            diagnostics["heartbeat_unix_time"] = hb_unix
+            diagnostics["heartbeat_age_seconds"] = max(0, int(time.time()) - hb_unix)
+    return diagnostics
+
+
+def _format_stall_error_message(
+    *,
+    operation: str,
+    diagnostics: dict[str, Any],
+    original_error: Exception,
+) -> str:
+    details = [f"session_id={diagnostics.get('session_id', 'unknown')}"]
+    if "alive" in diagnostics:
+        details.append(f"alive={diagnostics['alive']}")
+    if "heartbeat_frame" in diagnostics:
+        details.append(f"heartbeat_frame={diagnostics['heartbeat_frame']}")
+    if "heartbeat_age_seconds" in diagnostics:
+        details.append(f"heartbeat_age_seconds={diagnostics['heartbeat_age_seconds']}")
+    if "status_error" in diagnostics:
+        details.append(f"status_error={diagnostics['status_error']}")
+    if "status_session_id" in diagnostics:
+        details.append(f"status_session_id={diagnostics['status_session_id']}")
+    if "status_session_mismatch" in diagnostics:
+        details.append(f"status_session_mismatch={diagnostics['status_session_mismatch']}")
+    if "status_missing_session" in diagnostics:
+        details.append(f"status_missing_session={diagnostics['status_missing_session']}")
+    details.append(f"original_error={original_error}")
+    return (
+        f"{operation}. The session appears stuck. "
+        "Possible causes: bad ROM build/patch, Lua script deadloop, or paused emulation. "
+        f"Diagnostics: {', '.join(details)}"
+    )
+
+
+def _append_warning(payload: dict[str, Any], warning: dict[str, Any]) -> None:
+    warnings = payload.get("warnings")
+    if not isinstance(warnings, list):
+        warnings = []
+        payload["warnings"] = warnings
+    warnings.append(warning)
 
 
 async def _resolve_snapshot_session(
@@ -211,9 +337,14 @@ async def _wait_for_macro_completion(
 
     while True:
         polls += 1
-        poll_result = await _controller.run(
+        poll_args = _append_cli_timeout(
             "run-lua",
             ["--code", wait_code, "--session", str(session_id)],
+            poll_command_timeout,
+        )
+        poll_result = await _controller.run(
+            "run-lua",
+            poll_args,
             timeout=poll_command_timeout,
         )
         result_value = _extract_run_lua_result(poll_result.payload)
@@ -252,9 +383,14 @@ async def _wait_for_target_frame(
     poll_command_timeout = max(1.0, min(5.0, settle_timeout if settle_timeout > 0 else 1.0))
 
     while True:
-        poll_result = await _controller.run(
+        poll_args = _append_cli_timeout(
             "run-lua",
             ["--code", "return true", "--session", str(session_id)],
+            poll_command_timeout,
+        )
+        poll_result = await _controller.run(
+            "run-lua",
+            poll_args,
             timeout=poll_command_timeout,
         )
         current_frame = _extract_response_frame(poll_result.payload)
@@ -284,7 +420,24 @@ async def _run_with_snapshot(
     require_screenshot: bool = False,
     input_tap_wait_frames: int | None = None,
 ) -> list[TextContent | ImageContent]:
-    command_result = await _controller.run(live_command, command_args, timeout=timeout)
+    run_command_args = _append_cli_timeout(live_command, command_args, timeout)
+    requested_session = session_id or _session_arg_value(run_command_args)
+    try:
+        command_result = await _controller.run(live_command, run_command_args, timeout=timeout)
+    except Exception as exc:
+        if requested_session and _looks_like_stall_error(exc):
+            diagnostics = await _collect_stall_diagnostics(
+                session_id=str(requested_session),
+                timeout=max(timeout, 20.0),
+            )
+            raise RuntimeError(
+                _format_stall_error_message(
+                    operation=f"Live command '{live_command}' failed",
+                    diagnostics=diagnostics,
+                    original_error=exc,
+                )
+            ) from exc
+        raise
     payload: dict[str, Any]
     if isinstance(command_result.payload, dict):
         payload = dict(command_result.payload)
@@ -296,13 +449,13 @@ async def _run_with_snapshot(
         return [_text_content(payload)]
 
     resolved_session = session_id or await _resolve_snapshot_session(
-        command_args,
+        run_command_args,
         command_result.payload,
         timeout=timeout,
     )
     if not resolved_session:
         if require_snapshot_session:
-            requested_session = session_id or _session_arg_value(command_args) or "unknown"
+            requested_session = session_id or _session_arg_value(run_command_args) or "unknown"
             raise RuntimeError(
                 f"Unable to resolve session_id for screenshot capture after '{live_command}' "
                 f"(requested_session={requested_session})."
@@ -324,9 +477,19 @@ async def _run_with_snapshot(
                 timeout=max(timeout, 20.0),
             )
         except Exception as exc:
+            diagnostics = await _collect_stall_diagnostics(
+                session_id=str(resolved_session),
+                timeout=max(timeout, 20.0),
+            )
             raise RuntimeError(
-                f"Post-tap wait failed for session '{resolved_session}' "
-                f"(target_frame={target_frame}). Original error: {exc}"
+                _format_stall_error_message(
+                    operation=(
+                        f"Post-tap wait failed for session '{resolved_session}' "
+                        f"(target_frame={target_frame})"
+                    ),
+                    diagnostics=diagnostics,
+                    original_error=exc,
+                )
             ) from exc
 
     if ensure_post_lua_settle:
@@ -338,23 +501,69 @@ async def _run_with_snapshot(
                     macro_key=macro_key,
                     timeout=max(timeout, 20.0),
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                diagnostics = await _collect_stall_diagnostics(
+                    session_id=str(resolved_session),
+                    timeout=max(timeout, 20.0),
+                )
+                _append_warning(
+                    payload,
+                    {
+                        "code": "post_lua_macro_settle_failed",
+                        "message": _format_stall_error_message(
+                            operation=(
+                                f"Post-Lua macro settle failed for session '{resolved_session}' "
+                                f"(macro_key={macro_key})"
+                            ),
+                            diagnostics=diagnostics,
+                            original_error=exc,
+                        ),
+                        **diagnostics,
+                    },
+                )
         else:
             # For run-lua calls, issue a no-op Lua command before screenshot capture
             # so the image reflects state after the Lua command has fully completed.
             try:
-                await _controller.run(
+                settle_timeout = max(timeout, 20.0)
+                settle_args = _append_cli_timeout(
                     "run-lua",
                     ["--code", "return true", "--session", str(resolved_session)],
+                    settle_timeout,
+                )
+                await _controller.run(
+                    "run-lua",
+                    settle_args,
+                    timeout=settle_timeout,
+                )
+            except Exception as exc:
+                diagnostics = await _collect_stall_diagnostics(
+                    session_id=str(resolved_session),
                     timeout=max(timeout, 20.0),
                 )
-            except Exception:
-                pass
+                _append_warning(
+                    payload,
+                    {
+                        "code": "post_lua_noop_settle_failed",
+                        "message": _format_stall_error_message(
+                            operation=(
+                                f"Post-Lua no-op settle failed for session '{resolved_session}'"
+                            ),
+                            diagnostics=diagnostics,
+                            original_error=exc,
+                        ),
+                        **diagnostics,
+                    },
+                )
 
-    shot_args = ["--session", str(resolved_session), "--no-save"]
+    screenshot_timeout = max(timeout, 20.0)
+    shot_args = _append_cli_timeout(
+        "screenshot",
+        ["--session", str(resolved_session), "--no-save"],
+        screenshot_timeout,
+    )
     try:
-        shot_result = await _controller.run("screenshot", shot_args, timeout=max(timeout, 20.0))
+        shot_result = await _controller.run("screenshot", shot_args, timeout=screenshot_timeout)
         screenshot_payload = shot_result.payload
         public_snapshot = (
             _public_snapshot_payload(screenshot_payload)
@@ -884,7 +1093,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         if out := args.get("out"):
             cmd_args.extend(["--out", str(out)])
         cmd_args.extend(_build_session_arg(args))
-        command_result = await _controller.run("screenshot", cmd_args, timeout=timeout)
+        run_args = _append_cli_timeout("screenshot", cmd_args, timeout)
+        command_result = await _controller.run("screenshot", run_args, timeout=timeout)
         payload: dict[str, Any]
         if isinstance(command_result.payload, dict):
             payload = dict(command_result.payload)

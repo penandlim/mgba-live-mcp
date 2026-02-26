@@ -21,9 +21,11 @@ def _ns(**kwargs: Any) -> argparse.Namespace:
 def isolated_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path, Path]:
     runtime = tmp_path / "runtime"
     sessions_dir = runtime / "sessions"
+    archived_sessions_dir = runtime / "archived_sessions"
     active_file = runtime / "active_session"
     monkeypatch.setattr(live_cli, "RUNTIME_ROOT", runtime)
     monkeypatch.setattr(live_cli, "SESSIONS_DIR", sessions_dir)
+    monkeypatch.setattr(live_cli, "ARCHIVED_SESSIONS_DIR", archived_sessions_dir)
     monkeypatch.setattr(live_cli, "ACTIVE_SESSION_FILE", active_file)
     return runtime, sessions_dir, active_file
 
@@ -135,7 +137,7 @@ def test_prune_dead_sessions_handles_removal_errors(
 
     monkeypatch.setattr(live_cli, "pid_alive", lambda _pid: False)
     monkeypatch.setattr(
-        live_cli.shutil, "rmtree", lambda _path: (_ for _ in ()).throw(OSError("x"))
+        live_cli.shutil, "move", lambda _src, _dst: (_ for _ in ()).throw(OSError("x"))
     )
     removed = live_cli.prune_dead_sessions()
     assert removed == []
@@ -259,6 +261,47 @@ def test_send_command_busy_and_response_timeouts(tmp_path: Path) -> None:
     command_path.unlink()
     with pytest.raises(TimeoutError, match="Timed out waiting for response"):
         live_cli.send_command(session, "ping", timeout=0.05)
+
+
+def test_command_file_matches_request_id_missing_file(tmp_path: Path) -> None:
+    assert live_cli.command_file_matches_request_id(tmp_path / "missing.lua", "req-1") is False
+
+
+def test_send_command_timeout_cleans_owned_command_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command_path = tmp_path / "command.lua"
+    response_path = tmp_path / "response.json"
+    session = {"command_path": str(command_path), "response_path": str(response_path)}
+
+    class _U:
+        hex = "req-owned"
+
+    monkeypatch.setattr(live_cli.uuid, "uuid4", lambda: _U())
+
+    with pytest.raises(TimeoutError, match="Timed out waiting for response"):
+        live_cli.send_command(session, "ping", timeout=0.05)
+
+    assert command_path.exists() is False
+
+
+def test_send_command_timeout_preserves_foreign_command_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command_path = tmp_path / "command.lua"
+    response_path = tmp_path / "response.json"
+    session = {"command_path": str(command_path), "response_path": str(response_path)}
+
+    class _U:
+        hex = "req-foreign"
+
+    monkeypatch.setattr(live_cli.uuid, "uuid4", lambda: _U())
+    monkeypatch.setattr(live_cli, "command_file_matches_request_id", lambda *_args: False)
+
+    with pytest.raises(TimeoutError, match="Timed out waiting for response"):
+        live_cli.send_command(session, "ping", timeout=0.05)
+
+    assert command_path.exists() is True
 
 
 def test_print_json_output(capsys: pytest.CaptureFixture[str]) -> None:

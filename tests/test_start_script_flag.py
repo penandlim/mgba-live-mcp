@@ -140,6 +140,7 @@ def test_cmd_start_passes_startup_script_to_mgba_process(tmp_path: Path, monkeyp
     runtime_root = tmp_path / ".runtime"
     monkeypatch.setattr(mgba_live, "RUNTIME_ROOT", runtime_root)
     monkeypatch.setattr(mgba_live, "SESSIONS_DIR", runtime_root / "sessions")
+    monkeypatch.setattr(mgba_live, "ARCHIVED_SESSIONS_DIR", runtime_root / "archived_sessions")
     monkeypatch.setattr(mgba_live, "ACTIVE_SESSION_FILE", runtime_root / "active_session")
 
     captured: dict[str, Any] = {}
@@ -319,9 +320,23 @@ def test_mcp_start_with_lua_file_mode_runs_start_lua_and_screenshot(monkeypatch:
     assert payload["lua"] == {"ok": True}
     assert payload["screenshot"] == {"frame": 102}
     assert [call["command"] for call in fake.calls] == ["start", "run-lua", "run-lua", "screenshot"]
-    assert fake.calls[1]["args"] == ["--file", "/tmp/startup.lua", "--session", "session-123"]
-    assert fake.calls[2]["args"] == ["--code", "return true", "--session", "session-123"]
-    assert fake.calls[3]["args"] == ["--session", "session-123", "--no-save"]
+    assert fake.calls[1]["args"] == [
+        "--file",
+        "/tmp/startup.lua",
+        "--session",
+        "session-123",
+        "--timeout",
+        "7",
+    ]
+    assert fake.calls[2]["args"] == [
+        "--code",
+        "return true",
+        "--session",
+        "session-123",
+        "--timeout",
+        "20",
+    ]
+    assert fake.calls[3]["args"] == ["--session", "session-123", "--no-save", "--timeout", "20"]
 
 
 def test_mcp_start_with_lua_code_mode_runs_start_lua_and_screenshot(monkeypatch: Any) -> None:
@@ -345,7 +360,14 @@ def test_mcp_start_with_lua_code_mode_runs_start_lua_and_screenshot(monkeypatch:
     assert payload["lua"] == {"ok": True}
     assert payload["screenshot"] == {"frame": 102}
     assert [call["command"] for call in fake.calls] == ["start", "run-lua", "run-lua", "screenshot"]
-    assert fake.calls[1]["args"] == ["--code", "return 77", "--session", "session-123"]
+    assert fake.calls[1]["args"] == [
+        "--code",
+        "return 77",
+        "--session",
+        "session-123",
+        "--timeout",
+        "7",
+    ]
 
 
 def test_mcp_start_with_lua_leaves_session_running_when_lua_step_fails(monkeypatch: Any) -> None:
@@ -389,6 +411,7 @@ def test_cmd_status_all_prunes_dead_sessions(tmp_path: Path, monkeypatch: Any) -
     runtime_root = tmp_path / ".runtime"
     monkeypatch.setattr(mgba_live, "RUNTIME_ROOT", runtime_root)
     monkeypatch.setattr(mgba_live, "SESSIONS_DIR", runtime_root / "sessions")
+    monkeypatch.setattr(mgba_live, "ARCHIVED_SESSIONS_DIR", runtime_root / "archived_sessions")
     monkeypatch.setattr(mgba_live, "ACTIVE_SESSION_FILE", runtime_root / "active_session")
 
     _write_session_fixture(runtime_root, "dead-session", 1001)
@@ -414,6 +437,7 @@ def test_cmd_status_skips_dead_active_session(tmp_path: Path, monkeypatch: Any) 
     runtime_root = tmp_path / ".runtime"
     monkeypatch.setattr(mgba_live, "RUNTIME_ROOT", runtime_root)
     monkeypatch.setattr(mgba_live, "SESSIONS_DIR", runtime_root / "sessions")
+    monkeypatch.setattr(mgba_live, "ARCHIVED_SESSIONS_DIR", runtime_root / "archived_sessions")
     monkeypatch.setattr(mgba_live, "ACTIVE_SESSION_FILE", runtime_root / "active_session")
 
     _write_session_fixture(runtime_root, "dead-session", 2001)
@@ -433,12 +457,13 @@ def test_cmd_status_skips_dead_active_session(tmp_path: Path, monkeypatch: Any) 
     assert mgba_live.ACTIVE_SESSION_FILE.read_text() == "alive-session"
 
 
-def test_prune_dead_sessions_removes_dead_session_directory(
+def test_prune_dead_sessions_archives_dead_session_directory(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     runtime_root = tmp_path / ".runtime"
     monkeypatch.setattr(mgba_live, "RUNTIME_ROOT", runtime_root)
     monkeypatch.setattr(mgba_live, "SESSIONS_DIR", runtime_root / "sessions")
+    monkeypatch.setattr(mgba_live, "ARCHIVED_SESSIONS_DIR", runtime_root / "archived_sessions")
     monkeypatch.setattr(mgba_live, "ACTIVE_SESSION_FILE", runtime_root / "active_session")
 
     _write_session_fixture(runtime_root, "dead-session", 3001)
@@ -453,6 +478,9 @@ def test_prune_dead_sessions_removes_dead_session_directory(
     assert removed == ["dead-session"]
     assert not (runtime_root / "sessions" / "dead-session").exists()
     assert (runtime_root / "sessions" / "alive-session").exists()
+    archived = sorted((runtime_root / "archived_sessions").glob("dead-session-*"))
+    assert len(archived) == 1
+    assert (archived[0] / "session.json").exists()
     assert mgba_live.ACTIVE_SESSION_FILE.read_text() == "alive-session"
 
 
@@ -463,6 +491,7 @@ def test_prune_dead_sessions_clears_stale_active_pointer_when_no_sessions(
     runtime_root = tmp_path / ".runtime"
     monkeypatch.setattr(mgba_live, "RUNTIME_ROOT", runtime_root)
     monkeypatch.setattr(mgba_live, "SESSIONS_DIR", runtime_root / "sessions")
+    monkeypatch.setattr(mgba_live, "ARCHIVED_SESSIONS_DIR", runtime_root / "archived_sessions")
     monkeypatch.setattr(mgba_live, "ACTIVE_SESSION_FILE", runtime_root / "active_session")
 
     mgba_live.ACTIVE_SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)

@@ -96,11 +96,47 @@ def test_input_tap_waits_after_release_then_returns_screenshot(monkeypatch: Any)
         "run-lua",
         "screenshot",
     ]
-    assert fake.calls[0]["args"] == ["--key", "A", "--frames", "3", "--session", "session-123"]
-    assert fake.calls[1]["args"] == ["--code", "return true", "--session", "session-123"]
-    assert fake.calls[2]["args"] == ["--code", "return true", "--session", "session-123"]
-    assert fake.calls[3]["args"] == ["--code", "return true", "--session", "session-123"]
-    assert fake.calls[4]["args"] == ["--session", "session-123", "--no-save"]
+    assert fake.calls[0]["args"] == [
+        "--key",
+        "A",
+        "--frames",
+        "3",
+        "--session",
+        "session-123",
+        "--timeout",
+        "7",
+    ]
+    assert fake.calls[1]["args"] == [
+        "--code",
+        "return true",
+        "--session",
+        "session-123",
+        "--timeout",
+        "5",
+    ]
+    assert fake.calls[2]["args"] == [
+        "--code",
+        "return true",
+        "--session",
+        "session-123",
+        "--timeout",
+        "5",
+    ]
+    assert fake.calls[3]["args"] == [
+        "--code",
+        "return true",
+        "--session",
+        "session-123",
+        "--timeout",
+        "5",
+    ]
+    assert fake.calls[4]["args"] == [
+        "--session",
+        "session-123",
+        "--no-save",
+        "--timeout",
+        "20",
+    ]
 
 
 def test_input_tap_wait_frames_zero_still_waits_through_tap_duration(monkeypatch: Any) -> None:
@@ -158,7 +194,7 @@ def test_input_tap_wait_failure_includes_session_id(monkeypatch: Any) -> None:
                 },
             )
         )
-    assert [call["command"] for call in fake.calls] == ["input-tap", "run-lua"]
+    assert [call["command"] for call in fake.calls] == ["input-tap", "run-lua", "status"]
 
 
 def test_input_tap_errors_when_session_cannot_be_resolved(monkeypatch: Any) -> None:

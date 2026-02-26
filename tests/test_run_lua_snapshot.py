@@ -66,10 +66,23 @@ def test_run_lua_snapshot_uses_status_fallback_when_session_not_provided(monkeyp
         "run-lua",
         "screenshot",
     ]
-    assert fake.calls[0]["args"] == ["--code", "return 7"]
+    assert fake.calls[0]["args"] == ["--code", "return 7", "--timeout", "7"]
     assert fake.calls[1]["args"] == []
-    assert fake.calls[2]["args"] == ["--code", "return true", "--session", "active-session"]
-    assert fake.calls[3]["args"] == ["--session", "active-session", "--no-save"]
+    assert fake.calls[2]["args"] == [
+        "--code",
+        "return true",
+        "--session",
+        "active-session",
+        "--timeout",
+        "20",
+    ]
+    assert fake.calls[3]["args"] == [
+        "--session",
+        "active-session",
+        "--no-save",
+        "--timeout",
+        "20",
+    ]
     assert fake.calls[0]["timeout"] == 7.0
     assert fake.calls[1]["timeout"] == 20.0
     assert fake.calls[2]["timeout"] == 20.0
@@ -94,9 +107,29 @@ def test_run_lua_snapshot_settles_before_screenshot_when_session_is_given(monkey
 
     assert payload["screenshot"] == {"frame": 102}
     assert [call["command"] for call in fake.calls] == ["run-lua", "run-lua", "screenshot"]
-    assert fake.calls[0]["args"] == ["--code", "return 9", "--session", "session-123"]
-    assert fake.calls[1]["args"] == ["--code", "return true", "--session", "session-123"]
-    assert fake.calls[2]["args"] == ["--session", "session-123", "--no-save"]
+    assert fake.calls[0]["args"] == [
+        "--code",
+        "return 9",
+        "--session",
+        "session-123",
+        "--timeout",
+        "5",
+    ]
+    assert fake.calls[1]["args"] == [
+        "--code",
+        "return true",
+        "--session",
+        "session-123",
+        "--timeout",
+        "20",
+    ]
+    assert fake.calls[2]["args"] == [
+        "--session",
+        "session-123",
+        "--no-save",
+        "--timeout",
+        "20",
+    ]
 
 
 def test_run_lua_snapshot_waits_for_macro_completion_when_macro_key_returned(
@@ -152,5 +185,12 @@ def test_run_lua_snapshot_waits_for_macro_completion_when_macro_key_returned(
         "run-lua",
         "screenshot",
     ]
-    assert fake.calls[0]["args"] == ["--code", "return 11", "--session", "session-123"]
+    assert fake.calls[0]["args"] == [
+        "--code",
+        "return 11",
+        "--session",
+        "session-123",
+        "--timeout",
+        "5",
+    ]
     assert "__macro_wait_test" in fake.calls[1]["args"][1]

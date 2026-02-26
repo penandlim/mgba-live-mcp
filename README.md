@@ -103,6 +103,9 @@ Important runtime notes:
 - If auto-discovery fails, pass `mgba_path` in `mgba_live_start` or
   `mgba_live_start_with_lua`.
 - Runtime state is stored at `~/.mgba-live-mcp/runtime` (sessions, logs, command/response files).
+- Dead or crashed session directories are moved to
+  `~/.mgba-live-mcp/runtime/archived_sessions/` instead of being deleted.
+- Archived sessions are not treated as active and are not returned by `mgba_live_status` calls.
 - This is a hard cutover from repo-local `.runtime`; no hybrid fallback is used.
 - If you have old repo-local sessions, migrate manually by copying `.runtime/*` to
   `~/.mgba-live-mcp/runtime/`.

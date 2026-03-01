@@ -34,13 +34,18 @@ jobs:
           if not wheels:
               raise SystemExit("No wheel artifact found in dist/")
 
-          target = "mgba_live_mcp/resources/mgba_live_bridge.lua"
+          required = {
+              "mgba_live_mcp/server.py",
+              "mgba_live_mcp/live_cli.py",
+              "mgba_live_mcp/resources/mgba_live_bridge.lua",
+          }
           with zipfile.ZipFile(wheels[0]) as zf:
               names = set(zf.namelist())
 
-          if target not in names:
-              raise SystemExit(f"Missing required wheel resource: {target}")
-          print(f"Validated wheel resource: {target}")
+          missing = sorted(required - names)
+          if missing:
+              raise SystemExit(f"Missing required wheel files: {missing}")
+          print(f"Validated wheel files: {sorted(required)}")
           PY
       - name: Upload dist artifacts
         uses: actions/upload-artifact@v4

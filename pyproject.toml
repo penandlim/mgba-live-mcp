@@ -1,6 +1,6 @@
 [project]
 name = "mgba-live-mcp"
-version = "0.3.1"
+version = "0.3.2"
 description = "MCP server for persistent live mGBA control with script bridge, screenshots, memory and input tooling"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,11 +21,6 @@ packages = ["src/mgba_live_mcp"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/mgba_live_mcp/resources/mgba_live_bridge.lua" = "mgba_live_mcp/resources/mgba_live_bridge.lua"
-
-[tool.hatch.build.targets.sdist]
-include = [
-    "src/mgba_live_mcp/resources/mgba_live_bridge.lua",
-]
 
 [dependency-groups]
 dev = [

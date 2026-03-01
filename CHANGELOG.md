@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2
+
+- Fix packaging so published wheels include runtime Python modules
+  (`mgba_live_mcp.server`, `mgba_live_mcp.live_cli`), not only resources.
+- Keep bridge resource packaging intact.
+- Strengthen release workflow artifact validation to assert runtime modules are
+  present in the wheel.
+
 ## 0.3.1
 
 - Archive dead/crashed session directories to

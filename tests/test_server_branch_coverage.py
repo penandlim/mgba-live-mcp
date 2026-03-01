@@ -211,6 +211,7 @@ async def test_run_with_snapshot_wraps_stall_errors_with_diagnostics(
     assert "bad ROM build/patch" in message
     assert "session_id=requested-session" in message
     assert "status_session_mismatch=True" in message
+    assert "timeout_reached=True" in message
     assert [call[0] for call in queue.calls] == ["run-lua", "status"]
 
 

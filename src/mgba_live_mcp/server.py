@@ -132,10 +132,17 @@ def _append_cli_timeout(command: str, command_args: list[str], timeout: float) -
     return [*command_args, "--timeout", f"{timeout_value:g}"]
 
 
+def _error_is_timeout(exc: Exception) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    msg = str(exc).lower()
+    return "timed out" in msg or "timeout" in msg
+
+
 def _looks_like_stall_error(exc: Exception) -> bool:
     msg = str(exc).lower()
     return (
-        "timed out" in msg
+        _error_is_timeout(exc)
         or "bridge is busy" in msg
         or "command.lua still present" in msg
         or "no response from bridge" in msg
@@ -205,6 +212,7 @@ def _format_stall_error_message(
     diagnostics: dict[str, Any],
     original_error: Exception,
 ) -> str:
+    timeout_reached = _error_is_timeout(original_error)
     details = [f"session_id={diagnostics.get('session_id', 'unknown')}"]
     if "alive" in diagnostics:
         details.append(f"alive={diagnostics['alive']}")
@@ -220,6 +228,8 @@ def _format_stall_error_message(
         details.append(f"status_session_mismatch={diagnostics['status_session_mismatch']}")
     if "status_missing_session" in diagnostics:
         details.append(f"status_missing_session={diagnostics['status_missing_session']}")
+    if timeout_reached:
+        details.append("timeout_reached=True")
     details.append(f"original_error={original_error}")
     return (
         f"{operation}. The session appears stuck. "

@@ -11,6 +11,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -26,6 +27,7 @@ PACKAGE_DIR = MODULE_PATH.parent
 BRIDGE_SCRIPT = PACKAGE_DIR / "resources" / "mgba_live_bridge.lua"
 RUNTIME_ROOT = Path.home() / ".mgba-live-mcp" / "runtime"
 SESSIONS_DIR = RUNTIME_ROOT / "sessions"
+ARCHIVED_SESSIONS_DIR = RUNTIME_ROOT / "archived_sessions"
 ACTIVE_SESSION_FILE = RUNTIME_ROOT / "active_session"
 
 
@@ -74,6 +76,7 @@ def to_lua_value(value: Any) -> str:
 
 def ensure_runtime_dirs() -> None:
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    ARCHIVED_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def session_dir(session_id: str) -> Path:
@@ -82,6 +85,18 @@ def session_dir(session_id: str) -> Path:
 
 def session_file(session_id: str) -> Path:
     return session_dir(session_id) / "session.json"
+
+
+def archive_session_destination(session_id: str) -> Path:
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    base = ARCHIVED_SESSIONS_DIR / f"{session_id}-{stamp}"
+    if not base.exists():
+        return base
+    for idx in range(1, 1000):
+        candidate = ARCHIVED_SESSIONS_DIR / f"{session_id}-{stamp}-{idx}"
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"Unable to allocate archive destination for session: {session_id}")
 
 
 def load_session(session_id: str) -> dict[str, Any]:
@@ -148,6 +163,8 @@ def prune_dead_sessions() -> list[str]:
         _refresh_active_session()
         return removed
 
+    ARCHIVED_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
     for candidate in SESSIONS_DIR.glob("*/session.json"):
         try:
             session = json.loads(candidate.read_text())
@@ -160,7 +177,8 @@ def prune_dead_sessions() -> list[str]:
 
         session_id = str(session.get("id") or candidate.parent.name)
         try:
-            shutil.rmtree(candidate.parent)
+            archived = archive_session_destination(session_id)
+            shutil.move(str(candidate.parent), str(archived))
             removed.append(session_id)
         except OSError:
             continue
@@ -228,6 +246,15 @@ def write_command(command_path: Path, command: dict[str, Any]) -> None:
     tmp_path.replace(command_path)
 
 
+def command_file_matches_request_id(command_path: Path, request_id: str) -> bool:
+    try:
+        lua_doc = command_path.read_text()
+    except OSError:
+        return False
+    pattern = rf'\bid\s*=\s*"{re.escape(request_id)}"'
+    return re.search(pattern, lua_doc) is not None
+
+
 def send_command(
     session: dict[str, Any], kind: str, payload: dict[str, Any] | None = None, timeout: float = 10.0
 ) -> dict[str, Any]:
@@ -262,6 +289,11 @@ def send_command(
                 continue
             return response
         time.sleep(0.02)
+    if command_path.exists() and command_file_matches_request_id(command_path, request_id):
+        try:
+            command_path.unlink()
+        except OSError:
+            pass
     raise TimeoutError(f"Timed out waiting for response to command '{kind}'.")
 
 

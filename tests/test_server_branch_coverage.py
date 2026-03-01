@@ -134,6 +134,7 @@ async def test_run_with_snapshot_edge_paths(monkeypatch: pytest.MonkeyPatch) -> 
         [
             {"data": {"result": {"macro_key": "macro1"}}},
             {},
+            {},
         ]
     )
     monkeypatch.setattr(server, "_controller", queue)
@@ -151,6 +152,7 @@ async def test_run_with_snapshot_edge_paths(monkeypatch: pytest.MonkeyPatch) -> 
         [
             {"data": {"result": {"value": 1}}},
             RuntimeError("no-op failed"),
+            {},
             {},
         ]
     )
@@ -179,6 +181,37 @@ async def test_run_with_snapshot_edge_paths(monkeypatch: pytest.MonkeyPatch) -> 
             session_id="s1",
             require_screenshot=True,
         )
+
+
+@pytest.mark.anyio
+async def test_run_with_snapshot_wraps_stall_errors_with_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue = _QueueController(
+        [
+            TimeoutError("Timed out waiting for response to command 'run_lua'"),
+            {
+                "session_id": "other-session",
+                "alive": True,
+                "heartbeat": {"frame": 77, "unix_time": 123},
+            },
+        ]
+    )
+    monkeypatch.setattr(server, "_controller", queue)
+
+    with pytest.raises(RuntimeError, match="The session appears stuck") as exc_info:
+        await server._run_with_snapshot(
+            "run-lua",
+            ["--code", "return 1", "--session", "requested-session"],
+            timeout=1.0,
+            include_snapshot=False,
+        )
+
+    message = str(exc_info.value)
+    assert "bad ROM build/patch" in message
+    assert "session_id=requested-session" in message
+    assert "status_session_mismatch=True" in message
+    assert [call[0] for call in queue.calls] == ["run-lua", "status"]
 
 
 def test_build_start_command_args_edges() -> None:

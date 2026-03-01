@@ -54,7 +54,7 @@ def test_export_screenshot_tool_maps_to_screenshot_command(monkeypatch: Any) -> 
     assert fake.calls == [
         {
             "command": "screenshot",
-            "args": ["--session", "session-123"],
+            "args": ["--session", "session-123", "--timeout", "9"],
             "timeout": 9.0,
         }
     ]
@@ -132,5 +132,9 @@ def test_status_all_uses_session_from_payload_for_snapshot(monkeypatch: Any) -> 
     assert payload["screenshot"] == {"frame": 200}
     assert fake.calls == [
         {"command": "status", "args": ["--all"], "timeout": 20.0},
-        {"command": "screenshot", "args": ["--session", "session-a", "--no-save"], "timeout": 20.0},
+        {
+            "command": "screenshot",
+            "args": ["--session", "session-a", "--no-save", "--timeout", "20"],
+            "timeout": 20.0,
+        },
     ]

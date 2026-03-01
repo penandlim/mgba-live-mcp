@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1
+
+- Archive dead/crashed session directories to
+  `~/.mgba-live-mcp/runtime/archived_sessions` instead of deleting them.
+- Keep dead sessions out of active session resolution and status listings.
+- Improve stalled-session errors with explicit diagnostics and likely causes
+  (including bad ROM build/patch and Lua deadloops).
+- Add scoped stale `command.lua` cleanup when a command response times out.
+- Expand test coverage for stall diagnostics, timeout handling, and archive
+  behavior.
+- Remove user-specific absolute path from Lua template README examples.
+
 ## 0.2.0
 
 - Switched live-controller subprocess execution to packaged module invocation

@@ -66,6 +66,7 @@ _Not declared._
 Start a live session and run Lua immediately. Metadata only.
 
 - Required input fields: `rom`
+- Runtime argument rule: Provide exactly one of `file` or `code`.
 
 ### Input Schema
 
@@ -125,6 +126,7 @@ _Not declared._
 Start a live session, run Lua, settle, and return one screenshot.
 
 - Required input fields: `rom`
+- Runtime argument rule: Provide exactly one of `file` or `code`.
 
 ### Input Schema
 
@@ -184,6 +186,7 @@ _Not declared._
 Attach to an existing managed live session.
 
 - Required input fields: _None._
+- Runtime argument rule: Provide `session` or `pid`.
 
 ### Input Schema
 
@@ -216,6 +219,7 @@ _Not declared._
 Show metadata for one session or all managed sessions.
 
 - Required input fields: _None._
+- Runtime argument rule: Provide `session`, or set `all=true`.
 
 ### Input Schema
 
@@ -314,6 +318,7 @@ _Not declared._
 Execute Lua in a running live session. Metadata only.
 
 - Required input fields: `session`
+- Runtime argument rule: Provide exactly one of `file` or `code`.
 
 ### Input Schema
 
@@ -353,6 +358,7 @@ _Not declared._
 Execute Lua, settle, and return one screenshot.
 
 - Required input fields: `session`
+- Runtime argument rule: Provide exactly one of `file` or `code`.
 
 ### Input Schema
 

@@ -227,6 +227,39 @@ def test_status_requires_session_unless_all(monkeypatch: Any) -> None:
     assert "screenshot" not in payload
 
 
+def test_attach_requires_session_or_pid(monkeypatch: Any) -> None:
+    monkeypatch.setattr(mcp_server, "_controller", _FakeController())
+
+    with pytest.raises(ValueError, match="session_required"):
+        asyncio.run(mcp_server.call_tool("mgba_live_attach", {}))
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "base_args"),
+    [
+        ("mgba_live_start_with_lua", {"rom": "/tmp/game.gba"}),
+        ("mgba_live_start_with_lua_and_view", {"rom": "/tmp/game.gba"}),
+        ("mgba_live_run_lua", {"session": "session-123"}),
+        ("mgba_live_run_lua_and_view", {"session": "session-123"}),
+    ],
+)
+def test_lua_tools_require_exactly_one_source(
+    monkeypatch: Any, tool_name: str, base_args: dict[str, Any]
+) -> None:
+    monkeypatch.setattr(mcp_server, "_controller", _FakeController())
+
+    with pytest.raises(ValueError, match="Exactly one of file or code"):
+        asyncio.run(mcp_server.call_tool(tool_name, dict(base_args)))
+
+    with pytest.raises(ValueError, match="Exactly one of file or code"):
+        asyncio.run(
+            mcp_server.call_tool(
+                tool_name,
+                {**base_args, "file": "/tmp/script.lua", "code": "return true"},
+            )
+        )
+
+
 def test_single_session_tools_require_session(monkeypatch: Any) -> None:
     monkeypatch.setattr(mcp_server, "_controller", _FakeController())
 

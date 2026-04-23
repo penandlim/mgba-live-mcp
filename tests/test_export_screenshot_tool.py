@@ -77,9 +77,22 @@ def test_list_tools_exposes_export_screenshot_name() -> None:
     assert "mgba_live_screenshot" not in names
     assert by_name["mgba_live_export_screenshot"].inputSchema["required"] == ["session"]
     screenshot_props = by_name["mgba_live_export_screenshot"].inputSchema["properties"]
+    assert screenshot_props["session"]["description"] == "Session id."
     assert "text_format" not in screenshot_props
     assert "text_max_bytes" not in screenshot_props
     assert "png" not in screenshot_props
+
+
+def test_status_list_tools_schema_allows_session_or_all_true() -> None:
+    tools = asyncio.run(mcp_server.list_tools())
+    by_name = {tool.name: tool for tool in tools}
+    status_schema = by_name["mgba_live_status"].inputSchema
+
+    assert "required" not in status_schema
+    assert status_schema["anyOf"] == [
+        {"required": ["session"]},
+        {"required": ["all"], "properties": {"all": {"const": True}}},
+    ]
 
 
 def test_status_requires_session_unless_all(monkeypatch: Any) -> None:

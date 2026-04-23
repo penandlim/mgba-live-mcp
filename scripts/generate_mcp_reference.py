@@ -32,6 +32,10 @@ def _format_required_fields(input_schema: dict[str, Any] | None) -> str:
     if isinstance(required, list) and required:
         items = [f"`{item}`" for item in required]
         return ", ".join(items)
+    for keyword in ("anyOf", "oneOf"):
+        branches = input_schema.get(keyword)
+        if isinstance(branches, list) and branches:
+            return "_Conditional; see schema._"
     return "_None._"
 
 

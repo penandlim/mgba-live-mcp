@@ -159,12 +159,29 @@ _Not declared._
 
 Show status for one session or all managed sessions.
 
-- Required input fields: _None._
+- Required input fields: _Conditional; see schema._
 
 ### Input Schema
 
 ```json
 {
+  "anyOf": [
+    {
+      "required": [
+        "session"
+      ]
+    },
+    {
+      "properties": {
+        "all": {
+          "const": true
+        }
+      },
+      "required": [
+        "all"
+      ]
+    }
+  ],
   "properties": {
     "all": {
       "description": "Whether to include all sessions.",
@@ -403,7 +420,7 @@ Export a screenshot from a live session.
       "type": "string"
     },
     "session": {
-      "description": "Optional session id.",
+      "description": "Session id.",
       "type": "string"
     },
     "timeout": {

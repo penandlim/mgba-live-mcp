@@ -250,3 +250,25 @@ def test_input_set_and_clear_remain_no_snapshot(monkeypatch: Any) -> None:
     assert "screenshot" not in set_payload
     assert "screenshot" not in clear_payload
     assert [call["command"] for call in fake.calls] == ["input-set", "input-clear"]
+
+
+def test_input_set_requires_session(monkeypatch: Any) -> None:
+    class _InputSetController:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def run(self, command: str, args: list[str], *, timeout: float = 20.0) -> _Result:
+            self.calls.append({"command": command, "args": list(args), "timeout": timeout})
+            return _Result({"frame": 50, "data": {"keys": [0, 1]}})
+
+    fake = _InputSetController()
+    monkeypatch.setattr(mcp_server, "_controller", fake)
+
+    with pytest.raises(ValueError, match="session_required"):
+        asyncio.run(
+            mcp_server.call_tool(
+                "mgba_live_input_set",
+                {"keys": ["A", "B"], "timeout": 7.0},
+            )
+        )
+    assert fake.calls == []

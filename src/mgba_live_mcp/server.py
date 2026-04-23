@@ -720,6 +720,13 @@ async def list_tools() -> list[Tool]:
                         "default": 20.0,
                     },
                 },
+                "anyOf": [
+                    {"required": ["session"]},
+                    {
+                        "required": ["all"],
+                        "properties": {"all": {"const": True}},
+                    },
+                ],
             },
         ),
         Tool(
@@ -843,7 +850,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "session": {"type": "string", "description": "Optional session id."},
+                    "session": {"type": "string", "description": "Session id."},
                     "timeout": {
                         "type": "number",
                         "description": "Command timeout in seconds.",

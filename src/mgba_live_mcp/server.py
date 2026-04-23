@@ -239,15 +239,17 @@ async def list_tools() -> list[Tool]:
                         "description": "Optional explicit session id.",
                     },
                     "mgba_path": {"type": "string", "description": "Optional mGBA binary path."},
-                    "file": {"type": "string", "description": "Lua file path."},
-                    "code": {"type": "string", "description": "Inline Lua code."},
+                    "file": {
+                        "type": "string",
+                        "description": "Lua file path. Provide exactly one of file or code.",
+                    },
+                    "code": {
+                        "type": "string",
+                        "description": "Inline Lua code. Provide exactly one of file or code.",
+                    },
                     "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["rom"],
-                "oneOf": [
-                    {"required": ["file"]},
-                    {"required": ["code"]},
-                ],
             },
         ),
         Tool(
@@ -265,15 +267,17 @@ async def list_tools() -> list[Tool]:
                         "description": "Optional explicit session id.",
                     },
                     "mgba_path": {"type": "string", "description": "Optional mGBA binary path."},
-                    "file": {"type": "string", "description": "Lua file path."},
-                    "code": {"type": "string", "description": "Inline Lua code."},
+                    "file": {
+                        "type": "string",
+                        "description": "Lua file path. Provide exactly one of file or code.",
+                    },
+                    "code": {
+                        "type": "string",
+                        "description": "Inline Lua code. Provide exactly one of file or code.",
+                    },
                     "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["rom"],
-                "oneOf": [
-                    {"required": ["file"]},
-                    {"required": ["code"]},
-                ],
             },
         ),
         Tool(
@@ -282,14 +286,20 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "session": {"type": "string", "description": "Session id."},
-                    "pid": {"type": "integer", "description": "PID of a managed session."},
+                    "session": {
+                        "type": "string",
+                        "description": (
+                            "Session id. Provide session or pid (at least one required)."
+                        ),
+                    },
+                    "pid": {
+                        "type": "integer",
+                        "description": (
+                            "PID of a managed session. Provide session or pid (at least one)."
+                        ),
+                    },
                     "timeout": {"type": "number", "default": 20.0},
                 },
-                "anyOf": [
-                    {"required": ["session"]},
-                    {"required": ["pid"]},
-                ],
             },
         ),
         Tool(
@@ -298,14 +308,18 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "session": {"type": "string", "description": "Session id."},
-                    "all": {"type": "boolean", "description": "Whether to include all sessions."},
+                    "session": {
+                        "type": "string",
+                        "description": (
+                            "Session id for one session. Or set all=true for every session."
+                        ),
+                    },
+                    "all": {
+                        "type": "boolean",
+                        "description": "If true, list all sessions. Otherwise pass session.",
+                    },
                     "timeout": {"type": "number", "default": 20.0},
                 },
-                "anyOf": [
-                    {"required": ["session"]},
-                    {"required": ["all"], "properties": {"all": {"const": True}}},
-                ],
             },
         ),
         Tool(
@@ -340,15 +354,17 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "session": {"type": "string", "description": "Session id."},
-                    "file": {"type": "string", "description": "Lua file path."},
-                    "code": {"type": "string", "description": "Inline Lua code."},
+                    "file": {
+                        "type": "string",
+                        "description": "Lua file path. Provide exactly one of file or code.",
+                    },
+                    "code": {
+                        "type": "string",
+                        "description": "Inline Lua code. Provide exactly one of file or code.",
+                    },
                     "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session"],
-                "oneOf": [
-                    {"required": ["file"]},
-                    {"required": ["code"]},
-                ],
             },
         ),
         Tool(
@@ -358,15 +374,17 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "session": {"type": "string", "description": "Session id."},
-                    "file": {"type": "string", "description": "Lua file path."},
-                    "code": {"type": "string", "description": "Inline Lua code."},
+                    "file": {
+                        "type": "string",
+                        "description": "Lua file path. Provide exactly one of file or code.",
+                    },
+                    "code": {
+                        "type": "string",
+                        "description": "Inline Lua code. Provide exactly one of file or code.",
+                    },
                     "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session"],
-                "oneOf": [
-                    {"required": ["file"]},
-                    {"required": ["code"]},
-                ],
             },
         ),
         Tool(

@@ -65,27 +65,15 @@ _Not declared._
 
 Start a live session and run Lua immediately. Metadata only.
 
-- Required input fields: _Conditional; see schema._
+- Required input fields: `rom`
 
 ### Input Schema
 
 ```json
 {
-  "oneOf": [
-    {
-      "required": [
-        "file"
-      ]
-    },
-    {
-      "required": [
-        "code"
-      ]
-    }
-  ],
   "properties": {
     "code": {
-      "description": "Inline Lua code.",
+      "description": "Inline Lua code. Provide exactly one of file or code.",
       "type": "string"
     },
     "fast": {
@@ -93,7 +81,7 @@ Start a live session and run Lua immediately. Metadata only.
       "type": "boolean"
     },
     "file": {
-      "description": "Lua file path.",
+      "description": "Lua file path. Provide exactly one of file or code.",
       "type": "string"
     },
     "fps_target": {
@@ -136,27 +124,15 @@ _Not declared._
 
 Start a live session, run Lua, settle, and return one screenshot.
 
-- Required input fields: _Conditional; see schema._
+- Required input fields: `rom`
 
 ### Input Schema
 
 ```json
 {
-  "oneOf": [
-    {
-      "required": [
-        "file"
-      ]
-    },
-    {
-      "required": [
-        "code"
-      ]
-    }
-  ],
   "properties": {
     "code": {
-      "description": "Inline Lua code.",
+      "description": "Inline Lua code. Provide exactly one of file or code.",
       "type": "string"
     },
     "fast": {
@@ -164,7 +140,7 @@ Start a live session, run Lua, settle, and return one screenshot.
       "type": "boolean"
     },
     "file": {
-      "description": "Lua file path.",
+      "description": "Lua file path. Provide exactly one of file or code.",
       "type": "string"
     },
     "fps_target": {
@@ -207,31 +183,19 @@ _Not declared._
 
 Attach to an existing managed live session.
 
-- Required input fields: _Conditional; see schema._
+- Required input fields: _None._
 
 ### Input Schema
 
 ```json
 {
-  "anyOf": [
-    {
-      "required": [
-        "session"
-      ]
-    },
-    {
-      "required": [
-        "pid"
-      ]
-    }
-  ],
   "properties": {
     "pid": {
-      "description": "PID of a managed session.",
+      "description": "PID of a managed session. Provide session or pid (at least one).",
       "type": "integer"
     },
     "session": {
-      "description": "Session id.",
+      "description": "Session id. Provide session or pid (at least one required).",
       "type": "string"
     },
     "timeout": {
@@ -251,36 +215,19 @@ _Not declared._
 
 Show metadata for one session or all managed sessions.
 
-- Required input fields: _Conditional; see schema._
+- Required input fields: _None._
 
 ### Input Schema
 
 ```json
 {
-  "anyOf": [
-    {
-      "required": [
-        "session"
-      ]
-    },
-    {
-      "properties": {
-        "all": {
-          "const": true
-        }
-      },
-      "required": [
-        "all"
-      ]
-    }
-  ],
   "properties": {
     "all": {
-      "description": "Whether to include all sessions.",
+      "description": "If true, list all sessions. Otherwise pass session.",
       "type": "boolean"
     },
     "session": {
-      "description": "Session id.",
+      "description": "Session id for one session. Or set all=true for every session.",
       "type": "string"
     },
     "timeout": {
@@ -366,31 +313,19 @@ _Not declared._
 
 Execute Lua in a running live session. Metadata only.
 
-- Required input fields: _Conditional; see schema._
+- Required input fields: `session`
 
 ### Input Schema
 
 ```json
 {
-  "oneOf": [
-    {
-      "required": [
-        "file"
-      ]
-    },
-    {
-      "required": [
-        "code"
-      ]
-    }
-  ],
   "properties": {
     "code": {
-      "description": "Inline Lua code.",
+      "description": "Inline Lua code. Provide exactly one of file or code.",
       "type": "string"
     },
     "file": {
-      "description": "Lua file path.",
+      "description": "Lua file path. Provide exactly one of file or code.",
       "type": "string"
     },
     "session": {
@@ -417,31 +352,19 @@ _Not declared._
 
 Execute Lua, settle, and return one screenshot.
 
-- Required input fields: _Conditional; see schema._
+- Required input fields: `session`
 
 ### Input Schema
 
 ```json
 {
-  "oneOf": [
-    {
-      "required": [
-        "file"
-      ]
-    },
-    {
-      "required": [
-        "code"
-      ]
-    }
-  ],
   "properties": {
     "code": {
-      "description": "Inline Lua code.",
+      "description": "Inline Lua code. Provide exactly one of file or code.",
       "type": "string"
     },
     "file": {
-      "description": "Lua file path.",
+      "description": "Lua file path. Provide exactly one of file or code.",
       "type": "string"
     },
     "session": {

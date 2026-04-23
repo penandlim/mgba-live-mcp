@@ -197,36 +197,19 @@ class _FakeController:
 def test_list_tools_exposes_v2_visual_tools() -> None:
     tools = asyncio.run(mcp_server.list_tools())
     names = {tool.name for tool in tools}
-    by_name = {tool.name: tool for tool in tools}
 
     assert "mgba_live_get_view" in names
     assert "mgba_live_run_lua_and_view" in names
     assert "mgba_live_input_tap_and_view" in names
     assert "mgba_live_start_with_lua_and_view" in names
-    assert by_name["mgba_live_attach"].inputSchema["anyOf"] == [
-        {"required": ["session"]},
-        {"required": ["pid"]},
-    ]
-    assert by_name["mgba_live_status"].inputSchema["anyOf"] == [
-        {"required": ["session"]},
-        {"required": ["all"], "properties": {"all": {"const": True}}},
-    ]
-    assert by_name["mgba_live_run_lua"].inputSchema["oneOf"] == [
-        {"required": ["file"]},
-        {"required": ["code"]},
-    ]
-    assert by_name["mgba_live_run_lua_and_view"].inputSchema["oneOf"] == [
-        {"required": ["file"]},
-        {"required": ["code"]},
-    ]
-    assert by_name["mgba_live_start_with_lua"].inputSchema["oneOf"] == [
-        {"required": ["file"]},
-        {"required": ["code"]},
-    ]
-    assert by_name["mgba_live_start_with_lua_and_view"].inputSchema["oneOf"] == [
-        {"required": ["file"]},
-        {"required": ["code"]},
-    ]
+    # Strict function-calling clients reject top-level JSON Schema combinators.
+    forbidden_top = ("oneOf", "anyOf", "allOf", "not", "enum")
+    for tool in tools:
+        schema = tool.inputSchema
+        assert isinstance(schema, dict), f"{tool.name}: inputSchema must be an object schema"
+        assert schema.get("type") == "object", f"{tool.name}: inputSchema type must be object"
+        bad = [k for k in forbidden_top if k in schema]
+        assert not bad, f"{tool.name}: inputSchema must not use top-level {bad}"
 
 
 def test_status_requires_session_unless_all(monkeypatch: Any) -> None:

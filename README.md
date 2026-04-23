@@ -116,7 +116,7 @@ Important runtime notes:
   `~/.mgba-live-mcp/runtime/archived_sessions/` instead of being deleted.
 - Archived sessions are not treated as active and are not returned by `mgba_live_status` calls.
 - This is a hard cutover from repo-local `.runtime`; no hybrid fallback is used.
-- This is also a hard API cutover at `1.0.0`: single-session tools require
+- This is also a hard API cutover at `0.4.0`: single-session tools require
   explicit `session`, same-session overlap is rejected, and screenshots come
   only from explicit visual tools.
 - If you have old repo-local sessions, migrate manually by copying `.runtime/*` to
@@ -245,11 +245,11 @@ make check
 
 ## Release Checklist
 
-1. Confirm version is `1.0.0` in `pyproject.toml` and `src/mgba_live_mcp/__init__.py`.
+1. Confirm version is `0.4.0` in `pyproject.toml` and `src/mgba_live_mcp/__init__.py`.
 2. Add release notes in `CHANGELOG.md`.
 3. Run local checks:
 `uv sync --group dev && make check && uv build`
 4. Trigger TestPyPI publish workflow (`publish-testpypi`) and verify install from TestPyPI.
-5. Push tag `v1.0.0` to trigger the PyPI release workflow.
+5. Push tag `v0.4.0` to trigger the PyPI release workflow.
 6. Smoke test:
 `uvx mgba-live-mcp` and `uvx --from git+https://github.com/penandlim/mgba-live-mcp mgba-live-mcp`.

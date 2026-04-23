@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0
+## 0.4.0
 
 - Hard-cut the MCP contract to explicit session scoping for single-session
   tools, with `session_id` returned on successful single-session responses.
@@ -14,7 +14,7 @@
 - Reject same-session overlap with `session_busy` and hard-fail visual settle
   and snapshot errors with `settle_failed` / `snapshot_failed`.
 - Update README, generated MCP reference docs, and direct contract/runtime tests
-  for the `1.0.0` cutover.
+  for the `0.4.0` cutover.
 
 ## 0.3.2
 

@@ -136,7 +136,12 @@ def _error_is_timeout(exc: Exception) -> bool:
     if isinstance(exc, TimeoutError):
         return True
     msg = str(exc).lower()
-    return "timed out" in msg or "timeout" in msg
+    timeout_markers = (
+        "timed out",
+        "command timed out",
+        "timeout exceeded",
+    )
+    return any(marker in msg for marker in timeout_markers)
 
 
 def _looks_like_stall_error(exc: Exception) -> bool:

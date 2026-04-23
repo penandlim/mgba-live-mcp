@@ -72,6 +72,14 @@ def test_extract_helper_edge_cases() -> None:
     assert server._extract_input_tap_duration({"data": {"duration": 0}}) is None
 
 
+def test_timeout_detection_ignores_timeout_flag_strings() -> None:
+    assert server._error_is_timeout(RuntimeError("Timed out waiting for bridge")) is True
+    assert (
+        server._error_is_timeout(RuntimeError("Command failed: mgba-live-mcp run-lua --timeout 20"))
+        is False
+    )
+
+
 @pytest.mark.anyio
 async def test_wait_helpers_timeout_and_error_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     queue = _QueueController([{"data": {"result": False}}])

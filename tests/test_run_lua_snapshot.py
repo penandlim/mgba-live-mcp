@@ -59,6 +59,7 @@ def test_run_lua_snapshot_uses_status_fallback_when_session_not_provided(monkeyp
     )
     payload = _first_payload(contents)
 
+    assert payload["session_id"] == "active-session"
     assert payload["screenshot"] == {"frame": 102}
     assert [call["command"] for call in fake.calls] == [
         "run-lua",
@@ -105,6 +106,7 @@ def test_run_lua_snapshot_settles_before_screenshot_when_session_is_given(monkey
     )
     payload = _first_payload(contents)
 
+    assert payload["session_id"] == "session-123"
     assert payload["screenshot"] == {"frame": 102}
     assert [call["command"] for call in fake.calls] == ["run-lua", "run-lua", "screenshot"]
     assert fake.calls[0]["args"] == [
@@ -176,6 +178,7 @@ def test_run_lua_snapshot_waits_for_macro_completion_when_macro_key_returned(
     )
     payload = _first_payload(contents)
 
+    assert payload["session_id"] == "session-123"
     assert payload["screenshot"] == {"frame": 104}
     assert "screenshot_settle" not in payload
     assert [call["command"] for call in fake.calls] == [

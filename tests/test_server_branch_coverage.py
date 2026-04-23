@@ -106,6 +106,20 @@ async def test_run_with_snapshot_edge_paths(monkeypatch: pytest.MonkeyPatch) -> 
     contents = await server._run_with_snapshot("status", [], timeout=1.0, include_snapshot=False)
     assert server._text_payload(contents[0]) == {"value": [1]}
 
+    queue = _QueueController([{"frame": 1, "data": {"ok": True}}])
+    monkeypatch.setattr(server, "_controller", queue)
+    contents = await server._run_with_snapshot(
+        "run-lua",
+        ["--code", "return 1", "--session", "s1"],
+        timeout=1.0,
+        include_snapshot=False,
+    )
+    assert server._text_payload(contents[0]) == {
+        "session_id": "s1",
+        "frame": 1,
+        "data": {"ok": True},
+    }
+
     queue = _QueueController([{"ok": True}])
     monkeypatch.setattr(server, "_controller", queue)
 

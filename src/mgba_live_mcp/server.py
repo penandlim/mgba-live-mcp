@@ -270,6 +270,31 @@ async def _resolve_snapshot_session(
     return _extract_session_id(status_result.payload)
 
 
+def _is_aggregate_status_request(live_command: str, run_command_args: list[str]) -> bool:
+    return live_command == "status" and "--all" in run_command_args
+
+
+async def _resolve_response_session(
+    *,
+    live_command: str,
+    run_command_args: list[str],
+    command_payload: Any,
+    explicit_session_id: str | None,
+    timeout: float,
+) -> str | None:
+    if _is_aggregate_status_request(live_command, run_command_args):
+        return None
+    if explicit_session_id:
+        return str(explicit_session_id)
+    payload_session_id = _extract_session_id(command_payload)
+    if payload_session_id:
+        return payload_session_id
+    session_from_args = _session_arg_value(run_command_args)
+    if session_from_args:
+        return session_from_args
+    return await _resolve_snapshot_session(run_command_args, command_payload, timeout=timeout)
+
+
 def _extract_run_lua_result(command_payload: dict[str, Any]) -> Any:
     if not isinstance(command_payload, dict):
         return None
@@ -455,14 +480,26 @@ async def _run_with_snapshot(
         payload = {"value": command_result.payload}
     image_contents: list[ImageContent] = []
 
+    resolved_response_session = await _resolve_response_session(
+        live_command=live_command,
+        run_command_args=run_command_args,
+        command_payload=command_result.payload,
+        explicit_session_id=session_id,
+        timeout=timeout,
+    )
+    if resolved_response_session:
+        payload.setdefault("session_id", str(resolved_response_session))
+
     if not include_snapshot:
         return [_text_content(payload)]
 
-    resolved_session = session_id or await _resolve_snapshot_session(
-        run_command_args,
-        command_result.payload,
-        timeout=timeout,
-    )
+    resolved_session = resolved_response_session
+    if not resolved_session and _is_aggregate_status_request(live_command, run_command_args):
+        resolved_session = await _resolve_snapshot_session(
+            run_command_args,
+            command_result.payload,
+            timeout=timeout,
+        )
     if not resolved_session:
         if require_snapshot_session:
             requested_session = session_id or _session_arg_value(run_command_args) or "unknown"
@@ -1110,6 +1147,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             payload = dict(command_result.payload)
         else:
             payload = {"value": command_result.payload}
+        resolved_response_session = await _resolve_response_session(
+            live_command="screenshot",
+            run_command_args=run_args,
+            command_payload=command_result.payload,
+            explicit_session_id=None,
+            timeout=timeout,
+        )
+        if resolved_response_session:
+            payload.setdefault("session_id", str(resolved_response_session))
         contents = [_text_content(payload)]
         shot_image = (
             _image_content(command_result.payload)

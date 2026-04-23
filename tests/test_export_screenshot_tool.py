@@ -50,7 +50,11 @@ def test_export_screenshot_tool_maps_to_screenshot_command(monkeypatch: Any) -> 
     )
     payload = _first_payload(contents)
 
-    assert payload == {"frame": 99, "path": "/tmp/screenshot.png"}
+    assert payload == {
+        "session_id": "session-123",
+        "frame": 99,
+        "path": "/tmp/screenshot.png",
+    }
     assert fake.calls == [
         {
             "command": "screenshot",

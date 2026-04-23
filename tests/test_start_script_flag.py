@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from mgba_live_mcp import server as mcp_server
+from mgba_live_mcp.test_rom import default_test_rom_path, verify_test_rom
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,9 +25,7 @@ mgba_live = load_mgba_live_module()
 
 
 def rom_fixture_path() -> Path:
-    synthetic_rom = REPO_ROOT / "tests" / "fixtures" / "synthetic.gb"
-    assert synthetic_rom.exists(), f"Synthetic ROM fixture not found in {synthetic_rom}"
-    return synthetic_rom.resolve()
+    return verify_test_rom(default_test_rom_path(REPO_ROOT))
 
 
 def _first_payload(contents: Any) -> dict[str, Any]:

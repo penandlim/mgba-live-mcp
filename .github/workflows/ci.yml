@@ -19,8 +19,15 @@ jobs:
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v4
+      - name: Restore cached open-source test ROM
+        uses: actions/cache@v4
+        with:
+          path: roms/ucity.gbc
+          key: ${{ runner.os }}-ucity-gbc-v1.3-9422ee2ca7b7ea1d46b58b2a429fff3f354dfd3e732dee1e7ae6220f148ce6e0
       - name: Install dev dependencies
         run: uv sync --group dev
+      - name: Provision open-source test ROM
+        run: uv run python -m mgba_live_mcp.test_rom fetch
       - name: Run checks
         run: make check
       - name: Build distributions

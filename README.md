@@ -59,13 +59,25 @@ args = ["--from", "git+https://github.com/penandlim/mgba-live-mcp", "mgba-live-m
 uv sync
 ```
 
-2. Run the MCP server:
+2. Provision the checksum-verified open-source test ROM used by emulator-backed tests:
+
+```bash
+make test-rom
+```
+
+This downloads `ucity.gbc` from the pinned
+[`AntonioND/ucity` `v1.3` release](https://github.com/AntonioND/ucity/releases/tag/v1.3),
+verifies SHA-256
+`9422ee2ca7b7ea1d46b58b2a429fff3f354dfd3e732dee1e7ae6220f148ce6e0`, and stores it at
+`roms/ucity.gbc`.
+
+3. Run the MCP server:
 
 ```bash
 uv run mgba-live-mcp
 ```
 
-3. Register it in your MCP client (Codex example):
+4. Register it in your MCP client (Codex example):
 
 ```toml
 [mcp_servers.mgba]
@@ -78,7 +90,7 @@ args = [
 ]
 ```
 
-4. Install and run pre-commit hooks (lint/checks via `uv run`):
+5. Install and run pre-commit hooks (lint/checks via `uv run`):
 
 ```bash
 make precommit-install
@@ -199,6 +211,8 @@ uv run pytest
 Quality commands:
 
 ```bash
+make test-rom
+make verify-test-rom
 make lint
 make typecheck
 make test

@@ -177,6 +177,8 @@ snapshot in one call.
 
 - `mgba_live_start` is bootstrap-only (no Lua arg, no screenshot return).
 - `mgba_live_start_with_lua` requires exactly one of `file` or `code`.
+- After `mgba_live_start`, all single-session MCP tools require an explicit
+  `session`, except `mgba_live_status(all=true)`.
 - `mgba_live_run_lua` supports callback-style macros by returning
   `{ macro_key = "..." }` and setting `_G[macro_key].active = false` when done;
   the tool waits for completion before returning its snapshot.

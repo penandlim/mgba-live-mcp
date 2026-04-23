@@ -29,12 +29,14 @@ def _first_payload(result: Any) -> dict[str, Any]:
 def test_list_tools_input_tap_exposes_wait_frames() -> None:
     tools = asyncio.run(mcp_server.list_tools())
     by_name = {tool.name: tool for tool in tools}
-    tap_props = by_name["mgba_live_input_tap"].inputSchema["properties"]
+    tap_schema = by_name["mgba_live_input_tap"].inputSchema
+    tap_props = tap_schema["properties"]
 
     assert "wait_frames" in tap_props
     assert tap_props["wait_frames"]["type"] == "integer"
     assert tap_props["wait_frames"]["default"] == 0
     assert tap_props["wait_frames"]["minimum"] == 0
+    assert tap_schema["required"] == ["session", "key"]
 
 
 class _InputTapController:
@@ -201,7 +203,7 @@ def test_input_tap_errors_when_session_cannot_be_resolved(monkeypatch: Any) -> N
     fake = _InputTapController(status_ok=False)
     monkeypatch.setattr(mcp_server, "_controller", fake)
 
-    with pytest.raises(RuntimeError, match="session_id"):
+    with pytest.raises(ValueError, match="session_required"):
         asyncio.run(
             mcp_server.call_tool(
                 "mgba_live_input_tap",
@@ -211,7 +213,7 @@ def test_input_tap_errors_when_session_cannot_be_resolved(monkeypatch: Any) -> N
                 },
             )
         )
-    assert [call["command"] for call in fake.calls] == ["input-tap", "status"]
+    assert fake.calls == []
 
 
 def test_input_set_and_clear_remain_no_snapshot(monkeypatch: Any) -> None:

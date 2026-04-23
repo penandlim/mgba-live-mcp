@@ -5,6 +5,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
+
 from mgba_live_mcp import server as mcp_server
 
 
@@ -73,13 +75,14 @@ def test_list_tools_exposes_export_screenshot_name() -> None:
     names = set(by_name)
     assert "mgba_live_export_screenshot" in names
     assert "mgba_live_screenshot" not in names
+    assert by_name["mgba_live_export_screenshot"].inputSchema["required"] == ["session"]
     screenshot_props = by_name["mgba_live_export_screenshot"].inputSchema["properties"]
     assert "text_format" not in screenshot_props
     assert "text_max_bytes" not in screenshot_props
     assert "png" not in screenshot_props
 
 
-def test_status_tool_returns_screenshot_without_text(monkeypatch: Any) -> None:
+def test_status_requires_session_unless_all(monkeypatch: Any) -> None:
     class _StatusController:
         def __init__(self) -> None:
             self.calls: list[dict[str, Any]] = []
@@ -95,12 +98,9 @@ def test_status_tool_returns_screenshot_without_text(monkeypatch: Any) -> None:
     fake = _StatusController()
     monkeypatch.setattr(mcp_server, "_controller", fake)
 
-    contents = asyncio.run(mcp_server.call_tool("mgba_live_status", {}))
-    payload = _first_payload(contents)
-
-    assert payload["session_id"] == "active-session"
-    assert payload["alive"] is True
-    assert payload["screenshot"] == {"frame": 100}
+    with pytest.raises(ValueError, match="session_required"):
+        asyncio.run(mcp_server.call_tool("mgba_live_status", {}))
+    assert fake.calls == []
 
 
 def test_status_all_uses_session_from_payload_for_snapshot(monkeypatch: Any) -> None:

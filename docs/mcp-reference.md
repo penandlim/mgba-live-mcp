@@ -171,7 +171,7 @@ Show status for one session or all managed sessions.
       "type": "boolean"
     },
     "session": {
-      "description": "Optional session id.",
+      "description": "Session id. Required unless all=true.",
       "type": "string"
     },
     "timeout": {
@@ -192,7 +192,7 @@ _Not declared._
 
 Stop one managed session.
 
-- Required input fields: _None._
+- Required input fields: `session`
 
 ### Input Schema
 
@@ -213,6 +213,9 @@ Stop one managed session.
       "type": "number"
     }
   },
+  "required": [
+    "session"
+  ],
   "type": "object"
 }
 ```
@@ -225,7 +228,7 @@ _Not declared._
 
 Execute Lua in a running live session.
 
-- Required input fields: _None._
+- Required input fields: `session`
 
 ### Input Schema
 
@@ -241,7 +244,7 @@ Execute Lua in a running live session.
       "type": "string"
     },
     "session": {
-      "description": "Optional session id.",
+      "description": "Session id.",
       "type": "string"
     },
     "timeout": {
@@ -250,7 +253,9 @@ Execute Lua in a running live session.
       "type": "number"
     }
   },
-  "required": [],
+  "required": [
+    "session"
+  ],
   "type": "object"
 }
 ```
@@ -263,7 +268,7 @@ _Not declared._
 
 Tap a key for N frames, optionally wait additional frames after release, then return a screenshot.
 
-- Required input fields: `key`
+- Required input fields: `session`, `key`
 
 ### Input Schema
 
@@ -294,6 +299,7 @@ Tap a key for N frames, optionally wait additional frames after release, then re
     }
   },
   "required": [
+    "session",
     "key"
   ],
   "type": "object"
@@ -308,7 +314,7 @@ _Not declared._
 
 Set currently held keys for live session. Use mgba_live_status after input for visual verification.
 
-- Required input fields: `keys`
+- Required input fields: `session`, `keys`
 
 ### Input Schema
 
@@ -332,6 +338,7 @@ Set currently held keys for live session. Use mgba_live_status after input for v
     }
   },
   "required": [
+    "session",
     "keys"
   ],
   "type": "object"
@@ -346,7 +353,7 @@ _Not declared._
 
 Clear held keys from live session. Use mgba_live_status after input for visual verification.
 
-- Required input fields: _None._
+- Required input fields: `session`
 
 ### Input Schema
 
@@ -369,6 +376,9 @@ Clear held keys from live session. Use mgba_live_status after input for visual v
       "type": "number"
     }
   },
+  "required": [
+    "session"
+  ],
   "type": "object"
 }
 ```
@@ -381,7 +391,7 @@ _Not declared._
 
 Export a screenshot from a live session.
 
-- Required input fields: _None._
+- Required input fields: `session`
 
 ### Input Schema
 
@@ -402,7 +412,9 @@ Export a screenshot from a live session.
       "type": "number"
     }
   },
-  "required": [],
+  "required": [
+    "session"
+  ],
   "type": "object"
 }
 ```
@@ -415,7 +427,7 @@ _Not declared._
 
 Read memory addresses from live session.
 
-- Required input fields: `addresses`
+- Required input fields: `session`, `addresses`
 
 ### Input Schema
 
@@ -439,6 +451,7 @@ Read memory addresses from live session.
     }
   },
   "required": [
+    "session",
     "addresses"
   ],
   "type": "object"
@@ -453,7 +466,7 @@ _Not declared._
 
 Read contiguous memory range from live session.
 
-- Required input fields: `start`, `length`
+- Required input fields: `session`, `start`, `length`
 
 ### Input Schema
 
@@ -478,6 +491,7 @@ Read contiguous memory range from live session.
     }
   },
   "required": [
+    "session",
     "start",
     "length"
   ],
@@ -493,7 +507,7 @@ _Not declared._
 
 Dump pointer table entries from live session.
 
-- Required input fields: `start`, `count`
+- Required input fields: `session`, `start`, `count`
 
 ### Input Schema
 
@@ -522,6 +536,7 @@ Dump pointer table entries from live session.
     }
   },
   "required": [
+    "session",
     "start",
     "count"
   ],
@@ -537,7 +552,7 @@ _Not declared._
 
 Dump OAM entries from live session.
 
-- Required input fields: _None._
+- Required input fields: `session`
 
 ### Input Schema
 
@@ -557,6 +572,9 @@ Dump OAM entries from live session.
       "type": "number"
     }
   },
+  "required": [
+    "session"
+  ],
   "type": "object"
 }
 ```
@@ -569,7 +587,7 @@ _Not declared._
 
 Dump structured entity bytes from live session.
 
-- Required input fields: _None._
+- Required input fields: `session`
 
 ### Input Schema
 
@@ -597,6 +615,9 @@ Dump structured entity bytes from live session.
       "type": "number"
     }
   },
+  "required": [
+    "session"
+  ],
   "type": "object"
 }
 ```

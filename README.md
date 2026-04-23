@@ -12,12 +12,15 @@ If you need one-shot/headless runs instead of persistent sessions, see
 
 - Long-lived session lifecycle: `mgba_live_start`, `mgba_live_attach`,
   `mgba_live_status`, `mgba_live_stop`
-- Live control: `mgba_live_input_tap`, `mgba_live_input_set`,
-  `mgba_live_input_clear`, `mgba_live_run_lua`
+- Metadata-only control: `mgba_live_input_tap`, `mgba_live_input_set`,
+  `mgba_live_input_clear`, `mgba_live_run_lua`, `mgba_live_start_with_lua`
+- Visual tools: `mgba_live_get_view`, `mgba_live_input_tap_and_view`,
+  `mgba_live_run_lua_and_view`, `mgba_live_start_with_lua_and_view`,
+  `mgba_live_export_screenshot`
 - Inspection: `mgba_live_read_memory`, `mgba_live_read_range`,
   `mgba_live_dump_pointers`, `mgba_live_dump_oam`, `mgba_live_dump_entities`
-- Snapshot output: `mgba_live_export_screenshot` plus image snapshots returned
-  by `status`/`attach`/`start_with_lua`/most live commands
+- Explicit session scoping for all single-session tools after `mgba_live_start`
+- `session_id` returned in every successful single-session response
 
 MCP reference: [docs/mcp-reference.md](docs/mcp-reference.md)
 
@@ -64,12 +67,6 @@ uv sync
 ```bash
 make test-rom
 ```
-
-This downloads `ucity.gbc` from the pinned
-[`AntonioND/ucity` `v1.3` release](https://github.com/AntonioND/ucity/releases/tag/v1.3),
-verifies SHA-256
-`9422ee2ca7b7ea1d46b58b2a429fff3f354dfd3e732dee1e7ae6220f148ce6e0`, and stores it at
-`roms/ucity.gbc`.
 
 3. Run the MCP server:
 
@@ -119,6 +116,9 @@ Important runtime notes:
   `~/.mgba-live-mcp/runtime/archived_sessions/` instead of being deleted.
 - Archived sessions are not treated as active and are not returned by `mgba_live_status` calls.
 - This is a hard cutover from repo-local `.runtime`; no hybrid fallback is used.
+- This is also a hard API cutover at `0.4.0`: single-session tools require
+  explicit `session`, same-session overlap is rejected, and screenshots come
+  only from explicit visual tools.
 - If you have old repo-local sessions, migrate manually by copying `.runtime/*` to
   `~/.mgba-live-mcp/runtime/`.
 - `mgba_live_status` with `all=true` lists sessions from this shared user-level runtime root.
@@ -143,8 +143,7 @@ Notes:
 
 ### 2) Start + run Lua immediately
 
-Use `mgba_live_start_with_lua` when you need first-frame setup and a post-Lua
-snapshot in one call.
+Use `mgba_live_start_with_lua` when you need first-frame setup and metadata only.
 
 ```json
 {
@@ -153,7 +152,19 @@ snapshot in one call.
 }
 ```
 
-### 3) Tap input and capture after settle
+### 3) Start + run Lua + capture a view
+
+```json
+{
+  "rom": "/absolute/path/to/game.gba",
+  "code": "return emu:currentFrame()"
+}
+```
+
+Use `mgba_live_start_with_lua_and_view` when you want the same setup flow plus
+one post-settle screenshot.
+
+### 4) Tap input and capture after settle
 
 ```json
 {
@@ -164,9 +175,10 @@ snapshot in one call.
 }
 ```
 
-`wait_frames` is applied after release before the screenshot is captured.
+Use `mgba_live_input_tap_and_view` for this flow. `wait_frames` is applied
+after release before the screenshot is captured.
 
-### 4) Read memory
+### 5) Read memory
 
 ```json
 {
@@ -176,7 +188,17 @@ snapshot in one call.
 }
 ```
 
-### 5) Save screenshot to a known path
+### 6) Get a current view without persisting
+
+```json
+{
+  "session": "20260220-120000"
+}
+```
+
+Use `mgba_live_get_view` for a one-off in-memory screenshot.
+
+### 7) Save screenshot to a known path
 
 ```json
 {
@@ -188,22 +210,18 @@ snapshot in one call.
 ## Important Behavior
 
 - `mgba_live_start` is bootstrap-only (no Lua arg, no screenshot return).
-- Existing-session tools do not auto-select an active or most-recent session;
-  pass `session` explicitly unless you are calling `mgba_live_status` with
-  `all=true`.
 - `mgba_live_start_with_lua` requires exactly one of `file` or `code`.
-- After `mgba_live_start`, all single-session MCP tools require an explicit
-  `session`, except `mgba_live_status(all=true)`.
-- `mgba_live_run_lua` supports callback-style macros by returning
-  `{ macro_key = "..." }` and setting `_G[macro_key].active = false` when done;
-  the tool waits for completion before returning its snapshot.
-- Successful single-session MCP responses include a top-level `session_id`.
-  Aggregate `mgba_live_status(all=true)` keeps `session_id` on each returned
-  session entry.
-- `mgba_live_input_set` and `mgba_live_input_clear` update held keys but do not
-  include a snapshot; call `mgba_live_status` to verify visually.
-- Automatic snapshots in tool responses include only `frame` metadata and image
-  content. Files are persisted only via `mgba_live_export_screenshot`.
+- `mgba_live_status(session)` is metadata-only, and `mgba_live_status(all=true)`
+  never returns screenshots.
+- `mgba_live_run_lua`, `mgba_live_input_tap`, `mgba_live_input_set`,
+  `mgba_live_input_clear`, and `mgba_live_start_with_lua` are metadata-only.
+- `mgba_live_run_lua_and_view`, `mgba_live_input_tap_and_view`, and
+  `mgba_live_start_with_lua_and_view` are the settled visual composite tools.
+- `mgba_live_get_view` and `mgba_live_export_screenshot` are explicit screenshot tools.
+- `mgba_live_export_screenshot` persists a file and returns that path plus image
+  content. `mgba_live_get_view` returns only image content plus frame metadata.
+- Visual tools fail hard on settle or snapshot failure instead of returning a
+  warning alongside a screenshot.
 
 ## Local CLI (Dev/Debug)
 
@@ -227,11 +245,11 @@ make check
 
 ## Release Checklist
 
-1. Update version in `pyproject.toml` and `src/mgba_live_mcp/__init__.py`.
+1. Confirm version is `0.4.0` in `pyproject.toml` and `src/mgba_live_mcp/__init__.py`.
 2. Add release notes in `CHANGELOG.md`.
 3. Run local checks:
 `uv sync --group dev && make check && uv build`
 4. Trigger TestPyPI publish workflow (`publish-testpypi`) and verify install from TestPyPI.
-5. Push tag `vX.Y.Z` to trigger the PyPI release workflow.
+5. Push tag `v0.4.0` to trigger the PyPI release workflow.
 6. Smoke test:
 `uvx mgba-live-mcp` and `uvx --from git+https://github.com/penandlim/mgba-live-mcp mgba-live-mcp`.

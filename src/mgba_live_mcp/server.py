@@ -1,4 +1,4 @@
-"""MCP server for persistent live mGBA control with live screenshot exports."""
+"""MCP server for persistent live mGBA control."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import asyncio
 import base64
 import binascii
 import json
-import time
 from pathlib import Path
 from typing import Any
 
@@ -18,18 +17,6 @@ from .live_controller import LiveControllerClient
 
 server = Server("mgba-live-mcp")
 _controller = LiveControllerClient()
-_TIMEOUT_FLAG_COMMANDS = {
-    "run-lua",
-    "input-tap",
-    "input-set",
-    "input-clear",
-    "screenshot",
-    "read-memory",
-    "read-range",
-    "dump-pointers",
-    "dump-oam",
-    "dump-entities",
-}
 
 
 def _text_content(payload: Any) -> TextContent:
@@ -39,25 +26,16 @@ def _text_content(payload: Any) -> TextContent:
 def _text_payload(content: TextContent | ImageContent) -> dict[str, Any]:
     if getattr(content, "type", None) != "text":
         raise RuntimeError("Expected text payload in tool response.")
-
     text_value = getattr(content, "text", None)
     if not isinstance(text_value, str):
         raise RuntimeError("Text payload is missing JSON content.")
-
     try:
         payload = json.loads(text_value)
     except json.JSONDecodeError as exc:
         raise RuntimeError("Failed to parse JSON tool payload.") from exc
-
     if not isinstance(payload, dict):
         raise RuntimeError("Tool payload JSON must be an object.")
     return payload
-
-
-def _parse_args_list(value: list[str] | None) -> list[str]:
-    if not value:
-        return []
-    return [str(v) for v in value]
 
 
 def _image_bytes_from_screenshot(result: dict[str, Any]) -> tuple[str, bytes] | None:
@@ -84,573 +62,143 @@ def _image_content(result: dict[str, Any]) -> ImageContent | None:
 
     _, raw = parsed
     encoded = base64.b64encode(raw).decode()
-
     return ImageContent(type="image", data=encoded, mimeType="image/png")
 
 
-def _public_snapshot_payload(result: dict[str, Any]) -> dict[str, Any]:
-    frame = result.get("frame")
-    if isinstance(frame, bool):
-        return {}
-    if isinstance(frame, (int, float)):
-        return {"frame": int(frame)}
-    return {}
+def _require_session(arguments: dict[str, Any]) -> str:
+    session = arguments.get("session")
+    if not isinstance(session, str) or not session:
+        raise ValueError("session_required: session is required.")
+    return session
 
 
-def _extract_session_id(payload: Any) -> str | None:
-    if isinstance(payload, dict):
-        session_id = payload.get("session_id")
-        if isinstance(session_id, str) and session_id:
-            return session_id
+def _maybe_session(arguments: dict[str, Any]) -> str | None:
+    session = arguments.get("session")
+    if isinstance(session, str) and session:
+        return session
     return None
 
 
-def _session_arg_value(command_args: list[str]) -> str | None:
-    for index, value in enumerate(command_args):
-        if value == "--session" and index + 1 < len(command_args):
-            return str(command_args[index + 1])
-    return None
+def _all_sessions_requested(arguments: dict[str, Any]) -> bool:
+    all_value = arguments.get("all")
+    if all_value is None:
+        return False
+    if not isinstance(all_value, bool):
+        raise ValueError("all must be a boolean.")
+    return all_value
 
 
-def _append_cli_timeout(command: str, command_args: list[str], timeout: float) -> list[str]:
-    if command not in _TIMEOUT_FLAG_COMMANDS:
-        return list(command_args)
-    if "--timeout" in command_args:
-        return list(command_args)
-    timeout_value = max(float(timeout), 0.0)
-    return [*command_args, "--timeout", f"{timeout_value:g}"]
+def _parse_keys(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("keys must be an array of strings.")
+    return [str(item) for item in value]
 
 
-def _error_is_timeout(exc: Exception) -> bool:
-    if isinstance(exc, TimeoutError):
-        return True
-    msg = str(exc).lower()
-    timeout_markers = (
-        "timed out",
-        "command timed out",
-        "timeout exceeded",
-    )
-    return any(marker in msg for marker in timeout_markers)
+def _parse_required_keys(arguments: dict[str, Any]) -> list[str]:
+    if "keys" not in arguments:
+        raise ValueError("keys is required.")
+    return _parse_keys(arguments.get("keys"))
 
 
-def _looks_like_stall_error(exc: Exception) -> bool:
-    msg = str(exc).lower()
-    return (
-        _error_is_timeout(exc)
-        or "bridge is busy" in msg
-        or "command.lua still present" in msg
-        or "no response from bridge" in msg
-    )
+def _parse_optional_pid(arguments: dict[str, Any]) -> int | None:
+    pid = arguments.get("pid")
+    if pid is None:
+        return None
+    if isinstance(pid, bool) or not isinstance(pid, int):
+        raise ValueError("pid must be an integer.")
+    return pid
 
 
-async def _collect_stall_diagnostics(*, session_id: str, timeout: float) -> dict[str, Any]:
-    diagnostics: dict[str, Any] = {"session_id": session_id}
-    try:
-        status_result = await _controller.run(
-            "status",
-            ["--session", str(session_id)],
-            timeout=max(timeout, 20.0),
-        )
-    except Exception as exc:
-        diagnostics["status_error"] = str(exc)
-        return diagnostics
+def _parse_grace(arguments: dict[str, Any]) -> float:
+    grace = arguments.get("grace")
+    if grace is None:
+        return 1.0
+    if isinstance(grace, bool) or not isinstance(grace, (int, float)):
+        raise ValueError("grace must be a number.")
+    return float(grace)
 
-    payload = status_result.payload
-    status_payload: dict[str, Any] | None = None
-    if isinstance(payload, dict):
-        status_payload = payload
-    elif isinstance(payload, list):
-        for item in payload:
-            if (
-                isinstance(item, dict)
-                and isinstance(item.get("session_id"), str)
-                and item.get("session_id") == session_id
-            ):
-                status_payload = item
-                break
-        if status_payload is None:
-            diagnostics["alive"] = False
-            diagnostics["status_missing_session"] = True
-            return diagnostics
+
+def _parse_wait_frames(arguments: dict[str, Any]) -> int:
+    wait_frames_raw = arguments.get("wait_frames", 0)
+    if wait_frames_raw is None:
+        return 0
+    if isinstance(wait_frames_raw, bool):
+        raise ValueError("wait_frames must be a non-negative integer")
+    if isinstance(wait_frames_raw, int):
+        wait_frames = wait_frames_raw
+    elif isinstance(wait_frames_raw, float) and wait_frames_raw.is_integer():
+        wait_frames = int(wait_frames_raw)
     else:
-        return diagnostics
-
-    status_session_id = status_payload.get("session_id")
-    if isinstance(status_session_id, str) and status_session_id:
-        diagnostics["status_session_id"] = status_session_id
-        if status_session_id != session_id:
-            diagnostics["status_session_mismatch"] = True
-            diagnostics["alive"] = False
-            return diagnostics
-
-    alive = status_payload.get("alive")
-    if isinstance(alive, bool):
-        diagnostics["alive"] = alive
-
-    heartbeat = status_payload.get("heartbeat")
-    if isinstance(heartbeat, dict):
-        frame = heartbeat.get("frame")
-        if isinstance(frame, (int, float)) and not isinstance(frame, bool):
-            diagnostics["heartbeat_frame"] = int(frame)
-        hb_unix_time = heartbeat.get("unix_time")
-        if isinstance(hb_unix_time, (int, float)) and not isinstance(hb_unix_time, bool):
-            hb_unix = int(hb_unix_time)
-            diagnostics["heartbeat_unix_time"] = hb_unix
-            diagnostics["heartbeat_age_seconds"] = max(0, int(time.time()) - hb_unix)
-    return diagnostics
+        raise ValueError("wait_frames must be a non-negative integer")
+    if wait_frames < 0:
+        raise ValueError("wait_frames must be >= 0")
+    return wait_frames
 
 
-def _format_stall_error_message(
-    *,
-    operation: str,
-    diagnostics: dict[str, Any],
-    original_error: Exception,
-) -> str:
-    timeout_reached = _error_is_timeout(original_error)
-    details = [f"session_id={diagnostics.get('session_id', 'unknown')}"]
-    if "alive" in diagnostics:
-        details.append(f"alive={diagnostics['alive']}")
-    if "heartbeat_frame" in diagnostics:
-        details.append(f"heartbeat_frame={diagnostics['heartbeat_frame']}")
-    if "heartbeat_age_seconds" in diagnostics:
-        details.append(f"heartbeat_age_seconds={diagnostics['heartbeat_age_seconds']}")
-    if "status_error" in diagnostics:
-        details.append(f"status_error={diagnostics['status_error']}")
-    if "status_session_id" in diagnostics:
-        details.append(f"status_session_id={diagnostics['status_session_id']}")
-    if "status_session_mismatch" in diagnostics:
-        details.append(f"status_session_mismatch={diagnostics['status_session_mismatch']}")
-    if "status_missing_session" in diagnostics:
-        details.append(f"status_missing_session={diagnostics['status_missing_session']}")
-    if timeout_reached:
-        details.append("timeout_reached=True")
-    details.append(f"original_error={original_error}")
-    return (
-        f"{operation}. The session appears stuck. "
-        "Possible causes: bad ROM build/patch, Lua script deadloop, or paused emulation. "
-        f"Diagnostics: {', '.join(details)}"
-    )
+def _lua_source_kwargs(arguments: dict[str, Any]) -> dict[str, Any]:
+    file_arg = arguments.get("file")
+    code_arg = arguments.get("code")
+    has_file = bool(file_arg)
+    has_code = bool(code_arg)
+    if has_file == has_code:
+        raise ValueError("Exactly one of file or code is required.")
+    if has_file:
+        return {"file": str(file_arg)}
+    return {"code": str(code_arg)}
 
 
-def _append_warning(payload: dict[str, Any], warning: dict[str, Any]) -> None:
-    warnings = payload.get("warnings")
-    if not isinstance(warnings, list):
-        warnings = []
-        payload["warnings"] = warnings
-    warnings.append(warning)
-
-
-async def _resolve_snapshot_session(
-    command_args: list[str],
-    command_payload: Any,
-) -> tuple[str | None, Exception | None]:
-    session_from_args = _session_arg_value(command_args)
-    if session_from_args:
-        return session_from_args, None
-
-    payload_session_id = _extract_session_id(command_payload)
-    if payload_session_id:
-        return payload_session_id, None
-
-    return None, None
-
-
-def _is_aggregate_status_request(live_command: str, run_command_args: list[str]) -> bool:
-    return live_command == "status" and "--all" in run_command_args
-
-
-async def _resolve_response_session(
-    *,
-    live_command: str,
-    run_command_args: list[str],
-    command_payload: Any,
-    explicit_session_id: str | None,
-) -> tuple[str | None, Exception | None]:
-    if _is_aggregate_status_request(live_command, run_command_args):
-        return None, None
-    if explicit_session_id:
-        return str(explicit_session_id), None
-    payload_session_id = _extract_session_id(command_payload)
-    if payload_session_id:
-        return payload_session_id, None
-    session_from_args = _session_arg_value(run_command_args)
-    if session_from_args:
-        return session_from_args, None
-    return await _resolve_snapshot_session(run_command_args, command_payload)
-
-
-def _extract_run_lua_result(command_payload: dict[str, Any]) -> Any:
-    if not isinstance(command_payload, dict):
-        return None
-    data = command_payload.get("data")
-    if not isinstance(data, dict):
-        return None
-    if "result" in data:
-        return data.get("result")
-    return data
-
-
-def _extract_run_lua_macro_key(command_payload: dict[str, Any]) -> str | None:
-    result = _extract_run_lua_result(command_payload)
-    if not isinstance(result, dict):
-        return None
-    macro_key = result.get("macro_key")
-    if isinstance(macro_key, str) and macro_key:
-        return macro_key
-    return None
-
-
-def _extract_response_frame(command_payload: Any) -> int | None:
-    if not isinstance(command_payload, dict):
-        return None
-    frame = command_payload.get("frame")
-    if isinstance(frame, bool):
-        return None
-    if isinstance(frame, (int, float)):
-        return int(frame)
-    return None
-
-
-def _extract_input_tap_duration(command_payload: Any) -> int | None:
-    if not isinstance(command_payload, dict):
-        return None
-    data = command_payload.get("data")
-    if not isinstance(data, dict):
-        return None
-    duration = data.get("duration")
-    if isinstance(duration, bool):
-        return None
-    if isinstance(duration, (int, float)):
-        value = int(duration)
-        if value >= 1:
-            return value
-    return None
-
-
-def _lua_quote(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace("'", "\\'")
-    return f"'{escaped}'"
-
-
-async def _wait_for_macro_completion(
-    *,
-    session_id: str,
-    macro_key: str,
-    timeout: float,
-    poll_seconds: float = 0.05,
-) -> dict[str, Any]:
-    settle_timeout = max(float(timeout), 0.0)
-    poll_interval = max(float(poll_seconds), 0.01)
-    loop = asyncio.get_running_loop()
-    started_at = loop.time()
-    deadline = started_at + settle_timeout
-    polls = 0
-    wait_code = (
-        f"local macro = _G[{_lua_quote(macro_key)}]; "
-        "if macro == nil then return true end "
-        "local active = macro.active; "
-        "if active == nil then return true end "
-        "return active == false"
-    )
-    poll_command_timeout = max(1.0, min(5.0, settle_timeout if settle_timeout > 0 else 1.0))
-
-    while True:
-        polls += 1
-        poll_args = _append_cli_timeout(
-            "run-lua",
-            ["--code", wait_code, "--session", str(session_id)],
-            poll_command_timeout,
-        )
-        poll_result = await _controller.run(
-            "run-lua",
-            poll_args,
-            timeout=poll_command_timeout,
-        )
-        result_value = _extract_run_lua_result(poll_result.payload)
-        if result_value is True:
-            return {
-                "mode": "macro_key",
-                "macro_key": macro_key,
-                "completed": True,
-                "polls": polls,
-                "waited_seconds": round(loop.time() - started_at, 3),
-            }
-
-        if settle_timeout <= 0 or loop.time() >= deadline:
-            return {
-                "mode": "macro_key",
-                "macro_key": macro_key,
-                "completed": False,
-                "polls": polls,
-                "waited_seconds": round(loop.time() - started_at, 3),
-            }
-
-        await asyncio.sleep(poll_interval)
-
-
-async def _wait_for_target_frame(
-    *,
-    session_id: str,
-    target_frame: int,
-    timeout: float,
-    poll_seconds: float = 0.05,
-) -> int:
-    settle_timeout = max(float(timeout), 0.0)
-    poll_interval = max(float(poll_seconds), 0.01)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + settle_timeout
-    poll_command_timeout = max(1.0, min(5.0, settle_timeout if settle_timeout > 0 else 1.0))
-
-    while True:
-        poll_args = _append_cli_timeout(
-            "run-lua",
-            ["--code", "return true", "--session", str(session_id)],
-            poll_command_timeout,
-        )
-        poll_result = await _controller.run(
-            "run-lua",
-            poll_args,
-            timeout=poll_command_timeout,
-        )
-        current_frame = _extract_response_frame(poll_result.payload)
-        if current_frame is None:
-            raise RuntimeError("run-lua poll did not return a frame.")
-
-        if current_frame >= target_frame:
-            return current_frame
-
-        if settle_timeout <= 0 or loop.time() >= deadline:
-            raise TimeoutError(
-                f"Timed out waiting for frame >= {target_frame}; last_frame={current_frame}"
-            )
-
-        await asyncio.sleep(poll_interval)
-
-
-async def _run_with_snapshot(
-    live_command: str,
-    command_args: list[str],
-    *,
-    timeout: float,
-    session_id: str | None = None,
-    include_snapshot: bool = True,
-    ensure_post_lua_settle: bool = False,
-    require_snapshot_session: bool = False,
-    require_screenshot: bool = False,
-    input_tap_wait_frames: int | None = None,
-) -> list[TextContent | ImageContent]:
-    run_command_args = _append_cli_timeout(live_command, command_args, timeout)
-    requested_session = session_id or _session_arg_value(run_command_args)
-    try:
-        command_result = await _controller.run(live_command, run_command_args, timeout=timeout)
-    except Exception as exc:
-        if requested_session and _looks_like_stall_error(exc):
-            diagnostics = await _collect_stall_diagnostics(
-                session_id=str(requested_session),
-                timeout=max(timeout, 20.0),
-            )
-            raise RuntimeError(
-                _format_stall_error_message(
-                    operation=f"Live command '{live_command}' failed",
-                    diagnostics=diagnostics,
-                    original_error=exc,
-                )
-            ) from exc
-        raise
-    payload: dict[str, Any]
-    if isinstance(command_result.payload, dict):
-        payload = dict(command_result.payload)
-    else:
-        payload = {"value": command_result.payload}
-    image_contents: list[ImageContent] = []
-
-    resolved_response_session, session_resolution_error = await _resolve_response_session(
-        live_command=live_command,
-        run_command_args=run_command_args,
-        command_payload=command_result.payload,
-        explicit_session_id=session_id,
-    )
-    if not resolved_response_session and not _is_aggregate_status_request(
-        live_command, run_command_args
-    ):
-        detail = ""
-        if session_resolution_error is not None:
-            detail = f" Cause: {session_resolution_error}"
-        raise RuntimeError(
-            f"Unable to resolve session_id for successful '{live_command}' response.{detail}"
-        ) from session_resolution_error
-    if resolved_response_session:
-        payload.setdefault("session_id", str(resolved_response_session))
-
-    if not include_snapshot:
-        return [_text_content(payload)]
-
-    resolved_session = resolved_response_session
-    snapshot_resolution_error = None
-    if not resolved_session:
-        if require_snapshot_session:
-            requested_session = session_id or _session_arg_value(run_command_args) or "unknown"
-            detail = ""
-            if snapshot_resolution_error is not None:
-                detail = f" Cause: {snapshot_resolution_error}"
-            raise RuntimeError(
-                f"Unable to resolve session_id for screenshot capture after '{live_command}' "
-                f"(requested_session={requested_session}).{detail}"
-            ) from snapshot_resolution_error
-        return [_text_content(payload)]
-
-    if input_tap_wait_frames is not None:
-        tap_frame = _extract_response_frame(command_result.payload)
-        tap_duration = _extract_input_tap_duration(command_result.payload)
-        if tap_frame is None or tap_duration is None:
-            raise RuntimeError(
-                f"Input-tap response missing frame/duration for session '{resolved_session}'."
-            )
-        target_frame = tap_frame + tap_duration + int(input_tap_wait_frames)
-        try:
-            await _wait_for_target_frame(
-                session_id=str(resolved_session),
-                target_frame=target_frame,
-                timeout=max(timeout, 20.0),
-            )
-        except Exception as exc:
-            diagnostics = await _collect_stall_diagnostics(
-                session_id=str(resolved_session),
-                timeout=max(timeout, 20.0),
-            )
-            raise RuntimeError(
-                _format_stall_error_message(
-                    operation=(
-                        f"Post-tap wait failed for session '{resolved_session}' "
-                        f"(target_frame={target_frame})"
-                    ),
-                    diagnostics=diagnostics,
-                    original_error=exc,
-                )
-            ) from exc
-
-    if ensure_post_lua_settle:
-        macro_key = _extract_run_lua_macro_key(command_result.payload)
-        if macro_key:
-            try:
-                await _wait_for_macro_completion(
-                    session_id=str(resolved_session),
-                    macro_key=macro_key,
-                    timeout=max(timeout, 20.0),
-                )
-            except Exception as exc:
-                diagnostics = await _collect_stall_diagnostics(
-                    session_id=str(resolved_session),
-                    timeout=max(timeout, 20.0),
-                )
-                _append_warning(
-                    payload,
-                    {
-                        "code": "post_lua_macro_settle_failed",
-                        "message": _format_stall_error_message(
-                            operation=(
-                                f"Post-Lua macro settle failed for session '{resolved_session}' "
-                                f"(macro_key={macro_key})"
-                            ),
-                            diagnostics=diagnostics,
-                            original_error=exc,
-                        ),
-                        **diagnostics,
-                    },
-                )
-        else:
-            # For run-lua calls, issue a no-op Lua command before screenshot capture
-            # so the image reflects state after the Lua command has fully completed.
-            try:
-                settle_timeout = max(timeout, 20.0)
-                settle_args = _append_cli_timeout(
-                    "run-lua",
-                    ["--code", "return true", "--session", str(resolved_session)],
-                    settle_timeout,
-                )
-                await _controller.run(
-                    "run-lua",
-                    settle_args,
-                    timeout=settle_timeout,
-                )
-            except Exception as exc:
-                diagnostics = await _collect_stall_diagnostics(
-                    session_id=str(resolved_session),
-                    timeout=max(timeout, 20.0),
-                )
-                _append_warning(
-                    payload,
-                    {
-                        "code": "post_lua_noop_settle_failed",
-                        "message": _format_stall_error_message(
-                            operation=(
-                                f"Post-Lua no-op settle failed for session '{resolved_session}'"
-                            ),
-                            diagnostics=diagnostics,
-                            original_error=exc,
-                        ),
-                        **diagnostics,
-                    },
-                )
-
-    screenshot_timeout = max(timeout, 20.0)
-    shot_args = _append_cli_timeout(
-        "screenshot",
-        ["--session", str(resolved_session), "--no-save"],
-        screenshot_timeout,
-    )
-    try:
-        shot_result = await _controller.run("screenshot", shot_args, timeout=screenshot_timeout)
-        screenshot_payload = shot_result.payload
-        public_snapshot = (
-            _public_snapshot_payload(screenshot_payload)
-            if isinstance(screenshot_payload, dict)
-            else {}
-        )
-        if public_snapshot:
-            payload["screenshot"] = public_snapshot
-        shot_image = (
-            _image_content(screenshot_payload) if isinstance(screenshot_payload, dict) else None
-        )
-        if shot_image is not None:
-            image_contents.append(shot_image)
-    except Exception as exc:
-        if require_screenshot:
-            raise RuntimeError(
-                f"Screenshot capture failed for session '{resolved_session}'. Original error: {exc}"
-            ) from exc
-
-    return [_text_content(payload), *image_contents]
-
-
-def _build_session_arg(args: dict[str, Any], *, required: bool = False) -> list[str]:
-    result = []
-    if session := args.get("session"):
-        result.extend(["--session", str(session)])
-        return result
-    if required:
-        raise ValueError("session_required: session is required")
-    return result
-
-
-def _build_start_command_args(args: dict[str, Any]) -> list[str]:
-    if "rom" not in args:
+def _build_start_kwargs(arguments: dict[str, Any]) -> dict[str, Any]:
+    rom = arguments.get("rom")
+    if not isinstance(rom, str) or not rom:
         raise ValueError("rom is required")
 
-    cmd_args: list[str] = ["--rom", str(args["rom"])]
-    if savestate := args.get("savestate"):
-        cmd_args += ["--savestate", str(savestate)]
-    if "fps_target" in args:
-        fps_target = args["fps_target"]
-        if fps_target is not None:
-            cmd_args += ["--fps-target", str(float(fps_target))]
-    if args.get("fast"):
-        cmd_args.append("--fast")
-    if session_id := args.get("session_id"):
-        cmd_args.extend(["--session-id", str(session_id)])
-    if mgba_path := args.get("mgba_path"):
-        cmd_args += ["--mgba-path", str(mgba_path)]
-    return cmd_args
+    kwargs: dict[str, Any] = {"rom": rom}
+    savestate = arguments.get("savestate")
+    if savestate is not None:
+        if not isinstance(savestate, str) or not savestate:
+            raise ValueError("savestate must be a non-empty string")
+        kwargs["savestate"] = savestate
+    fps_target = arguments.get("fps_target")
+    if fps_target is not None:
+        if isinstance(fps_target, bool) or not isinstance(fps_target, (int, float)):
+            raise ValueError("fps_target must be a number")
+        kwargs["fps_target"] = float(fps_target)
+    fast = arguments.get("fast")
+    if fast is not None:
+        if not isinstance(fast, bool):
+            raise ValueError("fast must be a boolean")
+        if fast:
+            kwargs["fast"] = True
+    session_id = arguments.get("session_id")
+    if session_id is not None:
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_id must be a non-empty string")
+        kwargs["session_id"] = session_id
+    mgba_path = arguments.get("mgba_path")
+    if mgba_path is not None:
+        if not isinstance(mgba_path, str) or not mgba_path:
+            raise ValueError("mgba_path must be a non-empty string")
+        kwargs["mgba_path"] = mgba_path
+    return kwargs
+
+
+def _public_visual_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    public = dict(payload)
+    public.pop("png_base64", None)
+    return public
+
+
+def _contents_from_payload(
+    payload: dict[str, Any], *, include_image: bool
+) -> list[TextContent | ImageContent]:
+    contents: list[TextContent | ImageContent] = [_text_content(_public_visual_payload(payload))]
+    if include_image:
+        image = _image_content(payload)
+        if image is not None:
+            contents.append(image)
+    return contents
 
 
 @server.list_tools()
@@ -664,54 +212,68 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "rom": {"type": "string", "description": "Path to ROM (.gba/.gb/.gbc)."},
                     "savestate": {"type": "string", "description": "Optional savestate path."},
-                    "fps_target": {
-                        "type": "number",
-                        "description": "Explicit fpsTarget. Defaults to 120 when omitted.",
-                    },
+                    "fps_target": {"type": "number", "description": "Explicit fpsTarget."},
                     "fast": {"type": "boolean", "description": "Shortcut for fps_target=600."},
                     "session_id": {
                         "type": "string",
                         "description": "Optional explicit session id.",
                     },
-                    "mgba_path": {"type": "string", "description": "Optional mgba-qt path."},
-                    "timeout": {
-                        "type": "number",
-                        "description": "Command timeout in seconds.",
-                        "default": 20.0,
-                    },
+                    "mgba_path": {"type": "string", "description": "Optional mGBA binary path."},
+                    "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["rom"],
             },
         ),
         Tool(
             name="mgba_live_start_with_lua",
-            description=(
-                "Start a live session, run Lua immediately, then return the post-Lua screenshot."
-            ),
+            description="Start a live session and run Lua immediately. Metadata only.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "rom": {"type": "string", "description": "Path to ROM (.gba/.gb/.gbc)."},
                     "savestate": {"type": "string", "description": "Optional savestate path."},
-                    "fps_target": {
-                        "type": "number",
-                        "description": "Explicit fpsTarget. Defaults to 120 when omitted.",
-                    },
+                    "fps_target": {"type": "number", "description": "Explicit fpsTarget."},
                     "fast": {"type": "boolean", "description": "Shortcut for fps_target=600."},
                     "session_id": {
                         "type": "string",
                         "description": "Optional explicit session id.",
                     },
-                    "mgba_path": {"type": "string", "description": "Optional mgba-qt path."},
+                    "mgba_path": {"type": "string", "description": "Optional mGBA binary path."},
                     "file": {"type": "string", "description": "Lua file path."},
                     "code": {"type": "string", "description": "Inline Lua code."},
-                    "timeout": {
-                        "type": "number",
-                        "description": "Command timeout in seconds.",
-                        "default": 20.0,
-                    },
+                    "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["rom"],
+                "oneOf": [
+                    {"required": ["file"]},
+                    {"required": ["code"]},
+                ],
+            },
+        ),
+        Tool(
+            name="mgba_live_start_with_lua_and_view",
+            description="Start a live session, run Lua, settle, and return one screenshot.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "rom": {"type": "string", "description": "Path to ROM (.gba/.gb/.gbc)."},
+                    "savestate": {"type": "string", "description": "Optional savestate path."},
+                    "fps_target": {"type": "number", "description": "Explicit fpsTarget."},
+                    "fast": {"type": "boolean", "description": "Shortcut for fps_target=600."},
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional explicit session id.",
+                    },
+                    "mgba_path": {"type": "string", "description": "Optional mGBA binary path."},
+                    "file": {"type": "string", "description": "Lua file path."},
+                    "code": {"type": "string", "description": "Inline Lua code."},
+                    "timeout": {"type": "number", "default": 20.0},
+                },
+                "required": ["rom"],
+                "oneOf": [
+                    {"required": ["file"]},
+                    {"required": ["code"]},
+                ],
             },
         ),
         Tool(
@@ -722,38 +284,40 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "session": {"type": "string", "description": "Session id."},
                     "pid": {"type": "integer", "description": "PID of a managed session."},
-                    "timeout": {
-                        "type": "number",
-                        "description": "Command timeout in seconds.",
-                        "default": 20.0,
-                    },
+                    "timeout": {"type": "number", "default": 20.0},
                 },
+                "anyOf": [
+                    {"required": ["session"]},
+                    {"required": ["pid"]},
+                ],
             },
         ),
         Tool(
             name="mgba_live_status",
-            description="Show status for one session or all managed sessions.",
+            description="Show metadata for one session or all managed sessions.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "session": {
-                        "type": "string",
-                        "description": "Session id. Required unless all=true.",
-                    },
+                    "session": {"type": "string", "description": "Session id."},
                     "all": {"type": "boolean", "description": "Whether to include all sessions."},
-                    "timeout": {
-                        "type": "number",
-                        "description": "Command timeout in seconds.",
-                        "default": 20.0,
-                    },
+                    "timeout": {"type": "number", "default": 20.0},
                 },
                 "anyOf": [
                     {"required": ["session"]},
-                    {
-                        "required": ["all"],
-                        "properties": {"all": {"const": True}},
-                    },
+                    {"required": ["all"], "properties": {"all": {"const": True}}},
                 ],
+            },
+        ),
+        Tool(
+            name="mgba_live_get_view",
+            description="Capture one in-memory screenshot from a live session.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "session": {"type": "string", "description": "Session id."},
+                    "timeout": {"type": "number", "default": 20.0},
+                },
+                "required": ["session"],
             },
         ),
         Tool(
@@ -764,29 +328,39 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "session": {"type": "string", "description": "Session id to stop."},
                     "grace": {"type": "number", "description": "Kill grace period in seconds."},
-                    "timeout": {
-                        "type": "number",
-                        "description": "Command timeout in seconds.",
-                        "default": 20.0,
-                    },
+                    "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session"],
             },
         ),
         Tool(
             name="mgba_live_run_lua",
-            description="Execute Lua in a running live session.",
+            description="Execute Lua in a running live session. Metadata only.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session": {"type": "string", "description": "Session id."},
                     "file": {"type": "string", "description": "Lua file path."},
                     "code": {"type": "string", "description": "Inline Lua code."},
-                    "timeout": {
-                        "type": "number",
-                        "description": "Command timeout in seconds.",
-                        "default": 20.0,
-                    },
+                    "timeout": {"type": "number", "default": 20.0},
+                },
+                "required": ["session"],
+                "oneOf": [
+                    {"required": ["file"]},
+                    {"required": ["code"]},
+                ],
+            },
+        ),
+        Tool(
+            name="mgba_live_run_lua_and_view",
+            description="Execute Lua, settle, and return one screenshot.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "session": {"type": "string", "description": "Session id."},
+                    "file": {"type": "string", "description": "Lua file path."},
+                    "code": {"type": "string", "description": "Inline Lua code."},
+                    "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session"],
                 "oneOf": [
@@ -797,10 +371,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="mgba_live_input_tap",
-            description=(
-                "Tap a key for N frames, optionally wait additional frames "
-                "after release, then return a screenshot."
-            ),
+            description="Tap a key for N frames. Metadata only.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -810,166 +381,126 @@ async def list_tools() -> list[Tool]:
                         "description": "A/B/START/SELECT/UP/DOWN/LEFT/RIGHT/L/R.",
                     },
                     "frames": {"type": "integer", "default": 1},
-                    "wait_frames": {
-                        "type": "integer",
-                        "default": 0,
-                        "minimum": 0,
-                        "description": (
-                            "Additional frames to wait after tap release before screenshot capture."
-                        ),
+                    "timeout": {"type": "number", "default": 20.0},
+                },
+                "required": ["session", "key"],
+            },
+        ),
+        Tool(
+            name="mgba_live_input_tap_and_view",
+            description="Tap a key, optionally wait additional frames, then return one screenshot.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "session": {"type": "string"},
+                    "key": {
+                        "type": "string",
+                        "description": "A/B/START/SELECT/UP/DOWN/LEFT/RIGHT/L/R.",
                     },
-                    "timeout": {
-                        "type": "number",
-                        "description": "Command timeout in seconds.",
-                        "default": 20.0,
-                    },
+                    "frames": {"type": "integer", "default": 1},
+                    "wait_frames": {"type": "integer", "default": 0, "minimum": 0},
+                    "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session", "key"],
             },
         ),
         Tool(
             name="mgba_live_input_set",
-            description=(
-                "Set currently held keys for live session. Use "
-                "mgba_live_status after input for visual verification."
-            ),
+            description="Set currently held keys for a live session.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session": {"type": "string"},
-                    "keys": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Keys to hold.",
-                    },
-                    "timeout": {
-                        "type": "number",
-                        "description": "Command timeout in seconds.",
-                        "default": 20.0,
-                    },
+                    "keys": {"type": "array", "items": {"type": "string"}},
+                    "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session", "keys"],
             },
         ),
         Tool(
             name="mgba_live_input_clear",
-            description=(
-                "Clear held keys from live session. Use mgba_live_status "
-                "after input for visual verification."
-            ),
+            description="Clear held keys from a live session.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session": {"type": "string"},
-                    "keys": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional keys to clear; omit to clear all.",
-                    },
-                    "timeout": {
-                        "type": "number",
-                        "description": "Command timeout in seconds.",
-                        "default": 20.0,
-                    },
+                    "keys": {"type": "array", "items": {"type": "string"}},
+                    "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session"],
             },
         ),
         Tool(
             name="mgba_live_export_screenshot",
-            description="Export a screenshot from a live session.",
+            description="Persist and return a screenshot from a live session.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session": {"type": "string", "description": "Session id."},
-                    "timeout": {
-                        "type": "number",
-                        "description": "Command timeout in seconds.",
-                        "default": 20.0,
-                    },
                     "out": {"type": "string", "description": "Optional persisted PNG output path."},
+                    "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session"],
             },
         ),
         Tool(
             name="mgba_live_read_memory",
-            description="Read memory addresses from live session.",
+            description="Read memory addresses from a live session.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session": {"type": "string"},
-                    "addresses": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "Addresses to read.",
-                    },
-                    "timeout": {
-                        "type": "number",
-                        "description": "Command timeout in seconds.",
-                        "default": 20.0,
-                    },
+                    "addresses": {"type": "array", "items": {"type": "integer"}},
+                    "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session", "addresses"],
             },
         ),
         Tool(
             name="mgba_live_read_range",
-            description="Read contiguous memory range from live session.",
+            description="Read a contiguous memory range from a live session.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session": {"type": "string"},
-                    "start": {"type": "integer", "description": "Range start address."},
-                    "length": {"type": "integer", "description": "Byte length."},
-                    "timeout": {
-                        "type": "number",
-                        "description": "Command timeout in seconds.",
-                        "default": 20.0,
-                    },
+                    "start": {"type": "integer"},
+                    "length": {"type": "integer"},
+                    "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session", "start", "length"],
             },
         ),
         Tool(
             name="mgba_live_dump_pointers",
-            description="Dump pointer table entries from live session.",
+            description="Dump pointer table entries from a live session.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session": {"type": "string"},
-                    "start": {"type": "integer", "description": "Pointer table start address."},
-                    "count": {"type": "integer", "description": "Entries to read."},
+                    "start": {"type": "integer"},
+                    "count": {"type": "integer"},
                     "width": {"type": "integer", "default": 4},
-                    "timeout": {
-                        "type": "number",
-                        "description": "Command timeout in seconds.",
-                        "default": 20.0,
-                    },
+                    "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session", "start", "count"],
             },
         ),
         Tool(
             name="mgba_live_dump_oam",
-            description="Dump OAM entries from live session.",
+            description="Dump OAM entries from a live session.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session": {"type": "string"},
                     "count": {"type": "integer", "default": 40},
-                    "timeout": {
-                        "type": "number",
-                        "description": "Command timeout in seconds.",
-                        "default": 20.0,
-                    },
+                    "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session"],
             },
         ),
         Tool(
             name="mgba_live_dump_entities",
-            description="Dump structured entity bytes from live session.",
+            description="Dump structured entity bytes from a live session.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -977,11 +508,7 @@ async def list_tools() -> list[Tool]:
                     "base": {"type": "integer", "default": 49664},
                     "size": {"type": "integer", "default": 24},
                     "count": {"type": "integer", "default": 10},
-                    "timeout": {
-                        "type": "number",
-                        "description": "Command timeout in seconds.",
-                        "default": 20.0,
-                    },
+                    "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session"],
             },
@@ -1000,232 +527,171 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
                 "mgba_live_start no longer accepts script. "
                 "Use mgba_live_start_with_lua with file or code."
             )
-        cmd_args = _build_start_command_args(args)
-        return await _run_with_snapshot(
-            "start",
-            cmd_args,
-            timeout=timeout,
-            include_snapshot=False,
-        )
+        payload = await _controller.start(timeout=timeout, **_build_start_kwargs(args))
+        return [_text_content(payload)]
+
     if name == "mgba_live_start_with_lua":
-        file_arg = args.get("file")
-        code_arg = args.get("code")
-        has_file = bool(file_arg)
-        has_code = bool(code_arg)
-        if has_file == has_code:
-            raise ValueError("Exactly one of file or code is required.")
+        payload = await _controller.start_with_lua(
+            timeout=timeout,
+            **_build_start_kwargs(args),
+            **_lua_source_kwargs(args),
+        )
+        return [_text_content(payload)]
 
-        start_args = _build_start_command_args(args)
-        start_result = await _controller.run("start", start_args, timeout=timeout)
-        start_payload = start_result.payload
-        session_id = start_payload.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
-            raise RuntimeError("Start command did not return session_id.")
+    if name == "mgba_live_start_with_lua_and_view":
+        payload = await _controller.start_with_lua_and_view(
+            timeout=timeout,
+            **_build_start_kwargs(args),
+            **_lua_source_kwargs(args),
+        )
+        return _contents_from_payload(payload, include_image=True)
 
-        lua_args: list[str] = []
-        if has_file:
-            lua_args.extend(["--file", str(file_arg)])
-        else:
-            lua_args.extend(["--code", str(code_arg)])
-        lua_args.extend(["--session", session_id])
-        try:
-            lua_contents = await _run_with_snapshot(
-                "run-lua",
-                lua_args,
-                timeout=timeout,
-                session_id=session_id,
-                ensure_post_lua_settle=True,
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"Lua execution failed after starting session '{session_id}'. "
-                "Session is still running; use mgba_live_attach or mgba_live_status to inspect. "
-                f"Original error: {exc}"
-            ) from exc
-
-        lua_payload = _text_payload(lua_contents[0])
-        combined_payload: dict[str, Any] = {"session_id": session_id}
-        if isinstance(start_payload, dict) and "pid" in start_payload:
-            combined_payload["pid"] = start_payload["pid"]
-
-        lua_result = _extract_run_lua_result(lua_payload)
-        combined_payload["lua"] = lua_result if lua_result is not None else lua_payload
-        if "screenshot" in lua_payload:
-            combined_payload["screenshot"] = lua_payload["screenshot"]
-
-        image_contents = [
-            content for content in lua_contents if getattr(content, "type", None) == "image"
-        ]
-        return [_text_content(combined_payload), *image_contents]
     if name == "mgba_live_attach":
-        cmd_args = _build_session_arg(args)
-        if pid := args.get("pid"):
-            cmd_args.extend(["--pid", str(int(pid))])
-        return await _run_with_snapshot("attach", cmd_args, timeout=timeout)
+        session = _maybe_session(args)
+        pid = _parse_optional_pid(args)
+        if session is None and pid is None:
+            raise ValueError("session_required: provide session or pid.")
+        payload = await _controller.attach(session=session, pid=pid)
+        return [_text_content(payload)]
 
     if name == "mgba_live_status":
-        cmd_args = []
-        if args.get("all") is True:
-            cmd_args.append("--all")
-        else:
-            cmd_args.extend(_build_session_arg(args, required=True))
-        return await _run_with_snapshot(
-            "status",
-            cmd_args,
-            timeout=timeout,
-        )
+        if _all_sessions_requested(args):
+            payload = await _controller.status(all=True)
+            return [_text_content({"value": payload})]
+        payload = await _controller.status(session=_require_session(args))
+        return [_text_content(payload)]
+
+    if name == "mgba_live_get_view":
+        payload = await _controller.get_view(session=_require_session(args), timeout=timeout)
+        public_payload = {
+            "session_id": payload.get("session_id"),
+            "screenshot": {"frame": payload.get("frame")},
+            "png_base64": payload.get("png_base64"),
+        }
+        return _contents_from_payload(public_payload, include_image=True)
+
     if name == "mgba_live_stop":
-        cmd_args = _build_session_arg(args, required=True)
-        grace = args.get("grace")
-        if grace is not None:
-            cmd_args.extend(["--grace", str(float(grace))])
-        return await _run_with_snapshot("stop", cmd_args, timeout=timeout, include_snapshot=False)
+        payload = await _controller.stop(
+            session=_require_session(args),
+            grace=_parse_grace(args),
+        )
+        return [_text_content(payload)]
 
     if name == "mgba_live_run_lua":
-        cmd_args = []
-        if file := args.get("file"):
-            cmd_args.extend(["--file", str(file)])
-        if code := args.get("code"):
-            cmd_args.extend(["--code", str(code)])
-        if not cmd_args:
-            raise ValueError("One of file or code is required")
-        cmd_args.extend(_build_session_arg(args, required=True))
-        return await _run_with_snapshot(
-            "run-lua",
-            cmd_args,
+        payload = await _controller.run_lua(
+            session=_require_session(args),
             timeout=timeout,
-            ensure_post_lua_settle=True,
+            **_lua_source_kwargs(args),
         )
+        return [_text_content(payload)]
+
+    if name == "mgba_live_run_lua_and_view":
+        payload = await _controller.run_lua_and_view(
+            session=_require_session(args),
+            timeout=timeout,
+            **_lua_source_kwargs(args),
+        )
+        return _contents_from_payload(payload, include_image=True)
 
     if name == "mgba_live_input_tap":
         if "key" not in args:
             raise ValueError("key is required")
-        wait_frames_raw = args.get("wait_frames", 0)
-        if wait_frames_raw is None:
-            wait_frames = 0
-        elif isinstance(wait_frames_raw, bool):
-            raise ValueError("wait_frames must be a non-negative integer")
-        elif isinstance(wait_frames_raw, int):
-            wait_frames = wait_frames_raw
-        elif isinstance(wait_frames_raw, float) and wait_frames_raw.is_integer():
-            wait_frames = int(wait_frames_raw)
-        else:
-            raise ValueError("wait_frames must be a non-negative integer")
-        if wait_frames < 0:
-            raise ValueError("wait_frames must be >= 0")
-        cmd_args = ["--key", str(args["key"])]
-        if frames := args.get("frames"):
-            cmd_args.extend(["--frames", str(int(frames))])
-        cmd_args.extend(_build_session_arg(args, required=True))
-        return await _run_with_snapshot(
-            "input-tap",
-            cmd_args,
+        payload = await _controller.input_tap(
+            session=_require_session(args),
+            key=str(args["key"]),
+            frames=int(args.get("frames", 1)),
             timeout=timeout,
-            require_snapshot_session=True,
-            require_screenshot=True,
-            input_tap_wait_frames=wait_frames,
         )
+        return [_text_content(payload)]
+
+    if name == "mgba_live_input_tap_and_view":
+        if "key" not in args:
+            raise ValueError("key is required")
+        payload = await _controller.input_tap_and_view(
+            session=_require_session(args),
+            key=str(args["key"]),
+            frames=int(args.get("frames", 1)),
+            wait_frames=_parse_wait_frames(args),
+            timeout=timeout,
+        )
+        return _contents_from_payload(payload, include_image=True)
 
     if name == "mgba_live_input_set":
-        cmd_args = ["--keys", *_parse_args_list(args.get("keys"))]
-        cmd_args.extend(_build_session_arg(args, required=True))
-        return await _run_with_snapshot(
-            "input-set",
-            cmd_args,
+        payload = await _controller.input_set(
+            session=_require_session(args),
+            keys=_parse_required_keys(args),
             timeout=timeout,
-            include_snapshot=False,
         )
+        return [_text_content(payload)]
 
     if name == "mgba_live_input_clear":
-        cmd_args = []
-        if keys := args.get("keys"):
-            cmd_args.extend(["--keys", *_parse_args_list(keys)])
-        cmd_args.extend(_build_session_arg(args, required=True))
-        return await _run_with_snapshot(
-            "input-clear",
-            cmd_args,
+        keys = None
+        if "keys" in args:
+            keys = _parse_keys(args.get("keys"))
+        payload = await _controller.input_clear(
+            session=_require_session(args),
+            keys=keys,
             timeout=timeout,
-            include_snapshot=False,
         )
+        return [_text_content(payload)]
 
     if name == "mgba_live_export_screenshot":
-        cmd_args = []
-        if out := args.get("out"):
-            cmd_args.extend(["--out", str(out)])
-        cmd_args.extend(_build_session_arg(args, required=True))
-        run_args = _append_cli_timeout("screenshot", cmd_args, timeout)
-        command_result = await _controller.run("screenshot", run_args, timeout=timeout)
-        payload: dict[str, Any]
-        if isinstance(command_result.payload, dict):
-            payload = dict(command_result.payload)
-        else:
-            payload = {"value": command_result.payload}
-        resolved_response_session, session_resolution_error = await _resolve_response_session(
-            live_command="screenshot",
-            run_command_args=run_args,
-            command_payload=command_result.payload,
-            explicit_session_id=None,
+        payload = await _controller.export_screenshot(
+            session=_require_session(args),
+            out=str(args["out"]) if args.get("out") else None,
+            timeout=timeout,
         )
-        if not resolved_response_session:
-            detail = ""
-            if session_resolution_error is not None:
-                detail = f" Cause: {session_resolution_error}"
-            raise RuntimeError(
-                f"Unable to resolve session_id for successful 'screenshot' response.{detail}"
-            ) from session_resolution_error
-        if resolved_response_session:
-            payload.setdefault("session_id", str(resolved_response_session))
-        contents = [_text_content(payload)]
-        shot_image = (
-            _image_content(command_result.payload)
-            if isinstance(command_result.payload, dict)
-            else None
-        )
-        if shot_image is not None:
-            contents.append(shot_image)
-        return contents
+        return _contents_from_payload(payload, include_image=True)
 
     if name == "mgba_live_read_memory":
-        cmd_args = ["--addresses", *_parse_args_list(args.get("addresses"))]
-        cmd_args.extend(_build_session_arg(args, required=True))
-        return await _run_with_snapshot("read-memory", cmd_args, timeout=timeout)
+        payload = await _controller.read_memory(
+            session=_require_session(args),
+            addresses=list(args.get("addresses", [])),
+            timeout=timeout,
+        )
+        return [_text_content(payload)]
 
     if name == "mgba_live_read_range":
-        cmd_args = ["--start", str(args["start"]), "--length", str(int(args["length"]))]
-        cmd_args.extend(_build_session_arg(args, required=True))
-        return await _run_with_snapshot("read-range", cmd_args, timeout=timeout)
+        payload = await _controller.read_range(
+            session=_require_session(args),
+            start=args["start"],
+            length=int(args["length"]),
+            timeout=timeout,
+        )
+        return [_text_content(payload)]
 
     if name == "mgba_live_dump_pointers":
-        cmd_args = ["--start", str(args["start"]), "--count", str(int(args["count"]))]
-        if width := args.get("width"):
-            cmd_args.extend(["--width", str(int(width))])
-        cmd_args.extend(_build_session_arg(args, required=True))
-        return await _run_with_snapshot("dump-pointers", cmd_args, timeout=timeout)
+        payload = await _controller.dump_pointers(
+            session=_require_session(args),
+            start=args["start"],
+            count=int(args["count"]),
+            width=int(args.get("width", 4)),
+            timeout=timeout,
+        )
+        return [_text_content(payload)]
 
     if name == "mgba_live_dump_oam":
-        cmd_args = []
-        if count := args.get("count"):
-            cmd_args.extend(["--count", str(int(count))])
-        cmd_args.extend(_build_session_arg(args, required=True))
-        return await _run_with_snapshot("dump-oam", cmd_args, timeout=timeout)
+        payload = await _controller.dump_oam(
+            session=_require_session(args),
+            count=int(args.get("count", 40)),
+            timeout=timeout,
+        )
+        return [_text_content(payload)]
 
     if name == "mgba_live_dump_entities":
-        cmd_args = []
-        if base := args.get("base"):
-            cmd_args.extend(["--base", str(base)])
-        if size := args.get("size"):
-            cmd_args.extend(["--size", str(size)])
-        if count := args.get("count"):
-            cmd_args.extend(["--count", str(count)])
-        cmd_args.extend(_build_session_arg(args, required=True))
-        return await _run_with_snapshot("dump-entities", cmd_args, timeout=timeout)
+        payload = await _controller.dump_entities(
+            session=_require_session(args),
+            base=args.get("base", 49664),
+            size=int(args.get("size", 24)),
+            count=int(args.get("count", 10)),
+            timeout=timeout,
+        )
+        return [_text_content(payload)]
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
 
 def main() -> None:
-    import asyncio
-
     async def run() -> None:
         async with stdio_server() as (read_stream, write_stream):
             await server.run(read_stream, write_stream, server.create_initialization_options())

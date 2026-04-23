@@ -79,6 +79,15 @@ def _maybe_session(arguments: dict[str, Any]) -> str | None:
     return None
 
 
+def _all_sessions_requested(arguments: dict[str, Any]) -> bool:
+    all_value = arguments.get("all")
+    if all_value is None:
+        return False
+    if not isinstance(all_value, bool):
+        raise ValueError("all must be a boolean.")
+    return all_value
+
+
 def _parse_keys(value: Any) -> list[str]:
     if value is None:
         return []
@@ -122,16 +131,32 @@ def _build_start_kwargs(arguments: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("rom is required")
 
     kwargs: dict[str, Any] = {"rom": rom}
-    if savestate := arguments.get("savestate"):
-        kwargs["savestate"] = str(savestate)
-    if fps_target := arguments.get("fps_target"):
+    savestate = arguments.get("savestate")
+    if savestate is not None:
+        if not isinstance(savestate, str) or not savestate:
+            raise ValueError("savestate must be a non-empty string")
+        kwargs["savestate"] = savestate
+    fps_target = arguments.get("fps_target")
+    if fps_target is not None:
+        if isinstance(fps_target, bool) or not isinstance(fps_target, (int, float)):
+            raise ValueError("fps_target must be a number")
         kwargs["fps_target"] = float(fps_target)
-    if arguments.get("fast"):
-        kwargs["fast"] = True
-    if session_id := arguments.get("session_id"):
-        kwargs["session_id"] = str(session_id)
-    if mgba_path := arguments.get("mgba_path"):
-        kwargs["mgba_path"] = str(mgba_path)
+    fast = arguments.get("fast")
+    if fast is not None:
+        if not isinstance(fast, bool):
+            raise ValueError("fast must be a boolean")
+        if fast:
+            kwargs["fast"] = True
+    session_id = arguments.get("session_id")
+    if session_id is not None:
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_id must be a non-empty string")
+        kwargs["session_id"] = session_id
+    mgba_path = arguments.get("mgba_path")
+    if mgba_path is not None:
+        if not isinstance(mgba_path, str) or not mgba_path:
+            raise ValueError("mgba_path must be a non-empty string")
+        kwargs["mgba_path"] = mgba_path
     return kwargs
 
 
@@ -195,6 +220,10 @@ async def list_tools() -> list[Tool]:
                     "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["rom"],
+                "oneOf": [
+                    {"required": ["file"]},
+                    {"required": ["code"]},
+                ],
             },
         ),
         Tool(
@@ -217,6 +246,10 @@ async def list_tools() -> list[Tool]:
                     "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["rom"],
+                "oneOf": [
+                    {"required": ["file"]},
+                    {"required": ["code"]},
+                ],
             },
         ),
         Tool(
@@ -229,6 +262,10 @@ async def list_tools() -> list[Tool]:
                     "pid": {"type": "integer", "description": "PID of a managed session."},
                     "timeout": {"type": "number", "default": 20.0},
                 },
+                "anyOf": [
+                    {"required": ["session"]},
+                    {"required": ["pid"]},
+                ],
             },
         ),
         Tool(
@@ -241,6 +278,10 @@ async def list_tools() -> list[Tool]:
                     "all": {"type": "boolean", "description": "Whether to include all sessions."},
                     "timeout": {"type": "number", "default": 20.0},
                 },
+                "anyOf": [
+                    {"required": ["session"]},
+                    {"required": ["all"], "properties": {"all": {"const": True}}},
+                ],
             },
         ),
         Tool(
@@ -280,6 +321,10 @@ async def list_tools() -> list[Tool]:
                     "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session"],
+                "oneOf": [
+                    {"required": ["file"]},
+                    {"required": ["code"]},
+                ],
             },
         ),
         Tool(
@@ -294,6 +339,10 @@ async def list_tools() -> list[Tool]:
                     "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session"],
+                "oneOf": [
+                    {"required": ["file"]},
+                    {"required": ["code"]},
+                ],
             },
         ),
         Tool(
@@ -482,7 +531,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         return [_text_content(payload)]
 
     if name == "mgba_live_status":
-        if args.get("all"):
+        if _all_sessions_requested(args):
             payload = await _controller.status(all=True)
             return [_text_content({"value": payload})]
         payload = await _controller.status(session=_require_session(args))

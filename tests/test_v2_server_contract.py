@@ -197,11 +197,36 @@ class _FakeController:
 def test_list_tools_exposes_v2_visual_tools() -> None:
     tools = asyncio.run(mcp_server.list_tools())
     names = {tool.name for tool in tools}
+    by_name = {tool.name: tool for tool in tools}
 
     assert "mgba_live_get_view" in names
     assert "mgba_live_run_lua_and_view" in names
     assert "mgba_live_input_tap_and_view" in names
     assert "mgba_live_start_with_lua_and_view" in names
+    assert by_name["mgba_live_attach"].inputSchema["anyOf"] == [
+        {"required": ["session"]},
+        {"required": ["pid"]},
+    ]
+    assert by_name["mgba_live_status"].inputSchema["anyOf"] == [
+        {"required": ["session"]},
+        {"required": ["all"], "properties": {"all": {"const": True}}},
+    ]
+    assert by_name["mgba_live_run_lua"].inputSchema["oneOf"] == [
+        {"required": ["file"]},
+        {"required": ["code"]},
+    ]
+    assert by_name["mgba_live_run_lua_and_view"].inputSchema["oneOf"] == [
+        {"required": ["file"]},
+        {"required": ["code"]},
+    ]
+    assert by_name["mgba_live_start_with_lua"].inputSchema["oneOf"] == [
+        {"required": ["file"]},
+        {"required": ["code"]},
+    ]
+    assert by_name["mgba_live_start_with_lua_and_view"].inputSchema["oneOf"] == [
+        {"required": ["file"]},
+        {"required": ["code"]},
+    ]
 
 
 def test_status_requires_session_unless_all(monkeypatch: Any) -> None:
@@ -209,6 +234,8 @@ def test_status_requires_session_unless_all(monkeypatch: Any) -> None:
 
     with pytest.raises(ValueError, match="session_required"):
         asyncio.run(mcp_server.call_tool("mgba_live_status", {}))
+    with pytest.raises(ValueError, match="all must be a boolean"):
+        asyncio.run(mcp_server.call_tool("mgba_live_status", {"all": "yes"}))
 
     contents = asyncio.run(mcp_server.call_tool("mgba_live_status", {"all": True}))
     assert len(contents) == 1

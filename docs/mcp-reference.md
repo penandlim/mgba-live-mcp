@@ -65,12 +65,24 @@ _Not declared._
 
 Start a live session and run Lua immediately. Metadata only.
 
-- Required input fields: `rom`
+- Required input fields: _Conditional; see schema._
 
 ### Input Schema
 
 ```json
 {
+  "oneOf": [
+    {
+      "required": [
+        "file"
+      ]
+    },
+    {
+      "required": [
+        "code"
+      ]
+    }
+  ],
   "properties": {
     "code": {
       "description": "Inline Lua code.",
@@ -124,12 +136,24 @@ _Not declared._
 
 Start a live session, run Lua, settle, and return one screenshot.
 
-- Required input fields: `rom`
+- Required input fields: _Conditional; see schema._
 
 ### Input Schema
 
 ```json
 {
+  "oneOf": [
+    {
+      "required": [
+        "file"
+      ]
+    },
+    {
+      "required": [
+        "code"
+      ]
+    }
+  ],
   "properties": {
     "code": {
       "description": "Inline Lua code.",
@@ -183,12 +207,24 @@ _Not declared._
 
 Attach to an existing managed live session.
 
-- Required input fields: _None._
+- Required input fields: _Conditional; see schema._
 
 ### Input Schema
 
 ```json
 {
+  "anyOf": [
+    {
+      "required": [
+        "session"
+      ]
+    },
+    {
+      "required": [
+        "pid"
+      ]
+    }
+  ],
   "properties": {
     "pid": {
       "description": "PID of a managed session.",
@@ -215,12 +251,29 @@ _Not declared._
 
 Show metadata for one session or all managed sessions.
 
-- Required input fields: _None._
+- Required input fields: _Conditional; see schema._
 
 ### Input Schema
 
 ```json
 {
+  "anyOf": [
+    {
+      "required": [
+        "session"
+      ]
+    },
+    {
+      "properties": {
+        "all": {
+          "const": true
+        }
+      },
+      "required": [
+        "all"
+      ]
+    }
+  ],
   "properties": {
     "all": {
       "description": "Whether to include all sessions.",
@@ -313,12 +366,24 @@ _Not declared._
 
 Execute Lua in a running live session. Metadata only.
 
-- Required input fields: `session`
+- Required input fields: _Conditional; see schema._
 
 ### Input Schema
 
 ```json
 {
+  "oneOf": [
+    {
+      "required": [
+        "file"
+      ]
+    },
+    {
+      "required": [
+        "code"
+      ]
+    }
+  ],
   "properties": {
     "code": {
       "description": "Inline Lua code.",
@@ -352,12 +417,24 @@ _Not declared._
 
 Execute Lua, settle, and return one screenshot.
 
-- Required input fields: `session`
+- Required input fields: _Conditional; see schema._
 
 ### Input Schema
 
 ```json
 {
+  "oneOf": [
+    {
+      "required": [
+        "file"
+      ]
+    },
+    {
+      "required": [
+        "code"
+      ]
+    }
+  ],
   "properties": {
     "code": {
       "description": "Inline Lua code.",

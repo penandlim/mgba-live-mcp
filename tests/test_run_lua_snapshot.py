@@ -28,6 +28,8 @@ class _MacroManager:
                 "data": {"result": {"status": "started", "macro_key": "__macro_wait_test"}},
             }
         if code and "__macro_wait_test" in code:
+            assert "local active = macro.active;" in code
+            assert "return active == false" in code
             self.polls += 1
             return {
                 "session_id": session,

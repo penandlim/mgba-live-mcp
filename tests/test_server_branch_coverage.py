@@ -47,6 +47,10 @@ def test_image_helper_edges(tmp_path) -> None:
 def test_argument_validation_helpers() -> None:
     with pytest.raises(ValueError, match="session_required"):
         server._require_session({})
+    with pytest.raises(ValueError, match="all must be a boolean"):
+        server._all_sessions_requested({"all": "yes"})
+    assert server._all_sessions_requested({"all": True}) is True
+    assert server._all_sessions_requested({}) is False
 
     assert server._parse_wait_frames({}) == 0
     assert server._parse_wait_frames({"wait_frames": 2.0}) == 2
@@ -69,6 +73,12 @@ def test_argument_validation_helpers() -> None:
         "rom": "x.gba",
         "fast": True,
     }
+    assert server._build_start_kwargs({"rom": "x.gba", "fps_target": 0}) == {
+        "rom": "x.gba",
+        "fps_target": 0.0,
+    }
+    with pytest.raises(ValueError, match="fps_target must be a number"):
+        server._build_start_kwargs({"rom": "x.gba", "fps_target": True})
 
 
 @pytest.mark.anyio

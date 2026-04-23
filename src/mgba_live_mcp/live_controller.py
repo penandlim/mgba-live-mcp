@@ -232,7 +232,9 @@ class LiveControllerClient:
         wait_code = (
             f"local macro = _G[{_lua_quote(macro_key)}]; "
             "if macro == nil then return true end; "
-            "return not not macro.done"
+            "local active = macro.active; "
+            "if active == nil then return true end; "
+            "return active == false"
         )
         while True:
             polls += 1

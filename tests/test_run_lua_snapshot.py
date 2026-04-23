@@ -5,6 +5,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
+
 from mgba_live_mcp import server as mcp_server
 
 
@@ -44,50 +46,21 @@ def _first_payload(result: Any) -> dict[str, Any]:
     return json.loads(first.text)
 
 
-def test_run_lua_snapshot_uses_status_fallback_when_session_not_provided(monkeypatch: Any) -> None:
+def test_run_lua_requires_session_when_not_provided(monkeypatch: Any) -> None:
     fake = _FakeController(include_status=True)
     monkeypatch.setattr(mcp_server, "_controller", fake)
 
-    contents = asyncio.run(
-        mcp_server.call_tool(
-            "mgba_live_run_lua",
-            {
-                "code": "return 7",
-                "timeout": 7.0,
-            },
+    with pytest.raises(ValueError, match="session_required"):
+        asyncio.run(
+            mcp_server.call_tool(
+                "mgba_live_run_lua",
+                {
+                    "code": "return 7",
+                    "timeout": 7.0,
+                },
+            )
         )
-    )
-    payload = _first_payload(contents)
-
-    assert payload["session_id"] == "active-session"
-    assert payload["screenshot"] == {"frame": 102}
-    assert [call["command"] for call in fake.calls] == [
-        "run-lua",
-        "status",
-        "run-lua",
-        "screenshot",
-    ]
-    assert fake.calls[0]["args"] == ["--code", "return 7", "--timeout", "7"]
-    assert fake.calls[1]["args"] == []
-    assert fake.calls[2]["args"] == [
-        "--code",
-        "return true",
-        "--session",
-        "active-session",
-        "--timeout",
-        "20",
-    ]
-    assert fake.calls[3]["args"] == [
-        "--session",
-        "active-session",
-        "--no-save",
-        "--timeout",
-        "20",
-    ]
-    assert fake.calls[0]["timeout"] == 7.0
-    assert fake.calls[1]["timeout"] == 20.0
-    assert fake.calls[2]["timeout"] == 20.0
-    assert fake.calls[3]["timeout"] == 20.0
+    assert fake.calls == []
 
 
 def test_run_lua_snapshot_settles_before_screenshot_when_session_is_given(monkeypatch: Any) -> None:

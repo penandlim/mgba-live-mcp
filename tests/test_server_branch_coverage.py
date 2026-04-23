@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 from pathlib import Path
 from typing import Any, cast
@@ -246,6 +247,35 @@ def test_build_start_command_args_edges() -> None:
     assert "--fast" in cmd
 
 
+def test_list_tools_require_session_for_single_session_tools() -> None:
+    tools = asyncio.run(server.list_tools())
+    by_name = {tool.name: tool for tool in tools}
+
+    assert by_name["mgba_live_stop"].inputSchema["required"] == ["session"]
+    assert by_name["mgba_live_run_lua"].inputSchema["required"] == ["session"]
+    assert by_name["mgba_live_run_lua"].inputSchema["oneOf"] == [
+        {"required": ["file"]},
+        {"required": ["code"]},
+    ]
+    assert by_name["mgba_live_input_tap"].inputSchema["required"] == ["session", "key"]
+    assert set(by_name["mgba_live_input_set"].inputSchema["required"]) == {"keys", "session"}
+    assert by_name["mgba_live_input_clear"].inputSchema["required"] == ["session"]
+    assert by_name["mgba_live_export_screenshot"].inputSchema["required"] == ["session"]
+    assert set(by_name["mgba_live_read_memory"].inputSchema["required"]) == {"addresses", "session"}
+    assert set(by_name["mgba_live_read_range"].inputSchema["required"]) == {
+        "start",
+        "length",
+        "session",
+    }
+    assert set(by_name["mgba_live_dump_pointers"].inputSchema["required"]) == {
+        "start",
+        "count",
+        "session",
+    }
+    assert by_name["mgba_live_dump_oam"].inputSchema["required"] == ["session"]
+    assert by_name["mgba_live_dump_entities"].inputSchema["required"] == ["session"]
+
+
 @pytest.mark.anyio
 async def test_call_tool_start_with_lua_validation_and_missing_session(
     monkeypatch: pytest.MonkeyPatch,
@@ -275,34 +305,74 @@ async def test_call_tool_attach_stop_run_lua_input_branches(
     assert calls[-1][0] == "attach"
     assert "--pid" in calls[-1][1]
 
-    await server.call_tool("mgba_live_stop", {"grace": 1.5})
+    with pytest.raises(ValueError, match="session_required"):
+        await server.call_tool("mgba_live_stop", {"grace": 1.5})
+    await server.call_tool("mgba_live_stop", {"session": "s1", "grace": 1.5})
     assert calls[-1][0] == "stop"
     assert "--grace" in calls[-1][1]
+    await server.call_tool("mgba_live_stop", {"session": "s1", "grace": 0.0})
+    assert calls[-1][1] == ["--session", "s1", "--grace", "0.0"]
 
-    await server.call_tool("mgba_live_run_lua", {"file": "x.lua"})
+    with pytest.raises(ValueError, match="session_required"):
+        await server.call_tool("mgba_live_run_lua", {"file": "x.lua"})
+    await server.call_tool("mgba_live_run_lua", {"file": "x.lua", "session": "s1"})
     assert calls[-1][0] == "run-lua"
     assert "--file" in calls[-1][1]
 
     with pytest.raises(ValueError, match="One of file or code is required"):
-        await server.call_tool("mgba_live_run_lua", {})
+        await server.call_tool("mgba_live_run_lua", {"session": "s1"})
 
     with pytest.raises(ValueError, match="key is required"):
         await server.call_tool("mgba_live_input_tap", {})
 
-    await server.call_tool("mgba_live_input_tap", {"key": "A", "wait_frames": None})
+    with pytest.raises(ValueError, match="session_required"):
+        await server.call_tool("mgba_live_input_tap", {"key": "A", "wait_frames": None})
+    await server.call_tool(
+        "mgba_live_input_tap",
+        {"session": "s1", "key": "A", "wait_frames": None},
+    )
     assert calls[-1][2]["input_tap_wait_frames"] == 0
 
-    await server.call_tool("mgba_live_input_tap", {"key": "A", "wait_frames": 2.0})
+    await server.call_tool(
+        "mgba_live_input_tap",
+        {"session": "s1", "key": "A", "wait_frames": 2.0},
+    )
     assert calls[-1][2]["input_tap_wait_frames"] == 2
 
     with pytest.raises(ValueError, match="non-negative integer"):
-        await server.call_tool("mgba_live_input_tap", {"key": "A", "wait_frames": True})
+        await server.call_tool(
+            "mgba_live_input_tap",
+            {"session": "s1", "key": "A", "wait_frames": True},
+        )
 
     with pytest.raises(ValueError, match="non-negative integer"):
-        await server.call_tool("mgba_live_input_tap", {"key": "A", "wait_frames": 1.2})
+        await server.call_tool(
+            "mgba_live_input_tap",
+            {"session": "s1", "key": "A", "wait_frames": 1.2},
+        )
 
-    await server.call_tool("mgba_live_input_clear", {"keys": ["A", "B"]})
+    with pytest.raises(ValueError, match="session_required"):
+        await server.call_tool("mgba_live_input_clear", {"keys": ["A", "B"]})
+    await server.call_tool("mgba_live_input_clear", {"session": "s1", "keys": ["A", "B"]})
     assert "--keys" in calls[-1][1]
+
+
+@pytest.mark.anyio
+async def test_status_all_requires_boolean_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, list[str], dict[str, Any]]] = []
+
+    async def fake_snapshot(cmd: str, cmd_args: list[str], **kwargs):
+        calls.append((cmd, list(cmd_args), kwargs))
+        return [server._text_content({"ok": True})]
+
+    monkeypatch.setattr(server, "_run_with_snapshot", fake_snapshot)
+
+    with pytest.raises(ValueError, match="session_required"):
+        await server.call_tool("mgba_live_status", {"all": "yes"})
+
+    await server.call_tool("mgba_live_status", {"all": True})
+    assert calls[-1][0] == "status"
+    assert calls[-1][1] == ["--all"]
 
 
 @pytest.mark.anyio
@@ -311,14 +381,25 @@ async def test_call_tool_export_screenshot_branches(
 ) -> None:
     queue = _QueueController(["raw-value"])
     monkeypatch.setattr(server, "_controller", queue)
-    with pytest.raises(RuntimeError, match="Unable to resolve session_id"):
+    with pytest.raises(ValueError, match="session_required"):
         await server.call_tool("mgba_live_export_screenshot", {"out": "/tmp/a.png"})
+    contents = await server.call_tool(
+        "mgba_live_export_screenshot",
+        {"session": "s1", "out": "/tmp/a.png"},
+    )
+    payload = server._text_payload(contents[0])
+    assert payload == {"value": "raw-value", "session_id": "s1"}
 
     png_base64 = base64.b64encode(b"png-bytes").decode()
     queue = _QueueController([{"png_base64": png_base64}])
     monkeypatch.setattr(server, "_controller", queue)
-    with pytest.raises(RuntimeError, match="Unable to resolve session_id"):
+    with pytest.raises(ValueError, match="session_required"):
         await server.call_tool("mgba_live_export_screenshot", {})
+    contents = await server.call_tool("mgba_live_export_screenshot", {"session": "s1"})
+    assert len(contents) == 2
+    payload = server._text_payload(contents[0])
+    assert payload["session_id"] == "s1"
+    assert getattr(contents[1], "type", None) == "image"
 
 
 @pytest.mark.anyio
@@ -331,11 +412,28 @@ async def test_call_tool_data_command_arg_mapping(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(server, "_run_with_snapshot", fake_snapshot)
 
-    await server.call_tool("mgba_live_read_memory", {"addresses": [1, 2]})
-    await server.call_tool("mgba_live_read_range", {"start": 100, "length": 8})
-    await server.call_tool("mgba_live_dump_pointers", {"start": 256, "count": 2, "width": 8})
-    await server.call_tool("mgba_live_dump_oam", {"count": 12})
-    await server.call_tool("mgba_live_dump_entities", {"base": 10, "size": 24, "count": 4})
+    with pytest.raises(ValueError, match="session_required"):
+        await server.call_tool("mgba_live_read_memory", {"addresses": [1, 2]})
+    with pytest.raises(ValueError, match="session_required"):
+        await server.call_tool("mgba_live_read_range", {"start": 100, "length": 8})
+    with pytest.raises(ValueError, match="session_required"):
+        await server.call_tool("mgba_live_dump_pointers", {"start": 256, "count": 2, "width": 8})
+    with pytest.raises(ValueError, match="session_required"):
+        await server.call_tool("mgba_live_dump_oam", {"count": 12})
+    with pytest.raises(ValueError, match="session_required"):
+        await server.call_tool("mgba_live_dump_entities", {"base": 10, "size": 24, "count": 4})
+
+    await server.call_tool("mgba_live_read_memory", {"session": "s1", "addresses": [1, 2]})
+    await server.call_tool("mgba_live_read_range", {"session": "s1", "start": 100, "length": 8})
+    await server.call_tool(
+        "mgba_live_dump_pointers",
+        {"session": "s1", "start": 256, "count": 2, "width": 8},
+    )
+    await server.call_tool("mgba_live_dump_oam", {"session": "s1", "count": 12})
+    await server.call_tool(
+        "mgba_live_dump_entities",
+        {"session": "s1", "base": 10, "size": 24, "count": 4},
+    )
 
     by_cmd = {cmd: args for (cmd, args, _kwargs) in calls}
     assert by_cmd["read-memory"][:1] == ["--addresses"]

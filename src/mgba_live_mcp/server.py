@@ -644,10 +644,13 @@ async def _run_with_snapshot(
     return [_text_content(payload), *image_contents]
 
 
-def _build_session_arg(args: dict[str, Any]) -> list[str]:
+def _build_session_arg(args: dict[str, Any], *, required: bool = False) -> list[str]:
     result = []
     if session := args.get("session"):
         result.extend(["--session", str(session)])
+        return result
+    if required:
+        raise ValueError("session_required: session is required")
     return result
 
 
@@ -754,7 +757,10 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "session": {"type": "string", "description": "Optional session id."},
+                    "session": {
+                        "type": "string",
+                        "description": "Session id. Required unless all=true.",
+                    },
                     "all": {"type": "boolean", "description": "Whether to include all sessions."},
                     "timeout": {
                         "type": "number",
@@ -762,6 +768,13 @@ async def list_tools() -> list[Tool]:
                         "default": 20.0,
                     },
                 },
+                "anyOf": [
+                    {"required": ["session"]},
+                    {
+                        "required": ["all"],
+                        "properties": {"all": {"const": True}},
+                    },
+                ],
             },
         ),
         Tool(
@@ -778,6 +791,7 @@ async def list_tools() -> list[Tool]:
                         "default": 20.0,
                     },
                 },
+                "required": ["session"],
             },
         ),
         Tool(
@@ -786,7 +800,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "session": {"type": "string", "description": "Optional session id."},
+                    "session": {"type": "string", "description": "Session id."},
                     "file": {"type": "string", "description": "Lua file path."},
                     "code": {"type": "string", "description": "Inline Lua code."},
                     "timeout": {
@@ -795,7 +809,11 @@ async def list_tools() -> list[Tool]:
                         "default": 20.0,
                     },
                 },
-                "required": [],
+                "required": ["session"],
+                "oneOf": [
+                    {"required": ["file"]},
+                    {"required": ["code"]},
+                ],
             },
         ),
         Tool(
@@ -827,7 +845,7 @@ async def list_tools() -> list[Tool]:
                         "default": 20.0,
                     },
                 },
-                "required": ["key"],
+                "required": ["session", "key"],
             },
         ),
         Tool(
@@ -851,7 +869,7 @@ async def list_tools() -> list[Tool]:
                         "default": 20.0,
                     },
                 },
-                "required": ["keys"],
+                "required": ["session", "keys"],
             },
         ),
         Tool(
@@ -875,6 +893,7 @@ async def list_tools() -> list[Tool]:
                         "default": 20.0,
                     },
                 },
+                "required": ["session"],
             },
         ),
         Tool(
@@ -883,7 +902,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "session": {"type": "string", "description": "Optional session id."},
+                    "session": {"type": "string", "description": "Session id."},
                     "timeout": {
                         "type": "number",
                         "description": "Command timeout in seconds.",
@@ -891,7 +910,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "out": {"type": "string", "description": "Optional persisted PNG output path."},
                 },
-                "required": [],
+                "required": ["session"],
             },
         ),
         Tool(
@@ -912,7 +931,7 @@ async def list_tools() -> list[Tool]:
                         "default": 20.0,
                     },
                 },
-                "required": ["addresses"],
+                "required": ["session", "addresses"],
             },
         ),
         Tool(
@@ -930,7 +949,7 @@ async def list_tools() -> list[Tool]:
                         "default": 20.0,
                     },
                 },
-                "required": ["start", "length"],
+                "required": ["session", "start", "length"],
             },
         ),
         Tool(
@@ -949,7 +968,7 @@ async def list_tools() -> list[Tool]:
                         "default": 20.0,
                     },
                 },
-                "required": ["start", "count"],
+                "required": ["session", "start", "count"],
             },
         ),
         Tool(
@@ -966,6 +985,7 @@ async def list_tools() -> list[Tool]:
                         "default": 20.0,
                     },
                 },
+                "required": ["session"],
             },
         ),
         Tool(
@@ -984,6 +1004,7 @@ async def list_tools() -> list[Tool]:
                         "default": 20.0,
                     },
                 },
+                "required": ["session"],
             },
         ),
     ]
@@ -1065,17 +1086,19 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
 
     if name == "mgba_live_status":
         cmd_args = []
-        if args.get("all"):
+        if args.get("all") is True:
             cmd_args.append("--all")
-        cmd_args.extend(_build_session_arg(args))
+        else:
+            cmd_args.extend(_build_session_arg(args, required=True))
         return await _run_with_snapshot(
             "status",
             cmd_args,
             timeout=timeout,
         )
     if name == "mgba_live_stop":
-        cmd_args = _build_session_arg(args)
-        if grace := args.get("grace"):
+        cmd_args = _build_session_arg(args, required=True)
+        grace = args.get("grace")
+        if grace is not None:
             cmd_args.extend(["--grace", str(float(grace))])
         return await _run_with_snapshot("stop", cmd_args, timeout=timeout, include_snapshot=False)
 
@@ -1087,7 +1110,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             cmd_args.extend(["--code", str(code)])
         if not cmd_args:
             raise ValueError("One of file or code is required")
-        cmd_args.extend(_build_session_arg(args))
+        cmd_args.extend(_build_session_arg(args, required=True))
         return await _run_with_snapshot(
             "run-lua",
             cmd_args,
@@ -1114,7 +1137,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         cmd_args = ["--key", str(args["key"])]
         if frames := args.get("frames"):
             cmd_args.extend(["--frames", str(int(frames))])
-        cmd_args.extend(_build_session_arg(args))
+        cmd_args.extend(_build_session_arg(args, required=True))
         return await _run_with_snapshot(
             "input-tap",
             cmd_args,
@@ -1126,7 +1149,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
 
     if name == "mgba_live_input_set":
         cmd_args = ["--keys", *_parse_args_list(args.get("keys"))]
-        cmd_args.extend(_build_session_arg(args))
+        cmd_args.extend(_build_session_arg(args, required=True))
         return await _run_with_snapshot(
             "input-set",
             cmd_args,
@@ -1138,7 +1161,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         cmd_args = []
         if keys := args.get("keys"):
             cmd_args.extend(["--keys", *_parse_args_list(keys)])
-        cmd_args.extend(_build_session_arg(args))
+        cmd_args.extend(_build_session_arg(args, required=True))
         return await _run_with_snapshot(
             "input-clear",
             cmd_args,
@@ -1150,7 +1173,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         cmd_args = []
         if out := args.get("out"):
             cmd_args.extend(["--out", str(out)])
-        cmd_args.extend(_build_session_arg(args))
+        cmd_args.extend(_build_session_arg(args, required=True))
         run_args = _append_cli_timeout("screenshot", cmd_args, timeout)
         command_result = await _controller.run("screenshot", run_args, timeout=timeout)
         payload: dict[str, Any]
@@ -1181,26 +1204,26 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
 
     if name == "mgba_live_read_memory":
         cmd_args = ["--addresses", *_parse_args_list(args.get("addresses"))]
-        cmd_args.extend(_build_session_arg(args))
+        cmd_args.extend(_build_session_arg(args, required=True))
         return await _run_with_snapshot("read-memory", cmd_args, timeout=timeout)
 
     if name == "mgba_live_read_range":
         cmd_args = ["--start", str(args["start"]), "--length", str(int(args["length"]))]
-        cmd_args.extend(_build_session_arg(args))
+        cmd_args.extend(_build_session_arg(args, required=True))
         return await _run_with_snapshot("read-range", cmd_args, timeout=timeout)
 
     if name == "mgba_live_dump_pointers":
         cmd_args = ["--start", str(args["start"]), "--count", str(int(args["count"]))]
         if width := args.get("width"):
             cmd_args.extend(["--width", str(int(width))])
-        cmd_args.extend(_build_session_arg(args))
+        cmd_args.extend(_build_session_arg(args, required=True))
         return await _run_with_snapshot("dump-pointers", cmd_args, timeout=timeout)
 
     if name == "mgba_live_dump_oam":
         cmd_args = []
         if count := args.get("count"):
             cmd_args.extend(["--count", str(int(count))])
-        cmd_args.extend(_build_session_arg(args))
+        cmd_args.extend(_build_session_arg(args, required=True))
         return await _run_with_snapshot("dump-oam", cmd_args, timeout=timeout)
 
     if name == "mgba_live_dump_entities":
@@ -1211,7 +1234,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             cmd_args.extend(["--size", str(size)])
         if count := args.get("count"):
             cmd_args.extend(["--count", str(count)])
-        cmd_args.extend(_build_session_arg(args))
+        cmd_args.extend(_build_session_arg(args, required=True))
         return await _run_with_snapshot("dump-entities", cmd_args, timeout=timeout)
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]

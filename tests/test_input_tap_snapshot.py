@@ -211,7 +211,7 @@ def test_input_tap_errors_when_session_cannot_be_resolved(monkeypatch: Any) -> N
                 },
             )
         )
-    assert [call["command"] for call in fake.calls] == ["input-tap", "status"]
+    assert [call["command"] for call in fake.calls] == ["input-tap"]
 
 
 def test_input_set_and_clear_remain_no_snapshot(monkeypatch: Any) -> None:

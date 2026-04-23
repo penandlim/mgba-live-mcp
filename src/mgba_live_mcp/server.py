@@ -102,17 +102,6 @@ def _extract_session_id(payload: Any) -> str | None:
         session_id = payload.get("session_id")
         if isinstance(session_id, str) and session_id:
             return session_id
-        for key in ("sessions", "value"):
-            nested = payload.get(key)
-            nested_session = _extract_session_id(nested)
-            if nested_session:
-                return nested_session
-        return None
-    if isinstance(payload, list):
-        for item in payload:
-            nested_session = _extract_session_id(item)
-            if nested_session:
-                return nested_session
     return None
 
 
@@ -252,22 +241,12 @@ async def _resolve_snapshot_session(
     *,
     timeout: float,
 ) -> str | None:
+    del timeout
     session_from_args = _session_arg_value(command_args)
     if session_from_args:
         return session_from_args
 
-    payload_session_id = _extract_session_id(command_payload)
-    if payload_session_id:
-        return payload_session_id
-
-    # Some CLI responses (for example run-lua) do not include session id.
-    # Fall back to status for active-session resolution before screenshot capture.
-    try:
-        status_result = await _controller.run("status", [], timeout=max(timeout, 20.0))
-    except Exception:
-        return None
-
-    return _extract_session_id(status_result.payload)
+    return _extract_session_id(command_payload)
 
 
 def _extract_run_lua_result(command_payload: dict[str, Any]) -> Any:

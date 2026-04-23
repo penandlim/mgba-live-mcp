@@ -145,14 +145,6 @@ def _refresh_active_session() -> None:
         except Exception:
             pass
 
-    for candidate in iter_sessions():
-        try:
-            if pid_alive(int(candidate["pid"])):
-                set_active_session(candidate["id"])
-                return
-        except Exception:
-            continue
-
     if ACTIVE_SESSION_FILE.exists():
         ACTIVE_SESSION_FILE.unlink()
 
@@ -215,26 +207,13 @@ def resolve_session(args: argparse.Namespace, require_alive: bool = True) -> dic
     ensure_runtime_dirs()
     session_id = args.session if hasattr(args, "session") else None
     if not session_id:
-        session_id = get_active_session_id()
-    if not session_id:
-        for s in iter_sessions():
-            if pid_alive(int(s["pid"])):
-                session_id = s["id"]
-                break
-    if not session_id:
-        raise SystemExit("No session specified and no active running session found.")
+        raise SystemExit("No session specified. Provide --session.")
 
     path = session_file(session_id)
     if not path.exists():
         raise SystemExit(f"Session not found: {session_id}")
     session = json.loads(path.read_text())
     if require_alive and not pid_alive(int(session["pid"])):
-        for candidate in iter_sessions():
-            if candidate["id"] == session_id:
-                continue
-            if pid_alive(int(candidate["pid"])):
-                set_active_session(candidate["id"])
-                return candidate
         raise SystemExit(f"Session exists but process is not alive: {session_id}")
     return session
 
@@ -739,7 +718,7 @@ def cmd_dump_entities(args: argparse.Namespace) -> None:
 def add_session_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--session",
-        help="Session id. Defaults to active session, then most recent live session.",
+        help="Session id.",
     )
 
 

@@ -176,6 +176,9 @@ snapshot in one call.
 ## Important Behavior
 
 - `mgba_live_start` is bootstrap-only (no Lua arg, no screenshot return).
+- Existing-session tools do not auto-select an active or most-recent session;
+  pass `session` explicitly unless you are calling `mgba_live_status` with
+  `all=true`.
 - `mgba_live_start_with_lua` requires exactly one of `file` or `code`.
 - `mgba_live_run_lua` supports callback-style macros by returning
   `{ macro_key = "..." }` and setting `_G[macro_key].active = false` when done;

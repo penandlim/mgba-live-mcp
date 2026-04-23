@@ -450,11 +450,10 @@ def test_cmd_status_skips_dead_active_session(tmp_path: Path, monkeypatch: Any) 
     captured: dict[str, Any] = {}
     monkeypatch.setattr(mgba_live, "print_json", lambda payload: captured.update(payload))
 
-    mgba_live.cmd_status(argparse.Namespace(all=False, session=None))
-
-    assert captured["session_id"] == "alive-session"
-    assert captured["alive"] is True
-    assert mgba_live.ACTIVE_SESSION_FILE.read_text() == "alive-session"
+    with pytest.raises(SystemExit, match="No session specified"):
+        mgba_live.cmd_status(argparse.Namespace(all=False, session=None))
+    assert captured == {}
+    assert mgba_live.ACTIVE_SESSION_FILE.read_text() == "dead-session"
 
 
 def test_prune_dead_sessions_archives_dead_session_directory(
@@ -481,7 +480,7 @@ def test_prune_dead_sessions_archives_dead_session_directory(
     archived = sorted((runtime_root / "archived_sessions").glob("dead-session-*"))
     assert len(archived) == 1
     assert (archived[0] / "session.json").exists()
-    assert mgba_live.ACTIVE_SESSION_FILE.read_text() == "alive-session"
+    assert not mgba_live.ACTIVE_SESSION_FILE.exists()
 
 
 def test_prune_dead_sessions_clears_stale_active_pointer_when_no_sessions(

@@ -14,14 +14,6 @@ from mcp.types import Tool
 from mgba_live_mcp import server as mcp_server
 
 DEFAULT_OUTPUT = Path("docs/mcp-reference.md")
-RUNTIME_ARGUMENT_RULES = {
-    "mgba_live_start_with_lua": "Provide exactly one of `file` or `code`.",
-    "mgba_live_start_with_lua_and_view": "Provide exactly one of `file` or `code`.",
-    "mgba_live_attach": "Provide `session` or `pid`.",
-    "mgba_live_status": "Provide `session`, or set `all=true`.",
-    "mgba_live_run_lua": "Provide exactly one of `file` or `code`.",
-    "mgba_live_run_lua_and_view": "Provide exactly one of `file` or `code`.",
-}
 
 
 def _format_schema(schema: dict[str, Any] | None) -> str:
@@ -53,7 +45,7 @@ def _render_tool_section(tool: Tool) -> str:
     description = str(data.get("description") or "_No description provided._")
     input_schema = data.get("inputSchema")
     output_schema = data.get("outputSchema")
-    runtime_rule = RUNTIME_ARGUMENT_RULES.get(name)
+    runtime_rule = mcp_server.TOOL_RUNTIME_ARGUMENT_RULES.get(name)
     runtime_rule_lines = []
     if runtime_rule is not None:
         runtime_rule_lines = [f"- Runtime argument rule: {runtime_rule}"]

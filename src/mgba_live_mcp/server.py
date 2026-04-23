@@ -18,9 +18,44 @@ from .live_controller import LiveControllerClient
 server = Server("mgba-live-mcp")
 _controller = LiveControllerClient()
 
+_LUA_SOURCE_FILE_ARG = "file"
+_LUA_SOURCE_CODE_ARG = "code"
+_LUA_SOURCE_RUNTIME_RULE = (
+    f"Provide exactly one of `{_LUA_SOURCE_FILE_ARG}` or `{_LUA_SOURCE_CODE_ARG}`."
+)
+_ATTACH_RUNTIME_RULE = "Provide `session` or `pid`."
+_STATUS_RUNTIME_RULE = "Provide `session`, or set `all=true`."
+
+TOOL_RUNTIME_ARGUMENT_RULES = {
+    "mgba_live_start_with_lua": _LUA_SOURCE_RUNTIME_RULE,
+    "mgba_live_start_with_lua_and_view": _LUA_SOURCE_RUNTIME_RULE,
+    "mgba_live_attach": _ATTACH_RUNTIME_RULE,
+    "mgba_live_status": _STATUS_RUNTIME_RULE,
+    "mgba_live_run_lua": _LUA_SOURCE_RUNTIME_RULE,
+    "mgba_live_run_lua_and_view": _LUA_SOURCE_RUNTIME_RULE,
+}
+
 
 def _text_content(payload: Any) -> TextContent:
     return TextContent(type="text", text=json.dumps(payload, separators=(",", ":")))
+
+
+def _plain_argument_rule(rule: str) -> str:
+    return rule.replace("`", "")
+
+
+def _lua_source_properties() -> dict[str, dict[str, str]]:
+    rule = _plain_argument_rule(_LUA_SOURCE_RUNTIME_RULE)
+    return {
+        _LUA_SOURCE_FILE_ARG: {
+            "type": "string",
+            "description": f"Lua file path. {rule}",
+        },
+        _LUA_SOURCE_CODE_ARG: {
+            "type": "string",
+            "description": f"Inline Lua code. {rule}",
+        },
+    }
 
 
 def _text_payload(content: TextContent | ImageContent) -> dict[str, Any]:
@@ -138,15 +173,17 @@ def _parse_wait_frames(arguments: dict[str, Any]) -> int:
 
 
 def _lua_source_kwargs(arguments: dict[str, Any]) -> dict[str, Any]:
-    file_arg = arguments.get("file")
-    code_arg = arguments.get("code")
+    file_arg = arguments.get(_LUA_SOURCE_FILE_ARG)
+    code_arg = arguments.get(_LUA_SOURCE_CODE_ARG)
     has_file = bool(file_arg)
     has_code = bool(code_arg)
     if has_file == has_code:
-        raise ValueError("Exactly one of file or code is required.")
+        raise ValueError(
+            f"Exactly one of {_LUA_SOURCE_FILE_ARG} or {_LUA_SOURCE_CODE_ARG} is required."
+        )
     if has_file:
-        return {"file": str(file_arg)}
-    return {"code": str(code_arg)}
+        return {_LUA_SOURCE_FILE_ARG: str(file_arg)}
+    return {_LUA_SOURCE_CODE_ARG: str(code_arg)}
 
 
 def _build_start_kwargs(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -239,14 +276,7 @@ async def list_tools() -> list[Tool]:
                         "description": "Optional explicit session id.",
                     },
                     "mgba_path": {"type": "string", "description": "Optional mGBA binary path."},
-                    "file": {
-                        "type": "string",
-                        "description": "Lua file path. Provide exactly one of file or code.",
-                    },
-                    "code": {
-                        "type": "string",
-                        "description": "Inline Lua code. Provide exactly one of file or code.",
-                    },
+                    **_lua_source_properties(),
                     "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["rom"],
@@ -267,14 +297,7 @@ async def list_tools() -> list[Tool]:
                         "description": "Optional explicit session id.",
                     },
                     "mgba_path": {"type": "string", "description": "Optional mGBA binary path."},
-                    "file": {
-                        "type": "string",
-                        "description": "Lua file path. Provide exactly one of file or code.",
-                    },
-                    "code": {
-                        "type": "string",
-                        "description": "Inline Lua code. Provide exactly one of file or code.",
-                    },
+                    **_lua_source_properties(),
                     "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["rom"],
@@ -288,15 +311,12 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "session": {
                         "type": "string",
-                        "description": (
-                            "Session id. Provide session or pid (at least one required)."
-                        ),
+                        "description": f"Session id. {_plain_argument_rule(_ATTACH_RUNTIME_RULE)}",
                     },
                     "pid": {
                         "type": "integer",
-                        "description": (
-                            "PID of a managed session. Provide session or pid (at least one)."
-                        ),
+                        "description": "PID of a managed session. "
+                        f"{_plain_argument_rule(_ATTACH_RUNTIME_RULE)}",
                     },
                     "timeout": {"type": "number", "default": 20.0},
                 },
@@ -310,9 +330,8 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "session": {
                         "type": "string",
-                        "description": (
-                            "Session id for one session. Or set all=true for every session."
-                        ),
+                        "description": "Session id for one session. "
+                        f"{_plain_argument_rule(_STATUS_RUNTIME_RULE)}",
                     },
                     "all": {
                         "type": "boolean",
@@ -354,14 +373,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "session": {"type": "string", "description": "Session id."},
-                    "file": {
-                        "type": "string",
-                        "description": "Lua file path. Provide exactly one of file or code.",
-                    },
-                    "code": {
-                        "type": "string",
-                        "description": "Inline Lua code. Provide exactly one of file or code.",
-                    },
+                    **_lua_source_properties(),
                     "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session"],
@@ -374,14 +386,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "session": {"type": "string", "description": "Session id."},
-                    "file": {
-                        "type": "string",
-                        "description": "Lua file path. Provide exactly one of file or code.",
-                    },
-                    "code": {
-                        "type": "string",
-                        "description": "Inline Lua code. Provide exactly one of file or code.",
-                    },
+                    **_lua_source_properties(),
                     "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session"],

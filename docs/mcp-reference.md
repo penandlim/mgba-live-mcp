@@ -194,11 +194,11 @@ Attach to an existing managed live session.
 {
   "properties": {
     "pid": {
-      "description": "PID of a managed session. Provide session or pid (at least one).",
+      "description": "PID of a managed session. Provide session or pid.",
       "type": "integer"
     },
     "session": {
-      "description": "Session id. Provide session or pid (at least one required).",
+      "description": "Session id. Provide session or pid.",
       "type": "string"
     },
     "timeout": {
@@ -231,7 +231,7 @@ Show metadata for one session or all managed sessions.
       "type": "boolean"
     },
     "session": {
-      "description": "Session id for one session. Or set all=true for every session.",
+      "description": "Session id for one session. Provide session, or set all=true.",
       "type": "string"
     },
     "timeout": {

@@ -29,12 +29,14 @@ def _first_payload(result: Any) -> dict[str, Any]:
 def test_list_tools_input_tap_exposes_wait_frames() -> None:
     tools = asyncio.run(mcp_server.list_tools())
     by_name = {tool.name: tool for tool in tools}
-    tap_props = by_name["mgba_live_input_tap"].inputSchema["properties"]
+    tap_schema = by_name["mgba_live_input_tap"].inputSchema
+    tap_props = tap_schema["properties"]
 
     assert "wait_frames" in tap_props
     assert tap_props["wait_frames"]["type"] == "integer"
     assert tap_props["wait_frames"]["default"] == 0
     assert tap_props["wait_frames"]["minimum"] == 0
+    assert tap_schema["required"] == ["session", "key"]
 
 
 class _InputTapController:
@@ -197,11 +199,11 @@ def test_input_tap_wait_failure_includes_session_id(monkeypatch: Any) -> None:
     assert [call["command"] for call in fake.calls] == ["input-tap", "run-lua", "status"]
 
 
-def test_input_tap_errors_when_session_cannot_be_resolved(monkeypatch: Any) -> None:
+def test_input_tap_requires_session_when_not_provided(monkeypatch: Any) -> None:
     fake = _InputTapController(status_ok=False)
     monkeypatch.setattr(mcp_server, "_controller", fake)
 
-    with pytest.raises(RuntimeError, match="session_id"):
+    with pytest.raises(ValueError, match="session_required"):
         asyncio.run(
             mcp_server.call_tool(
                 "mgba_live_input_tap",
@@ -211,7 +213,7 @@ def test_input_tap_errors_when_session_cannot_be_resolved(monkeypatch: Any) -> N
                 },
             )
         )
-    assert [call["command"] for call in fake.calls] == ["input-tap", "status"]
+    assert fake.calls == []
 
 
 def test_input_set_and_clear_remain_no_snapshot(monkeypatch: Any) -> None:
@@ -248,3 +250,25 @@ def test_input_set_and_clear_remain_no_snapshot(monkeypatch: Any) -> None:
     assert "screenshot" not in set_payload
     assert "screenshot" not in clear_payload
     assert [call["command"] for call in fake.calls] == ["input-set", "input-clear"]
+
+
+def test_input_set_requires_session(monkeypatch: Any) -> None:
+    class _InputSetController:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def run(self, command: str, args: list[str], *, timeout: float = 20.0) -> _Result:
+            self.calls.append({"command": command, "args": list(args), "timeout": timeout})
+            return _Result({"frame": 50, "data": {"keys": [0, 1]}})
+
+    fake = _InputSetController()
+    monkeypatch.setattr(mcp_server, "_controller", fake)
+
+    with pytest.raises(ValueError, match="session_required"):
+        asyncio.run(
+            mcp_server.call_tool(
+                "mgba_live_input_set",
+                {"keys": ["A", "B"], "timeout": 7.0},
+            )
+        )
+    assert fake.calls == []

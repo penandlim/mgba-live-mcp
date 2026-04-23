@@ -715,9 +715,10 @@ def cmd_dump_entities(args: argparse.Namespace) -> None:
     print_json({"frame": response.get("frame"), "entities": data})
 
 
-def add_session_arg(parser: argparse.ArgumentParser) -> None:
+def add_session_arg(parser: argparse.ArgumentParser, *, required: bool = False) -> None:
     parser.add_argument(
         "--session",
+        required=required,
         help="Session id.",
     )
 
@@ -773,21 +774,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.set_defaults(func=cmd_status)
 
     p_stop = sub.add_parser("stop", help="Stop a running session.")
-    add_session_arg(p_stop)
+    add_session_arg(p_stop, required=True)
     p_stop.add_argument(
         "--grace", type=float, default=1.0, help="SIGTERM grace period before SIGKILL."
     )
     p_stop.set_defaults(func=cmd_stop)
 
     p_run_lua = sub.add_parser("run-lua", help="Run additional Lua in an existing live session.")
-    add_session_arg(p_run_lua)
+    add_session_arg(p_run_lua, required=True)
     p_run_lua.add_argument("--file", help="Lua file to execute in-process.")
     p_run_lua.add_argument("--code", help="Inline Lua code to execute in-process.")
     add_timeout_arg(p_run_lua, default=20.0)
     p_run_lua.set_defaults(func=cmd_run_lua)
 
     p_input_tap = sub.add_parser("input-tap", help="Tap a button for N frames.")
-    add_session_arg(p_input_tap)
+    add_session_arg(p_input_tap, required=True)
     p_input_tap.add_argument(
         "--key", required=True, help="Button key name (A/B/START/SELECT/UP/DOWN/LEFT/RIGHT/L/R)."
     )
@@ -796,13 +797,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_input_tap.set_defaults(func=cmd_input_tap)
 
     p_input_set = sub.add_parser("input-set", help="Set currently held keys exactly.")
-    add_session_arg(p_input_set)
+    add_session_arg(p_input_set, required=True)
     p_input_set.add_argument("--keys", nargs="+", required=True, help="List of held keys.")
     add_timeout_arg(p_input_set)
     p_input_set.set_defaults(func=cmd_input_set)
 
     p_input_clear = sub.add_parser("input-clear", help="Clear some keys or all keys.")
-    add_session_arg(p_input_clear)
+    add_session_arg(p_input_clear, required=True)
     p_input_clear.add_argument(
         "--keys", nargs="*", help="Optional keys to clear. Omit to clear all."
     )
@@ -810,7 +811,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_input_clear.set_defaults(func=cmd_input_clear)
 
     p_screenshot = sub.add_parser("screenshot", help="Capture screenshot from running session.")
-    add_session_arg(p_screenshot)
+    add_session_arg(p_screenshot, required=True)
     p_screenshot.add_argument("--out", help="Optional output PNG path.")
     p_screenshot.add_argument(
         "--no-save",
@@ -821,7 +822,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_screenshot.set_defaults(func=cmd_screenshot)
 
     p_read_memory = sub.add_parser("read-memory", help="Read sparse memory addresses.")
-    add_session_arg(p_read_memory)
+    add_session_arg(p_read_memory, required=True)
     p_read_memory.add_argument(
         "--addresses", nargs="+", required=True, help="Addresses (hex or decimal)."
     )
@@ -829,7 +830,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_read_memory.set_defaults(func=cmd_read_memory)
 
     p_read_range = sub.add_parser("read-range", help="Read a contiguous memory range.")
-    add_session_arg(p_read_range)
+    add_session_arg(p_read_range, required=True)
     p_read_range.add_argument("--start", required=True, help="Start address (hex or decimal).")
     p_read_range.add_argument("--length", type=int, required=True, help="Number of bytes.")
     add_timeout_arg(p_read_range)
@@ -838,7 +839,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_dump_pointers = sub.add_parser(
         "dump-pointers", help="Dump pointer table entries (little-endian)."
     )
-    add_session_arg(p_dump_pointers)
+    add_session_arg(p_dump_pointers, required=True)
     p_dump_pointers.add_argument("--start", required=True, help="Pointer table start address.")
     p_dump_pointers.add_argument("--count", type=int, required=True, help="Number of entries.")
     p_dump_pointers.add_argument(
@@ -848,7 +849,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_dump_pointers.set_defaults(func=cmd_dump_pointers)
 
     p_dump_oam = sub.add_parser("dump-oam", help="Dump GBA OAM entries.")
-    add_session_arg(p_dump_oam)
+    add_session_arg(p_dump_oam, required=True)
     p_dump_oam.add_argument("--count", type=int, default=40, help="How many OAM entries (max 128).")
     add_timeout_arg(p_dump_oam)
     p_dump_oam.set_defaults(func=cmd_dump_oam)
@@ -856,7 +857,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_dump_entities = sub.add_parser(
         "dump-entities", help="Dump structured entity bytes from memory."
     )
-    add_session_arg(p_dump_entities)
+    add_session_arg(p_dump_entities, required=True)
     p_dump_entities.add_argument("--base", default="0xC200", help="Entity array base address.")
     p_dump_entities.add_argument("--size", type=int, default=24, help="Entity struct byte size.")
     p_dump_entities.add_argument("--count", type=int, default=10, help="Entity count.")

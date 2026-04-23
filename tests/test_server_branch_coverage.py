@@ -199,10 +199,13 @@ async def test_resolve_snapshot_session_does_not_fallback_to_status(
         await server._resolve_snapshot_session(
             [],
             {"value": [{"session_id": "session-a"}]},
-            timeout=1.0,
         )
         is None
     )
+
+
+def test_error_is_timeout_ignores_timeout_flag_mentions() -> None:
+    assert server._error_is_timeout(RuntimeError("command failed: --timeout 20")) is False
 
 
 @pytest.mark.anyio

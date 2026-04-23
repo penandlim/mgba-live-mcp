@@ -63,6 +63,16 @@ def test_screenshot_parser_rejects_removed_text_flags() -> None:
         parser.parse_args(["screenshot", "--png"])
 
 
+def test_existing_session_subcommands_require_session_at_parse_time() -> None:
+    parser = mgba_live.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["run-lua", "--code", "return 1"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["screenshot", "--no-save"])
+    args = parser.parse_args(["status", "--all"])
+    assert args.all is True
+
+
 def test_cmd_screenshot_no_save_returns_base64_and_deletes_temp(monkeypatch: Any) -> None:
     captured: dict[str, Any] = {}
     written_paths: list[Path] = []

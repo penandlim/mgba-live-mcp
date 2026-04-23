@@ -125,7 +125,12 @@ def _error_is_timeout(exc: Exception) -> bool:
     if isinstance(exc, TimeoutError):
         return True
     msg = str(exc).lower()
-    return "timed out" in msg or "timeout" in msg
+    timeout_markers = (
+        "timed out",
+        "command timed out",
+        "timeout exceeded",
+    )
+    return any(marker in msg for marker in timeout_markers)
 
 
 def _looks_like_stall_error(exc: Exception) -> bool:
@@ -238,10 +243,7 @@ def _append_warning(payload: dict[str, Any], warning: dict[str, Any]) -> None:
 async def _resolve_snapshot_session(
     command_args: list[str],
     command_payload: Any,
-    *,
-    timeout: float,
 ) -> str | None:
-    del timeout
     session_from_args = _session_arg_value(command_args)
     if session_from_args:
         return session_from_args
@@ -440,7 +442,6 @@ async def _run_with_snapshot(
     resolved_session = session_id or await _resolve_snapshot_session(
         run_command_args,
         command_result.payload,
-        timeout=timeout,
     )
     if not resolved_session:
         if require_snapshot_session:

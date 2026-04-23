@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import signal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -68,6 +69,41 @@ def test_prune_dead_sessions_archives_dead_sessions_and_clears_active_session(
     assert len(archived) == 1
     assert (archived[0] / "session.json").exists()
     assert manager.get_active_session_id() == "session-live"
+
+
+def test_pid_alive_reaps_exited_child_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = _manager(tmp_path)
+    kill_probes: list[int] = []
+
+    monkeypatch.setattr("mgba_live_mcp.session_manager.os.waitpid", lambda pid, flags: (pid, 0))
+    monkeypatch.setattr(
+        "mgba_live_mcp.session_manager.os.kill",
+        lambda pid, signal_number: kill_probes.append(signal_number),
+    )
+
+    assert manager.pid_alive(1234) is False
+    assert kill_probes == []
+
+
+def test_pid_alive_falls_back_to_signal_probe_for_non_child_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = _manager(tmp_path)
+    probed: list[int] = []
+
+    def fake_kill(pid: int, signal_number: int) -> None:
+        probed.append(signal_number)
+
+    monkeypatch.setattr(
+        "mgba_live_mcp.session_manager.os.waitpid",
+        lambda pid, flags: (_ for _ in ()).throw(ChildProcessError()),
+    )
+    monkeypatch.setattr("mgba_live_mcp.session_manager.os.kill", fake_kill)
+
+    assert manager.pid_alive(1234) is True
+    assert probed == [0]
 
 
 def test_send_command_raises_session_busy_when_bridge_command_file_is_stuck(
@@ -231,6 +267,72 @@ def test_stop_refreshes_active_session_after_process_exit(
         "stopped": True,
     }
     assert calls == [("terminate", (1234, 2.5)), ("refresh", None)]
+
+
+def test_terminate_session_process_treats_permission_error_as_exit_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = _manager(tmp_path)
+    signals: list[int] = []
+
+    def fake_killpg(pgid: int, sig: int) -> None:
+        assert pgid == 1234
+        signals.append(sig)
+        if sig == signal.SIGKILL:
+            raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr("mgba_live_mcp.session_manager.os.getpgid", lambda pid: 1234)
+    monkeypatch.setattr("mgba_live_mcp.session_manager.os.killpg", fake_killpg)
+    monkeypatch.setattr(manager, "pid_alive", lambda pid: False)
+
+    manager.terminate_session_process(1234, grace=0.0)
+
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
+
+
+def test_terminate_session_process_rechecks_after_permission_error_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = _manager(tmp_path)
+    alive_values = iter([True, False])
+    sleeps: list[float] = []
+
+    def fake_killpg(pgid: int, sig: int) -> None:
+        del pgid
+        if sig == signal.SIGKILL:
+            raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr("mgba_live_mcp.session_manager.os.getpgid", lambda pid: 1234)
+    monkeypatch.setattr("mgba_live_mcp.session_manager.os.killpg", fake_killpg)
+    monkeypatch.setattr(manager, "pid_alive", lambda pid: next(alive_values))
+    monkeypatch.setattr(
+        "mgba_live_mcp.session_manager.time.sleep", lambda value: sleeps.append(value)
+    )
+
+    manager.terminate_session_process(1234, grace=0.0)
+
+    assert sleeps == [0.05]
+
+
+def test_terminate_session_process_reraises_permission_error_when_pid_survives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = _manager(tmp_path)
+    timeline = iter([0.0, 1.1, 2.0, 3.1])
+
+    def fake_killpg(pgid: int, sig: int) -> None:
+        del pgid
+        if sig == signal.SIGKILL:
+            raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr("mgba_live_mcp.session_manager.os.getpgid", lambda pid: 1234)
+    monkeypatch.setattr("mgba_live_mcp.session_manager.os.killpg", fake_killpg)
+    monkeypatch.setattr(manager, "pid_alive", lambda pid: True)
+    monkeypatch.setattr("mgba_live_mcp.session_manager.time.time", lambda: next(timeline))
+    monkeypatch.setattr("mgba_live_mcp.session_manager.time.sleep", lambda value: None)
+
+    with pytest.raises(PermissionError):
+        manager.terminate_session_process(1234, grace=0.0)
 
 
 def test_run_lua_file_executes_existing_script(

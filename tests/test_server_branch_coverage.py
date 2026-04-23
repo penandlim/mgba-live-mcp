@@ -133,10 +133,10 @@ async def test_run_with_snapshot_edge_paths(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(server, "_controller", queue)
 
     async def no_session(*_args, **_kwargs):
-        return None
+        return None, RuntimeError("status blew up")
 
     monkeypatch.setattr(server, "_resolve_snapshot_session", no_session)
-    with pytest.raises(RuntimeError, match="Unable to resolve session_id"):
+    with pytest.raises(RuntimeError, match="status blew up"):
         await server._run_with_snapshot("status", [], timeout=1.0)
 
     queue = _QueueController([{"data": {}}])

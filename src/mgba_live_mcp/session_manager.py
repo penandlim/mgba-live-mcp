@@ -143,6 +143,17 @@ class SessionManager:
 
     def pid_alive(self, pid: int) -> bool:
         try:
+            waited_pid, _ = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+        except OSError:
+            return False
+        else:
+            if waited_pid == pid:
+                return False
+            if waited_pid == 0:
+                return True
+        try:
             os.kill(pid, 0)
             return True
         except OSError:
@@ -559,6 +570,16 @@ class SessionManager:
         return self._status_payload(self.require_session(session, require_alive=True))
 
     def terminate_session_process(self, pid: int, *, grace: float = 1.0) -> None:
+        def ignore_if_target_exited(exc: PermissionError) -> None:
+            deadline = time.time() + 1.0
+            while time.time() < deadline:
+                if not self.pid_alive(pid):
+                    return
+                time.sleep(0.05)
+            if not self.pid_alive(pid):
+                return
+            raise exc
+
         try:
             pgid = os.getpgid(pid)
         except ProcessLookupError:
@@ -566,6 +587,9 @@ class SessionManager:
         try:
             os.killpg(pgid, signal.SIGTERM)
         except ProcessLookupError:
+            return
+        except PermissionError as exc:
+            ignore_if_target_exited(exc)
             return
         deadline = time.time() + grace
         while time.time() < deadline:
@@ -576,6 +600,8 @@ class SessionManager:
             os.killpg(pgid, signal.SIGKILL)
         except ProcessLookupError:
             return
+        except PermissionError as exc:
+            ignore_if_target_exited(exc)
 
     def stop(self, *, session: str, grace: float = 1.0) -> dict[str, Any]:
         target = self.require_session(session, require_alive=False)

@@ -231,6 +231,10 @@ def test_list_tools_require_session_for_single_session_tools() -> None:
 
     assert by_name["mgba_live_stop"].inputSchema["required"] == ["session"]
     assert by_name["mgba_live_run_lua"].inputSchema["required"] == ["session"]
+    assert by_name["mgba_live_run_lua"].inputSchema["oneOf"] == [
+        {"required": ["file"]},
+        {"required": ["code"]},
+    ]
     assert by_name["mgba_live_input_tap"].inputSchema["required"] == ["session", "key"]
     assert set(by_name["mgba_live_input_set"].inputSchema["required"]) == {"keys", "session"}
     assert by_name["mgba_live_input_clear"].inputSchema["required"] == ["session"]
@@ -284,6 +288,8 @@ async def test_call_tool_attach_stop_run_lua_input_branches(
     await server.call_tool("mgba_live_stop", {"session": "s1", "grace": 1.5})
     assert calls[-1][0] == "stop"
     assert "--grace" in calls[-1][1]
+    await server.call_tool("mgba_live_stop", {"session": "s1", "grace": 0.0})
+    assert calls[-1][1] == ["--session", "s1", "--grace", "0.0"]
 
     with pytest.raises(ValueError, match="session_required"):
         await server.call_tool("mgba_live_run_lua", {"file": "x.lua"})
@@ -327,6 +333,24 @@ async def test_call_tool_attach_stop_run_lua_input_branches(
         await server.call_tool("mgba_live_input_clear", {"keys": ["A", "B"]})
     await server.call_tool("mgba_live_input_clear", {"session": "s1", "keys": ["A", "B"]})
     assert "--keys" in calls[-1][1]
+
+
+@pytest.mark.anyio
+async def test_status_all_requires_boolean_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, list[str], dict[str, Any]]] = []
+
+    async def fake_snapshot(cmd: str, cmd_args: list[str], **kwargs):
+        calls.append((cmd, list(cmd_args), kwargs))
+        return [server._text_content({"ok": True})]
+
+    monkeypatch.setattr(server, "_run_with_snapshot", fake_snapshot)
+
+    with pytest.raises(ValueError, match="session_required"):
+        await server.call_tool("mgba_live_status", {"all": "yes"})
+
+    await server.call_tool("mgba_live_status", {"all": True})
+    assert calls[-1][0] == "status"
+    assert calls[-1][1] == ["--all"]
 
 
 @pytest.mark.anyio

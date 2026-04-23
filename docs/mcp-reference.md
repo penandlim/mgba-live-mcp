@@ -245,12 +245,24 @@ _Not declared._
 
 Execute Lua in a running live session.
 
-- Required input fields: `session`
+- Required input fields: _Conditional; see schema._
 
 ### Input Schema
 
 ```json
 {
+  "oneOf": [
+    {
+      "required": [
+        "file"
+      ]
+    },
+    {
+      "required": [
+        "code"
+      ]
+    }
+  ],
   "properties": {
     "code": {
       "description": "Inline Lua code.",

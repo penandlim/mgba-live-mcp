@@ -762,6 +762,10 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["session"],
+                "oneOf": [
+                    {"required": ["file"]},
+                    {"required": ["code"]},
+                ],
             },
         ),
         Tool(
@@ -1034,7 +1038,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
 
     if name == "mgba_live_status":
         cmd_args = []
-        if args.get("all"):
+        if args.get("all") is True:
             cmd_args.append("--all")
         else:
             cmd_args.extend(_build_session_arg(args, required=True))
@@ -1045,7 +1049,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
         )
     if name == "mgba_live_stop":
         cmd_args = _build_session_arg(args, required=True)
-        if grace := args.get("grace"):
+        grace = args.get("grace")
+        if grace is not None:
             cmd_args.extend(["--grace", str(float(grace))])
         return await _run_with_snapshot("stop", cmd_args, timeout=timeout, include_snapshot=False)
 

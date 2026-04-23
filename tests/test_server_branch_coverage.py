@@ -73,6 +73,14 @@ def test_extract_helper_edge_cases() -> None:
     assert server._extract_input_tap_duration({"data": {"duration": 0}}) is None
 
 
+def test_timeout_detection_ignores_timeout_flag_strings() -> None:
+    assert server._error_is_timeout(RuntimeError("Timed out waiting for bridge")) is True
+    assert (
+        server._error_is_timeout(RuntimeError("Command failed: mgba-live-mcp run-lua --timeout 20"))
+        is False
+    )
+
+
 @pytest.mark.anyio
 async def test_wait_helpers_timeout_and_error_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     queue = _QueueController([{"data": {"result": False}}])
@@ -104,18 +112,32 @@ async def test_wait_helpers_timeout_and_error_paths(monkeypatch: pytest.MonkeyPa
 async def test_run_with_snapshot_edge_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     queue = _QueueController([[1]])
     monkeypatch.setattr(server, "_controller", queue)
-    contents = await server._run_with_snapshot("status", [], timeout=1.0, include_snapshot=False)
-    assert server._text_payload(contents[0]) == {"value": [1]}
+    with pytest.raises(RuntimeError, match="Unable to resolve session_id"):
+        await server._run_with_snapshot("status", [], timeout=1.0, include_snapshot=False)
+
+    queue = _QueueController([{"frame": 1, "data": {"ok": True}}])
+    monkeypatch.setattr(server, "_controller", queue)
+    contents = await server._run_with_snapshot(
+        "run-lua",
+        ["--code", "return 1", "--session", "s1"],
+        timeout=1.0,
+        include_snapshot=False,
+    )
+    assert server._text_payload(contents[0]) == {
+        "session_id": "s1",
+        "frame": 1,
+        "data": {"ok": True},
+    }
 
     queue = _QueueController([{"ok": True}])
     monkeypatch.setattr(server, "_controller", queue)
 
     async def no_session(*_args, **_kwargs):
-        return None
+        return None, RuntimeError("status blew up")
 
     monkeypatch.setattr(server, "_resolve_snapshot_session", no_session)
-    contents = await server._run_with_snapshot("status", [], timeout=1.0)
-    assert len(contents) == 1
+    with pytest.raises(RuntimeError, match="status blew up"):
+        await server._run_with_snapshot("status", [], timeout=1.0)
 
     queue = _QueueController([{"data": {}}])
     monkeypatch.setattr(server, "_controller", queue)
@@ -366,13 +388,17 @@ async def test_call_tool_export_screenshot_branches(
         {"session": "s1", "out": "/tmp/a.png"},
     )
     payload = server._text_payload(contents[0])
-    assert payload == {"value": "raw-value"}
+    assert payload == {"value": "raw-value", "session_id": "s1"}
 
     png_base64 = base64.b64encode(b"png-bytes").decode()
     queue = _QueueController([{"png_base64": png_base64}])
     monkeypatch.setattr(server, "_controller", queue)
+    with pytest.raises(ValueError, match="session_required"):
+        await server.call_tool("mgba_live_export_screenshot", {})
     contents = await server.call_tool("mgba_live_export_screenshot", {"session": "s1"})
     assert len(contents) == 2
+    payload = server._text_payload(contents[0])
+    assert payload["session_id"] == "s1"
     assert getattr(contents[1], "type", None) == "image"
 
 

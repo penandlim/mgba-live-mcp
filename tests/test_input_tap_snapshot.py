@@ -88,6 +88,7 @@ def test_input_tap_waits_after_release_then_returns_screenshot(monkeypatch: Any)
     )
     payload = _first_payload(contents)
 
+    assert payload["session_id"] == "session-123"
     assert payload["frame"] == 100
     assert payload["data"]["duration"] == 3
     assert payload["screenshot"] == {"frame": 200}
@@ -159,6 +160,7 @@ def test_input_tap_wait_frames_zero_still_waits_through_tap_duration(monkeypatch
     )
     payload = _first_payload(contents)
 
+    assert payload["session_id"] == "session-123"
     assert payload["screenshot"] == {"frame": 200}
     assert [call["command"] for call in fake.calls] == [
         "input-tap",
@@ -247,6 +249,8 @@ def test_input_set_and_clear_remain_no_snapshot(monkeypatch: Any) -> None:
 
     set_payload = _first_payload(set_contents)
     clear_payload = _first_payload(clear_contents)
+    assert set_payload["session_id"] == "session-123"
+    assert clear_payload["session_id"] == "session-123"
     assert "screenshot" not in set_payload
     assert "screenshot" not in clear_payload
     assert [call["command"] for call in fake.calls] == ["input-set", "input-clear"]

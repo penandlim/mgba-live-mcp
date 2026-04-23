@@ -57,9 +57,9 @@ def test_start_parser_accepts_script_flag_with_synthetic_rom() -> None:
 def test_screenshot_parser_rejects_removed_text_flags() -> None:
     parser = mgba_live.build_parser()
     with pytest.raises(SystemExit):
-        parser.parse_args(["screenshot", "--text-format", "hex"])
+        parser.parse_args(["screenshot", "--session", "s1", "--text-format", "hex"])
     with pytest.raises(SystemExit):
-        parser.parse_args(["screenshot", "--png"])
+        parser.parse_args(["screenshot", "--session", "s1", "--png"])
 
 
 def test_existing_session_subcommands_require_session_at_parse_time() -> None:

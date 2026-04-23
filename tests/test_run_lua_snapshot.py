@@ -46,7 +46,7 @@ def _first_payload(result: Any) -> dict[str, Any]:
     return json.loads(first.text)
 
 
-def test_run_lua_snapshot_uses_status_fallback_when_session_not_provided(monkeypatch: Any) -> None:
+def test_run_lua_requires_session_when_not_provided(monkeypatch: Any) -> None:
     fake = _FakeController(include_status=True)
     monkeypatch.setattr(mcp_server, "_controller", fake)
 

@@ -199,7 +199,7 @@ def test_input_tap_wait_failure_includes_session_id(monkeypatch: Any) -> None:
     assert [call["command"] for call in fake.calls] == ["input-tap", "run-lua", "status"]
 
 
-def test_input_tap_errors_when_session_cannot_be_resolved(monkeypatch: Any) -> None:
+def test_input_tap_requires_session_when_not_provided(monkeypatch: Any) -> None:
     fake = _InputTapController(status_ok=False)
     monkeypatch.setattr(mcp_server, "_controller", fake)
 

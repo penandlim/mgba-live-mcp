@@ -492,6 +492,12 @@ async def _run_with_snapshot(
         explicit_session_id=session_id,
         timeout=timeout,
     )
+    if not resolved_response_session and not _is_aggregate_status_request(
+        live_command, run_command_args
+    ):
+        raise RuntimeError(
+            f"Unable to resolve session_id for successful '{live_command}' response."
+        )
     if resolved_response_session:
         payload.setdefault("session_id", str(resolved_response_session))
 
@@ -1159,6 +1165,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             explicit_session_id=None,
             timeout=timeout,
         )
+        if not resolved_response_session:
+            raise RuntimeError("Unable to resolve session_id for successful 'screenshot' response.")
         if resolved_response_session:
             payload.setdefault("session_id", str(resolved_response_session))
         contents = [_text_content(payload)]

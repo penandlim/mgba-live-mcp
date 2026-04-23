@@ -111,8 +111,8 @@ async def test_wait_helpers_timeout_and_error_paths(monkeypatch: pytest.MonkeyPa
 async def test_run_with_snapshot_edge_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     queue = _QueueController([[1]])
     monkeypatch.setattr(server, "_controller", queue)
-    contents = await server._run_with_snapshot("status", [], timeout=1.0, include_snapshot=False)
-    assert server._text_payload(contents[0]) == {"value": [1]}
+    with pytest.raises(RuntimeError, match="Unable to resolve session_id"):
+        await server._run_with_snapshot("status", [], timeout=1.0, include_snapshot=False)
 
     queue = _QueueController([{"frame": 1, "data": {"ok": True}}])
     monkeypatch.setattr(server, "_controller", queue)
@@ -135,8 +135,8 @@ async def test_run_with_snapshot_edge_paths(monkeypatch: pytest.MonkeyPatch) -> 
         return None
 
     monkeypatch.setattr(server, "_resolve_snapshot_session", no_session)
-    contents = await server._run_with_snapshot("status", [], timeout=1.0)
-    assert len(contents) == 1
+    with pytest.raises(RuntimeError, match="Unable to resolve session_id"):
+        await server._run_with_snapshot("status", [], timeout=1.0)
 
     queue = _QueueController([{"data": {}}])
     monkeypatch.setattr(server, "_controller", queue)
@@ -311,16 +311,14 @@ async def test_call_tool_export_screenshot_branches(
 ) -> None:
     queue = _QueueController(["raw-value"])
     monkeypatch.setattr(server, "_controller", queue)
-    contents = await server.call_tool("mgba_live_export_screenshot", {"out": "/tmp/a.png"})
-    payload = server._text_payload(contents[0])
-    assert payload == {"value": "raw-value"}
+    with pytest.raises(RuntimeError, match="Unable to resolve session_id"):
+        await server.call_tool("mgba_live_export_screenshot", {"out": "/tmp/a.png"})
 
     png_base64 = base64.b64encode(b"png-bytes").decode()
     queue = _QueueController([{"png_base64": png_base64}])
     monkeypatch.setattr(server, "_controller", queue)
-    contents = await server.call_tool("mgba_live_export_screenshot", {})
-    assert len(contents) == 2
-    assert getattr(contents[1], "type", None) == "image"
+    with pytest.raises(RuntimeError, match="Unable to resolve session_id"):
+        await server.call_tool("mgba_live_export_screenshot", {})
 
 
 @pytest.mark.anyio

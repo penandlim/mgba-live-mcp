@@ -1,6 +1,6 @@
 [project]
 name = "mgba-live-mcp"
-version = "0.3.2"
+version = "1.0.0"
 description = "MCP server for persistent live mGBA control with script bridge, screenshots, memory and input tooling"
 readme = "README.md"
 requires-python = ">=3.11"

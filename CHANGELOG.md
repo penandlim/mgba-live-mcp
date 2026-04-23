@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.0
+
+- Hard-cut the MCP contract to explicit session scoping for single-session
+  tools, with `session_id` returned on successful single-session responses.
+- Replace subprocess-per-command controller behavior with an in-process runtime
+  built around `SessionManager` plus async controller wrappers.
+- Keep the local CLI as a thin adapter over the shared runtime instead of
+  duplicating session/process logic.
+- Split metadata-only tools from explicit visual tools, adding
+  `mgba_live_get_view`, `mgba_live_run_lua_and_view`,
+  `mgba_live_input_tap_and_view`, and `mgba_live_start_with_lua_and_view`.
+- Reject same-session overlap with `session_busy` and hard-fail visual settle
+  and snapshot errors with `settle_failed` / `snapshot_failed`.
+- Update README, generated MCP reference docs, and direct contract/runtime tests
+  for the `1.0.0` cutover.
+
 ## 0.3.2
 
 - Fix packaging so published wheels include runtime Python modules

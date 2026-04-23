@@ -7,8 +7,8 @@ Do not edit manually. Regenerate with:
 make mcp-docs
 ```
 
-- Tool count: 15
-- Tools: `mgba_live_start`, `mgba_live_start_with_lua`, `mgba_live_attach`, `mgba_live_status`, `mgba_live_stop`, `mgba_live_run_lua`, `mgba_live_input_tap`, `mgba_live_input_set`, `mgba_live_input_clear`, `mgba_live_export_screenshot`, `mgba_live_read_memory`, `mgba_live_read_range`, `mgba_live_dump_pointers`, `mgba_live_dump_oam`, `mgba_live_dump_entities`
+- Tool count: 19
+- Tools: `mgba_live_start`, `mgba_live_start_with_lua`, `mgba_live_start_with_lua_and_view`, `mgba_live_attach`, `mgba_live_status`, `mgba_live_get_view`, `mgba_live_stop`, `mgba_live_run_lua`, `mgba_live_run_lua_and_view`, `mgba_live_input_tap`, `mgba_live_input_tap_and_view`, `mgba_live_input_set`, `mgba_live_input_clear`, `mgba_live_export_screenshot`, `mgba_live_read_memory`, `mgba_live_read_range`, `mgba_live_dump_pointers`, `mgba_live_dump_oam`, `mgba_live_dump_entities`
 
 ## `mgba_live_start`
 
@@ -26,11 +26,11 @@ Start a persistent live mGBA session.
       "type": "boolean"
     },
     "fps_target": {
-      "description": "Explicit fpsTarget. Defaults to 120 when omitted.",
+      "description": "Explicit fpsTarget.",
       "type": "number"
     },
     "mgba_path": {
-      "description": "Optional mgba-qt path.",
+      "description": "Optional mGBA binary path.",
       "type": "string"
     },
     "rom": {
@@ -47,7 +47,6 @@ Start a persistent live mGBA session.
     },
     "timeout": {
       "default": 20.0,
-      "description": "Command timeout in seconds.",
       "type": "number"
     }
   },
@@ -64,7 +63,7 @@ _Not declared._
 
 ## `mgba_live_start_with_lua`
 
-Start a live session, run Lua immediately, then return the post-Lua screenshot.
+Start a live session and run Lua immediately. Metadata only.
 
 - Required input fields: `rom`
 
@@ -86,11 +85,11 @@ Start a live session, run Lua immediately, then return the post-Lua screenshot.
       "type": "string"
     },
     "fps_target": {
-      "description": "Explicit fpsTarget. Defaults to 120 when omitted.",
+      "description": "Explicit fpsTarget.",
       "type": "number"
     },
     "mgba_path": {
-      "description": "Optional mgba-qt path.",
+      "description": "Optional mGBA binary path.",
       "type": "string"
     },
     "rom": {
@@ -107,7 +106,65 @@ Start a live session, run Lua immediately, then return the post-Lua screenshot.
     },
     "timeout": {
       "default": 20.0,
-      "description": "Command timeout in seconds.",
+      "type": "number"
+    }
+  },
+  "required": [
+    "rom"
+  ],
+  "type": "object"
+}
+```
+
+### Output Schema
+
+_Not declared._
+
+## `mgba_live_start_with_lua_and_view`
+
+Start a live session, run Lua, settle, and return one screenshot.
+
+- Required input fields: `rom`
+
+### Input Schema
+
+```json
+{
+  "properties": {
+    "code": {
+      "description": "Inline Lua code.",
+      "type": "string"
+    },
+    "fast": {
+      "description": "Shortcut for fps_target=600.",
+      "type": "boolean"
+    },
+    "file": {
+      "description": "Lua file path.",
+      "type": "string"
+    },
+    "fps_target": {
+      "description": "Explicit fpsTarget.",
+      "type": "number"
+    },
+    "mgba_path": {
+      "description": "Optional mGBA binary path.",
+      "type": "string"
+    },
+    "rom": {
+      "description": "Path to ROM (.gba/.gb/.gbc).",
+      "type": "string"
+    },
+    "savestate": {
+      "description": "Optional savestate path.",
+      "type": "string"
+    },
+    "session_id": {
+      "description": "Optional explicit session id.",
+      "type": "string"
+    },
+    "timeout": {
+      "default": 20.0,
       "type": "number"
     }
   },
@@ -143,7 +200,6 @@ Attach to an existing managed live session.
     },
     "timeout": {
       "default": 20.0,
-      "description": "Command timeout in seconds.",
       "type": "number"
     }
   },
@@ -157,46 +213,59 @@ _Not declared._
 
 ## `mgba_live_status`
 
-Show status for one session or all managed sessions.
+Show metadata for one session or all managed sessions.
 
-- Required input fields: _Conditional; see schema._
+- Required input fields: _None._
 
 ### Input Schema
 
 ```json
 {
-  "anyOf": [
-    {
-      "required": [
-        "session"
-      ]
-    },
-    {
-      "properties": {
-        "all": {
-          "const": true
-        }
-      },
-      "required": [
-        "all"
-      ]
-    }
-  ],
   "properties": {
     "all": {
       "description": "Whether to include all sessions.",
       "type": "boolean"
     },
     "session": {
-      "description": "Session id. Required unless all=true.",
+      "description": "Session id.",
       "type": "string"
     },
     "timeout": {
       "default": 20.0,
-      "description": "Command timeout in seconds.",
       "type": "number"
     }
   },
+  "type": "object"
+}
+```
+
+### Output Schema
+
+_Not declared._
+
+## `mgba_live_get_view`
+
+Capture one in-memory screenshot from a live session.
+
+- Required input fields: `session`
+
+### Input Schema
+
+```json
+{
+  "properties": {
+    "session": {
+      "description": "Session id.",
+      "type": "string"
+    },
+    "timeout": {
+      "default": 20.0,
+      "type": "number"
+    }
+  },
+  "required": [
+    "session"
+  ],
   "type": "object"
 }
 ```
@@ -226,7 +295,6 @@ Stop one managed session.
     },
     "timeout": {
       "default": 20.0,
-      "description": "Command timeout in seconds.",
       "type": "number"
     }
   },
@@ -243,26 +311,14 @@ _Not declared._
 
 ## `mgba_live_run_lua`
 
-Execute Lua in a running live session.
+Execute Lua in a running live session. Metadata only.
 
-- Required input fields: _Conditional; see schema._
+- Required input fields: `session`
 
 ### Input Schema
 
 ```json
 {
-  "oneOf": [
-    {
-      "required": [
-        "file"
-      ]
-    },
-    {
-      "required": [
-        "code"
-      ]
-    }
-  ],
   "properties": {
     "code": {
       "description": "Inline Lua code.",
@@ -278,7 +334,45 @@ Execute Lua in a running live session.
     },
     "timeout": {
       "default": 20.0,
-      "description": "Command timeout in seconds.",
+      "type": "number"
+    }
+  },
+  "required": [
+    "session"
+  ],
+  "type": "object"
+}
+```
+
+### Output Schema
+
+_Not declared._
+
+## `mgba_live_run_lua_and_view`
+
+Execute Lua, settle, and return one screenshot.
+
+- Required input fields: `session`
+
+### Input Schema
+
+```json
+{
+  "properties": {
+    "code": {
+      "description": "Inline Lua code.",
+      "type": "string"
+    },
+    "file": {
+      "description": "Lua file path.",
+      "type": "string"
+    },
+    "session": {
+      "description": "Session id.",
+      "type": "string"
+    },
+    "timeout": {
+      "default": 20.0,
       "type": "number"
     }
   },
@@ -295,7 +389,7 @@ _Not declared._
 
 ## `mgba_live_input_tap`
 
-Tap a key for N frames, optionally wait additional frames after release, then return a screenshot.
+Tap a key for N frames. Metadata only.
 
 - Required input fields: `session`, `key`
 
@@ -317,12 +411,49 @@ Tap a key for N frames, optionally wait additional frames after release, then re
     },
     "timeout": {
       "default": 20.0,
-      "description": "Command timeout in seconds.",
+      "type": "number"
+    }
+  },
+  "required": [
+    "session",
+    "key"
+  ],
+  "type": "object"
+}
+```
+
+### Output Schema
+
+_Not declared._
+
+## `mgba_live_input_tap_and_view`
+
+Tap a key, optionally wait additional frames, then return one screenshot.
+
+- Required input fields: `session`, `key`
+
+### Input Schema
+
+```json
+{
+  "properties": {
+    "frames": {
+      "default": 1,
+      "type": "integer"
+    },
+    "key": {
+      "description": "A/B/START/SELECT/UP/DOWN/LEFT/RIGHT/L/R.",
+      "type": "string"
+    },
+    "session": {
+      "type": "string"
+    },
+    "timeout": {
+      "default": 20.0,
       "type": "number"
     },
     "wait_frames": {
       "default": 0,
-      "description": "Additional frames to wait after tap release before screenshot capture.",
       "minimum": 0,
       "type": "integer"
     }
@@ -341,7 +472,7 @@ _Not declared._
 
 ## `mgba_live_input_set`
 
-Set currently held keys for live session. Use mgba_live_status after input for visual verification.
+Set currently held keys for a live session.
 
 - Required input fields: `session`, `keys`
 
@@ -351,7 +482,6 @@ Set currently held keys for live session. Use mgba_live_status after input for v
 {
   "properties": {
     "keys": {
-      "description": "Keys to hold.",
       "items": {
         "type": "string"
       },
@@ -362,7 +492,6 @@ Set currently held keys for live session. Use mgba_live_status after input for v
     },
     "timeout": {
       "default": 20.0,
-      "description": "Command timeout in seconds.",
       "type": "number"
     }
   },
@@ -380,7 +509,7 @@ _Not declared._
 
 ## `mgba_live_input_clear`
 
-Clear held keys from live session. Use mgba_live_status after input for visual verification.
+Clear held keys from a live session.
 
 - Required input fields: `session`
 
@@ -390,7 +519,6 @@ Clear held keys from live session. Use mgba_live_status after input for visual v
 {
   "properties": {
     "keys": {
-      "description": "Optional keys to clear; omit to clear all.",
       "items": {
         "type": "string"
       },
@@ -401,7 +529,6 @@ Clear held keys from live session. Use mgba_live_status after input for visual v
     },
     "timeout": {
       "default": 20.0,
-      "description": "Command timeout in seconds.",
       "type": "number"
     }
   },
@@ -418,7 +545,7 @@ _Not declared._
 
 ## `mgba_live_export_screenshot`
 
-Export a screenshot from a live session.
+Persist and return a screenshot from a live session.
 
 - Required input fields: `session`
 
@@ -437,7 +564,6 @@ Export a screenshot from a live session.
     },
     "timeout": {
       "default": 20.0,
-      "description": "Command timeout in seconds.",
       "type": "number"
     }
   },
@@ -454,7 +580,7 @@ _Not declared._
 
 ## `mgba_live_read_memory`
 
-Read memory addresses from live session.
+Read memory addresses from a live session.
 
 - Required input fields: `session`, `addresses`
 
@@ -464,7 +590,6 @@ Read memory addresses from live session.
 {
   "properties": {
     "addresses": {
-      "description": "Addresses to read.",
       "items": {
         "type": "integer"
       },
@@ -475,7 +600,6 @@ Read memory addresses from live session.
     },
     "timeout": {
       "default": 20.0,
-      "description": "Command timeout in seconds.",
       "type": "number"
     }
   },
@@ -493,7 +617,7 @@ _Not declared._
 
 ## `mgba_live_read_range`
 
-Read contiguous memory range from live session.
+Read a contiguous memory range from a live session.
 
 - Required input fields: `session`, `start`, `length`
 
@@ -503,19 +627,16 @@ Read contiguous memory range from live session.
 {
   "properties": {
     "length": {
-      "description": "Byte length.",
       "type": "integer"
     },
     "session": {
       "type": "string"
     },
     "start": {
-      "description": "Range start address.",
       "type": "integer"
     },
     "timeout": {
       "default": 20.0,
-      "description": "Command timeout in seconds.",
       "type": "number"
     }
   },
@@ -534,7 +655,7 @@ _Not declared._
 
 ## `mgba_live_dump_pointers`
 
-Dump pointer table entries from live session.
+Dump pointer table entries from a live session.
 
 - Required input fields: `session`, `start`, `count`
 
@@ -544,19 +665,16 @@ Dump pointer table entries from live session.
 {
   "properties": {
     "count": {
-      "description": "Entries to read.",
       "type": "integer"
     },
     "session": {
       "type": "string"
     },
     "start": {
-      "description": "Pointer table start address.",
       "type": "integer"
     },
     "timeout": {
       "default": 20.0,
-      "description": "Command timeout in seconds.",
       "type": "number"
     },
     "width": {
@@ -579,7 +697,7 @@ _Not declared._
 
 ## `mgba_live_dump_oam`
 
-Dump OAM entries from live session.
+Dump OAM entries from a live session.
 
 - Required input fields: `session`
 
@@ -597,7 +715,6 @@ Dump OAM entries from live session.
     },
     "timeout": {
       "default": 20.0,
-      "description": "Command timeout in seconds.",
       "type": "number"
     }
   },
@@ -614,7 +731,7 @@ _Not declared._
 
 ## `mgba_live_dump_entities`
 
-Dump structured entity bytes from live session.
+Dump structured entity bytes from a live session.
 
 - Required input fields: `session`
 
@@ -640,7 +757,6 @@ Dump structured entity bytes from live session.
     },
     "timeout": {
       "default": 20.0,
-      "description": "Command timeout in seconds.",
       "type": "number"
     }
   },

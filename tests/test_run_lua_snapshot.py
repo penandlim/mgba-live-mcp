@@ -46,19 +46,11 @@ def _first_payload(result: Any) -> dict[str, Any]:
     return json.loads(first.text)
 
 
-def test_run_lua_without_session_propagates_session_error(monkeypatch: Any) -> None:
+def test_run_lua_requires_session_when_not_provided(monkeypatch: Any) -> None:
     fake = _FakeController(include_status=True)
     monkeypatch.setattr(mcp_server, "_controller", fake)
 
-    async def fake_run(command: str, args: list[str], *, timeout: float = 20.0) -> _Result:
-        fake.calls.append({"command": command, "args": list(args), "timeout": timeout})
-        if command == "run-lua" and "--session" not in args:
-            raise RuntimeError("No session specified. Provide --session.")
-        raise AssertionError(f"unexpected command: {command}")
-
-    monkeypatch.setattr(fake, "run", fake_run)
-
-    with pytest.raises(RuntimeError, match="No session specified"):
+    with pytest.raises(ValueError, match="session_required"):
         asyncio.run(
             mcp_server.call_tool(
                 "mgba_live_run_lua",
@@ -68,9 +60,7 @@ def test_run_lua_without_session_propagates_session_error(monkeypatch: Any) -> N
                 },
             )
         )
-    assert [call["command"] for call in fake.calls] == ["run-lua"]
-    assert fake.calls[0]["args"] == ["--code", "return 7", "--timeout", "7"]
-    assert fake.calls[0]["timeout"] == 7.0
+    assert fake.calls == []
 
 
 def test_run_lua_snapshot_settles_before_screenshot_when_session_is_given(monkeypatch: Any) -> None:

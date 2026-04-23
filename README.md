@@ -192,6 +192,8 @@ snapshot in one call.
   pass `session` explicitly unless you are calling `mgba_live_status` with
   `all=true`.
 - `mgba_live_start_with_lua` requires exactly one of `file` or `code`.
+- After `mgba_live_start`, all single-session MCP tools require an explicit
+  `session`, except `mgba_live_status(all=true)`.
 - `mgba_live_run_lua` supports callback-style macros by returning
   `{ macro_key = "..." }` and setting `_G[macro_key].active = false` when done;
   the tool waits for completion before returning its snapshot.

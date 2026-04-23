@@ -205,14 +205,12 @@ that delegates to the packaged module CLI.
 ```bash
 uv run python scripts/mgba_live.py --help
 uv run python scripts/mgba_live.py start --help
-uv run pytest
+make test
 ```
 
 Quality commands:
 
 ```bash
-make test-rom
-make verify-test-rom
 make lint
 make typecheck
 make test

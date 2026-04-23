@@ -36,6 +36,8 @@ def verify_test_rom(path: Path) -> Path:
     resolved = path.resolve()
     if not resolved.exists():
         raise FileNotFoundError(f"Test ROM not found: {resolved}")
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Test ROM path is not a regular file: {resolved}")
 
     actual = sha256_file(resolved)
     if actual != TEST_ROM_SHA256:
@@ -56,7 +58,7 @@ def _download_bytes(*, timeout: float) -> bytes:
 
 def fetch_test_rom(*, out: Path | None = None, timeout: float = 30.0) -> Path:
     target = default_test_rom_path() if out is None else out.resolve()
-    if target.exists():
+    if target.is_file():
         try:
             return verify_test_rom(target)
         except ValueError:

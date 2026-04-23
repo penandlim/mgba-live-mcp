@@ -20,7 +20,7 @@ format:
 typecheck:
 	uv run ty check src/ scripts/ tests/
 
-test:
+test: test-rom
 	uv run pytest
 
 check: lint typecheck test mcp-docs-check

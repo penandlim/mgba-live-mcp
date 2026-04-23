@@ -188,6 +188,9 @@ snapshot in one call.
 ## Important Behavior
 
 - `mgba_live_start` is bootstrap-only (no Lua arg, no screenshot return).
+- Existing-session tools do not auto-select an active or most-recent session;
+  pass `session` explicitly unless you are calling `mgba_live_status` with
+  `all=true`.
 - `mgba_live_start_with_lua` requires exactly one of `file` or `code`.
 - After `mgba_live_start`, all single-session MCP tools require an explicit
   `session`, except `mgba_live_status(all=true)`.

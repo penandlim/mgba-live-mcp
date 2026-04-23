@@ -102,17 +102,6 @@ def _extract_session_id(payload: Any) -> str | None:
         session_id = payload.get("session_id")
         if isinstance(session_id, str) and session_id:
             return session_id
-        for key in ("sessions", "value"):
-            nested = payload.get(key)
-            nested_session = _extract_session_id(nested)
-            if nested_session:
-                return nested_session
-        return None
-    if isinstance(payload, list):
-        for item in payload:
-            nested_session = _extract_session_id(item)
-            if nested_session:
-                return nested_session
     return None
 
 
@@ -254,8 +243,6 @@ def _append_warning(payload: dict[str, Any], warning: dict[str, Any]) -> None:
 async def _resolve_snapshot_session(
     command_args: list[str],
     command_payload: Any,
-    *,
-    timeout: float,
 ) -> tuple[str | None, Exception | None]:
     session_from_args = _session_arg_value(command_args)
     if session_from_args:
@@ -265,14 +252,7 @@ async def _resolve_snapshot_session(
     if payload_session_id:
         return payload_session_id, None
 
-    # Some CLI responses (for example run-lua) do not include session id.
-    # Fall back to status for active-session resolution before screenshot capture.
-    try:
-        status_result = await _controller.run("status", [], timeout=max(timeout, 20.0))
-    except Exception as exc:
-        return None, exc
-
-    return _extract_session_id(status_result.payload), None
+    return None, None
 
 
 def _is_aggregate_status_request(live_command: str, run_command_args: list[str]) -> bool:
@@ -285,7 +265,6 @@ async def _resolve_response_session(
     run_command_args: list[str],
     command_payload: Any,
     explicit_session_id: str | None,
-    timeout: float,
 ) -> tuple[str | None, Exception | None]:
     if _is_aggregate_status_request(live_command, run_command_args):
         return None, None
@@ -297,7 +276,7 @@ async def _resolve_response_session(
     session_from_args = _session_arg_value(run_command_args)
     if session_from_args:
         return session_from_args, None
-    return await _resolve_snapshot_session(run_command_args, command_payload, timeout=timeout)
+    return await _resolve_snapshot_session(run_command_args, command_payload)
 
 
 def _extract_run_lua_result(command_payload: dict[str, Any]) -> Any:
@@ -490,7 +469,6 @@ async def _run_with_snapshot(
         run_command_args=run_command_args,
         command_payload=command_result.payload,
         explicit_session_id=session_id,
-        timeout=timeout,
     )
     if not resolved_response_session and not _is_aggregate_status_request(
         live_command, run_command_args
@@ -508,14 +486,7 @@ async def _run_with_snapshot(
         return [_text_content(payload)]
 
     resolved_session = resolved_response_session
-    if not resolved_session and _is_aggregate_status_request(live_command, run_command_args):
-        resolved_session, snapshot_resolution_error = await _resolve_snapshot_session(
-            run_command_args,
-            command_result.payload,
-            timeout=timeout,
-        )
-    else:
-        snapshot_resolution_error = None
+    snapshot_resolution_error = None
     if not resolved_session:
         if require_snapshot_session:
             requested_session = session_id or _session_arg_value(run_command_args) or "unknown"
@@ -1194,7 +1165,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             run_command_args=run_args,
             command_payload=command_result.payload,
             explicit_session_id=None,
-            timeout=timeout,
         )
         if not resolved_response_session:
             detail = ""

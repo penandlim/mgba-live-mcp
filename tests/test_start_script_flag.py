@@ -57,9 +57,19 @@ def test_start_parser_accepts_script_flag_with_synthetic_rom() -> None:
 def test_screenshot_parser_rejects_removed_text_flags() -> None:
     parser = mgba_live.build_parser()
     with pytest.raises(SystemExit):
-        parser.parse_args(["screenshot", "--text-format", "hex"])
+        parser.parse_args(["screenshot", "--session", "s1", "--text-format", "hex"])
     with pytest.raises(SystemExit):
-        parser.parse_args(["screenshot", "--png"])
+        parser.parse_args(["screenshot", "--session", "s1", "--png"])
+
+
+def test_existing_session_subcommands_require_session_at_parse_time() -> None:
+    parser = mgba_live.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["run-lua", "--code", "return 1"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["screenshot", "--no-save"])
+    args = parser.parse_args(["status", "--all"])
+    assert args.all is True
 
 
 def test_cmd_screenshot_no_save_returns_base64_and_deletes_temp(monkeypatch: Any) -> None:
@@ -449,11 +459,10 @@ def test_cmd_status_skips_dead_active_session(tmp_path: Path, monkeypatch: Any) 
     captured: dict[str, Any] = {}
     monkeypatch.setattr(mgba_live, "print_json", lambda payload: captured.update(payload))
 
-    mgba_live.cmd_status(argparse.Namespace(all=False, session=None))
-
-    assert captured["session_id"] == "alive-session"
-    assert captured["alive"] is True
-    assert mgba_live.ACTIVE_SESSION_FILE.read_text() == "alive-session"
+    with pytest.raises(SystemExit, match="No session specified"):
+        mgba_live.cmd_status(argparse.Namespace(all=False, session=None))
+    assert captured == {}
+    assert mgba_live.ACTIVE_SESSION_FILE.read_text() == "dead-session"
 
 
 def test_prune_dead_sessions_archives_dead_session_directory(
@@ -480,7 +489,7 @@ def test_prune_dead_sessions_archives_dead_session_directory(
     archived = sorted((runtime_root / "archived_sessions").glob("dead-session-*"))
     assert len(archived) == 1
     assert (archived[0] / "session.json").exists()
-    assert mgba_live.ACTIVE_SESSION_FILE.read_text() == "alive-session"
+    assert not mgba_live.ACTIVE_SESSION_FILE.exists()
 
 
 def test_prune_dead_sessions_clears_stale_active_pointer_when_no_sessions(

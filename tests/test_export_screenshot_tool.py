@@ -120,7 +120,7 @@ def test_status_requires_session_unless_all(monkeypatch: Any) -> None:
     assert fake.calls == []
 
 
-def test_status_all_uses_session_from_payload_for_snapshot(monkeypatch: Any) -> None:
+def test_status_all_does_not_guess_snapshot_target(monkeypatch: Any) -> None:
     class _StatusAllController:
         def __init__(self) -> None:
             self.calls: list[dict[str, Any]] = []
@@ -131,12 +131,6 @@ def test_status_all_uses_session_from_payload_for_snapshot(monkeypatch: Any) -> 
                 return _Result(
                     {"value": [{"session_id": "session-a"}, {"session_id": "session-b"}]}
                 )
-            if command == "status":
-                raise AssertionError(
-                    "status fallback should not run for --all when payload has sessions"
-                )
-            if command == "screenshot":
-                return _Result({"frame": 200, "png_base64": "AA=="})
             raise AssertionError(f"unexpected command: {command}")
 
     fake = _StatusAllController()
@@ -146,12 +140,5 @@ def test_status_all_uses_session_from_payload_for_snapshot(monkeypatch: Any) -> 
     payload = _first_payload(contents)
 
     assert payload["value"] == [{"session_id": "session-a"}, {"session_id": "session-b"}]
-    assert payload["screenshot"] == {"frame": 200}
-    assert fake.calls == [
-        {"command": "status", "args": ["--all"], "timeout": 20.0},
-        {
-            "command": "screenshot",
-            "args": ["--session", "session-a", "--no-save", "--timeout", "20"],
-            "timeout": 20.0,
-        },
-    ]
+    assert "screenshot" not in payload
+    assert fake.calls == [{"command": "status", "args": ["--all"], "timeout": 20.0}]

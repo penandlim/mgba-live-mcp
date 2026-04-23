@@ -64,6 +64,9 @@ def test_extract_helper_edge_cases() -> None:
     assert server._extract_run_lua_result(cast(Any, "x")) is None
     assert server._extract_run_lua_result({"data": "x"}) is None
     assert server._extract_run_lua_macro_key({"data": {"result": 1}}) is None
+    assert server._extract_session_id({"session_id": "s1"}) == "s1"
+    assert server._extract_session_id({"value": [{"session_id": "s1"}]}) is None
+    assert server._extract_session_id([{"session_id": "s1"}]) is None
     assert server._extract_response_frame("x") is None
     assert server._extract_response_frame({"frame": True}) is None
     assert server._extract_response_frame({"frame": "x"}) is None
@@ -204,6 +207,25 @@ async def test_run_with_snapshot_edge_paths(monkeypatch: pytest.MonkeyPatch) -> 
             session_id="s1",
             require_screenshot=True,
         )
+
+
+@pytest.mark.anyio
+async def test_resolve_snapshot_session_does_not_fallback_to_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _UnexpectedStatusController:
+        async def run(self, command: str, args: list[str], *, timeout: float = 20.0) -> Any:
+            raise AssertionError(f"unexpected fallback command: {command} {args} {timeout}")
+
+    monkeypatch.setattr(server, "_controller", _UnexpectedStatusController())
+    assert await server._resolve_snapshot_session(
+        [],
+        {"value": [{"session_id": "session-a"}]},
+    ) == (None, None)
+
+
+def test_error_is_timeout_ignores_timeout_flag_mentions() -> None:
+    assert server._error_is_timeout(RuntimeError("command failed: --timeout 20")) is False
 
 
 @pytest.mark.anyio

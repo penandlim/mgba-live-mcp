@@ -98,11 +98,12 @@ def test_refresh_active_session_paths(
 
     monkeypatch.setattr(live_cli, "pid_alive", lambda pid: int(pid) == 99)
     live_cli._refresh_active_session()
-    assert active_file.read_text().strip() == "alive"
+    assert active_file.exists() is False
 
     active_file.write_text("dead")
     monkeypatch.setattr(live_cli, "iter_sessions", lambda: [{"id": "oops"}])
     live_cli._refresh_active_session()
+    assert active_file.exists() is False
 
 
 def test_refresh_active_session_keeps_alive_active(
@@ -165,8 +166,6 @@ def test_resolve_session_branches(
     _runtime, sessions_dir, active_file = isolated_runtime
     sessions_dir.mkdir(parents=True)
 
-    monkeypatch.setattr(live_cli, "get_active_session_id", lambda: None)
-    monkeypatch.setattr(live_cli, "iter_sessions", lambda: [])
     with pytest.raises(SystemExit, match="No session specified"):
         live_cli.resolve_session(_ns(session=None))
 
@@ -180,17 +179,11 @@ def test_resolve_session_branches(
     alive_dir.mkdir()
     (alive_dir / "session.json").write_text(json.dumps({"id": "alive", "pid": 20}))
 
-    monkeypatch.setattr(
-        live_cli,
-        "iter_sessions",
-        lambda: [{"id": "dead", "pid": 10}, {"id": "alive", "pid": 20}],
-    )
     monkeypatch.setattr(live_cli, "pid_alive", lambda pid: int(pid) == 20)
-    resolved = live_cli.resolve_session(_ns(session=None), require_alive=True)
-    assert resolved["id"] == "alive"
+    with pytest.raises(SystemExit, match="No session specified"):
+        live_cli.resolve_session(_ns(session=None), require_alive=True)
     assert active_file.exists() is False
 
-    monkeypatch.setattr(live_cli, "iter_sessions", lambda: [{"id": "dead", "pid": 10}])
     monkeypatch.setattr(live_cli, "pid_alive", lambda _pid: False)
     with pytest.raises(SystemExit, match="process is not alive"):
         live_cli.resolve_session(_ns(session="dead"), require_alive=True)

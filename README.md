@@ -197,6 +197,9 @@ snapshot in one call.
 - `mgba_live_run_lua` supports callback-style macros by returning
   `{ macro_key = "..." }` and setting `_G[macro_key].active = false` when done;
   the tool waits for completion before returning its snapshot.
+- Successful single-session MCP responses include a top-level `session_id`.
+  Aggregate `mgba_live_status(all=true)` keeps `session_id` on each returned
+  session entry.
 - `mgba_live_input_set` and `mgba_live_input_clear` update held keys but do not
   include a snapshot; call `mgba_live_status` to verify visually.
 - Automatic snapshots in tool responses include only `frame` metadata and image

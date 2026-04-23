@@ -243,12 +243,40 @@ def _append_warning(payload: dict[str, Any], warning: dict[str, Any]) -> None:
 async def _resolve_snapshot_session(
     command_args: list[str],
     command_payload: Any,
-) -> str | None:
+) -> tuple[str | None, Exception | None]:
     session_from_args = _session_arg_value(command_args)
     if session_from_args:
-        return session_from_args
+        return session_from_args, None
 
-    return _extract_session_id(command_payload)
+    payload_session_id = _extract_session_id(command_payload)
+    if payload_session_id:
+        return payload_session_id, None
+
+    return None, None
+
+
+def _is_aggregate_status_request(live_command: str, run_command_args: list[str]) -> bool:
+    return live_command == "status" and "--all" in run_command_args
+
+
+async def _resolve_response_session(
+    *,
+    live_command: str,
+    run_command_args: list[str],
+    command_payload: Any,
+    explicit_session_id: str | None,
+) -> tuple[str | None, Exception | None]:
+    if _is_aggregate_status_request(live_command, run_command_args):
+        return None, None
+    if explicit_session_id:
+        return str(explicit_session_id), None
+    payload_session_id = _extract_session_id(command_payload)
+    if payload_session_id:
+        return payload_session_id, None
+    session_from_args = _session_arg_value(run_command_args)
+    if session_from_args:
+        return session_from_args, None
+    return await _resolve_snapshot_session(run_command_args, command_payload)
 
 
 def _extract_run_lua_result(command_payload: dict[str, Any]) -> Any:
@@ -436,20 +464,39 @@ async def _run_with_snapshot(
         payload = {"value": command_result.payload}
     image_contents: list[ImageContent] = []
 
+    resolved_response_session, session_resolution_error = await _resolve_response_session(
+        live_command=live_command,
+        run_command_args=run_command_args,
+        command_payload=command_result.payload,
+        explicit_session_id=session_id,
+    )
+    if not resolved_response_session and not _is_aggregate_status_request(
+        live_command, run_command_args
+    ):
+        detail = ""
+        if session_resolution_error is not None:
+            detail = f" Cause: {session_resolution_error}"
+        raise RuntimeError(
+            f"Unable to resolve session_id for successful '{live_command}' response.{detail}"
+        ) from session_resolution_error
+    if resolved_response_session:
+        payload.setdefault("session_id", str(resolved_response_session))
+
     if not include_snapshot:
         return [_text_content(payload)]
 
-    resolved_session = session_id or await _resolve_snapshot_session(
-        run_command_args,
-        command_result.payload,
-    )
+    resolved_session = resolved_response_session
+    snapshot_resolution_error = None
     if not resolved_session:
         if require_snapshot_session:
             requested_session = session_id or _session_arg_value(run_command_args) or "unknown"
+            detail = ""
+            if snapshot_resolution_error is not None:
+                detail = f" Cause: {snapshot_resolution_error}"
             raise RuntimeError(
                 f"Unable to resolve session_id for screenshot capture after '{live_command}' "
-                f"(requested_session={requested_session})."
-            )
+                f"(requested_session={requested_session}).{detail}"
+            ) from snapshot_resolution_error
         return [_text_content(payload)]
 
     if input_tap_wait_frames is not None:
@@ -1113,6 +1160,21 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             payload = dict(command_result.payload)
         else:
             payload = {"value": command_result.payload}
+        resolved_response_session, session_resolution_error = await _resolve_response_session(
+            live_command="screenshot",
+            run_command_args=run_args,
+            command_payload=command_result.payload,
+            explicit_session_id=None,
+        )
+        if not resolved_response_session:
+            detail = ""
+            if session_resolution_error is not None:
+                detail = f" Cause: {session_resolution_error}"
+            raise RuntimeError(
+                f"Unable to resolve session_id for successful 'screenshot' response.{detail}"
+            ) from session_resolution_error
+        if resolved_response_session:
+            payload.setdefault("session_id", str(resolved_response_session))
         contents = [_text_content(payload)]
         shot_image = (
             _image_content(command_result.payload)

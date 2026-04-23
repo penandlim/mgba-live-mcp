@@ -51,6 +51,17 @@ def test_argument_validation_helpers() -> None:
         server._all_sessions_requested({"all": "yes"})
     assert server._all_sessions_requested({"all": True}) is True
     assert server._all_sessions_requested({}) is False
+    with pytest.raises(ValueError, match="keys is required"):
+        server._parse_required_keys({})
+    assert server._parse_required_keys({"keys": []}) == []
+    with pytest.raises(ValueError, match="pid must be an integer"):
+        server._parse_optional_pid({"pid": True})
+    assert server._parse_optional_pid({"pid": 1234}) == 1234
+    assert server._parse_optional_pid({}) is None
+    with pytest.raises(ValueError, match="grace must be a number"):
+        server._parse_grace({"grace": False})
+    assert server._parse_grace({"grace": None}) == 1.0
+    assert server._parse_grace({"grace": 0}) == 0.0
 
     assert server._parse_wait_frames({}) == 0
     assert server._parse_wait_frames({"wait_frames": 2.0}) == 2

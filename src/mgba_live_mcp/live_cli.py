@@ -253,8 +253,8 @@ def cmd_dump_entities(args: argparse.Namespace) -> None:
     )
 
 
-def add_session_arg(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--session", help="Explicit session id.")
+def add_session_arg(parser: argparse.ArgumentParser, *, required: bool = True) -> None:
+    parser.add_argument("--session", required=required, help="Explicit session id.")
 
 
 def add_timeout_arg(parser: argparse.ArgumentParser, default: float = 10.0) -> None:
@@ -312,7 +312,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_attach.set_defaults(func=cmd_attach)
 
     p_status = sub.add_parser("status", help="Show session status.")
-    add_session_arg(p_status)
+    add_session_arg(p_status, required=False)
     p_status.add_argument("--all", action="store_true", help="List all known sessions.")
     p_status.set_defaults(func=cmd_status)
 

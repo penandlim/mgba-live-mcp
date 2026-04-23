@@ -257,6 +257,17 @@ def test_single_session_tools_require_session(monkeypatch: Any) -> None:
         asyncio.run(mcp_server.call_tool("mgba_live_read_memory", {"addresses": [1]}))
 
 
+def test_server_rejects_invalid_optional_arguments(monkeypatch: Any) -> None:
+    monkeypatch.setattr(mcp_server, "_controller", _FakeController())
+
+    with pytest.raises(ValueError, match="pid must be an integer"):
+        asyncio.run(mcp_server.call_tool("mgba_live_attach", {"pid": True}))
+    with pytest.raises(ValueError, match="grace must be a number"):
+        asyncio.run(mcp_server.call_tool("mgba_live_stop", {"session": "s1", "grace": False}))
+    with pytest.raises(ValueError, match="keys is required"):
+        asyncio.run(mcp_server.call_tool("mgba_live_input_set", {"session": "s1"}))
+
+
 def test_metadata_tools_return_session_id_without_images(monkeypatch: Any) -> None:
     fake = _FakeController()
     monkeypatch.setattr(mcp_server, "_controller", fake)

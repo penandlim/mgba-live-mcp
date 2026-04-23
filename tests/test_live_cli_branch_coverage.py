@@ -160,6 +160,18 @@ def test_cmd_status_and_other_handlers_delegate(monkeypatch: pytest.MonkeyPatch)
     assert captured[4]["memory"] == {"0x1": 255}
 
 
+def test_parser_requires_session_for_existing_session_commands() -> None:
+    parser = live_cli.build_parser()
+
+    parser.parse_args(["status", "--all"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["stop"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["run-lua", "--code", "return true"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["input-set", "--keys", "A"])
+
+
 def test_all_command_handlers_delegate_and_main_runs_selected_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

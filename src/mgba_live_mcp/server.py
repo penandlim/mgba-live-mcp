@@ -96,6 +96,30 @@ def _parse_keys(value: Any) -> list[str]:
     return [str(item) for item in value]
 
 
+def _parse_required_keys(arguments: dict[str, Any]) -> list[str]:
+    if "keys" not in arguments:
+        raise ValueError("keys is required.")
+    return _parse_keys(arguments.get("keys"))
+
+
+def _parse_optional_pid(arguments: dict[str, Any]) -> int | None:
+    pid = arguments.get("pid")
+    if pid is None:
+        return None
+    if isinstance(pid, bool) or not isinstance(pid, int):
+        raise ValueError("pid must be an integer.")
+    return pid
+
+
+def _parse_grace(arguments: dict[str, Any]) -> float:
+    grace = arguments.get("grace")
+    if grace is None:
+        return 1.0
+    if isinstance(grace, bool) or not isinstance(grace, (int, float)):
+        raise ValueError("grace must be a number.")
+    return float(grace)
+
+
 def _parse_wait_frames(arguments: dict[str, Any]) -> int:
     wait_frames_raw = arguments.get("wait_frames", 0)
     if wait_frames_raw is None:
@@ -524,7 +548,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
 
     if name == "mgba_live_attach":
         session = _maybe_session(args)
-        pid = args.get("pid")
+        pid = _parse_optional_pid(args)
         if session is None and pid is None:
             raise ValueError("session_required: provide session or pid.")
         payload = await _controller.attach(session=session, pid=pid)
@@ -549,7 +573,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
     if name == "mgba_live_stop":
         payload = await _controller.stop(
             session=_require_session(args),
-            grace=float(args.get("grace", 1.0)),
+            grace=_parse_grace(args),
         )
         return [_text_content(payload)]
 
@@ -595,7 +619,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
     if name == "mgba_live_input_set":
         payload = await _controller.input_set(
             session=_require_session(args),
-            keys=_parse_keys(args.get("keys")),
+            keys=_parse_required_keys(args),
             timeout=timeout,
         )
         return [_text_content(payload)]

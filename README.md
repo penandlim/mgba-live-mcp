@@ -245,11 +245,11 @@ make check
 
 ## Release Checklist
 
-1. Confirm version is `0.4.0` in `pyproject.toml` and `src/mgba_live_mcp/__init__.py`.
+1. Confirm version is `0.5.0` in `pyproject.toml` and `src/mgba_live_mcp/__init__.py`.
 2. Add release notes in `CHANGELOG.md`.
 3. Run local checks:
 `uv sync --group dev && make check && uv build`
 4. Trigger TestPyPI publish workflow (`publish-testpypi`) and verify install from TestPyPI.
-5. Push tag `v0.4.0` to trigger the PyPI release workflow.
+5. Push tag `v0.5.0` to trigger the PyPI release workflow.
 6. Smoke test:
 `uvx mgba-live-mcp` and `uvx --from git+https://github.com/penandlim/mgba-live-mcp mgba-live-mcp`.

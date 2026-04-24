@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0
+
+- Remove top-level JSON Schema combinators from MCP tool input schemas so
+  strict function-calling clients can load the tool list.
+- Preserve runtime validation for conditional arguments, including
+  `session`/`pid` attach targets and Lua `file`/`code` source selection.
+- Update generated MCP reference docs with runtime argument notes sourced from
+  the server metadata.
+
 ## 0.4.0
 
 - Hard-cut the MCP contract to explicit session scoping for single-session

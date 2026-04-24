@@ -197,36 +197,19 @@ class _FakeController:
 def test_list_tools_exposes_v2_visual_tools() -> None:
     tools = asyncio.run(mcp_server.list_tools())
     names = {tool.name for tool in tools}
-    by_name = {tool.name: tool for tool in tools}
 
     assert "mgba_live_get_view" in names
     assert "mgba_live_run_lua_and_view" in names
     assert "mgba_live_input_tap_and_view" in names
     assert "mgba_live_start_with_lua_and_view" in names
-    assert by_name["mgba_live_attach"].inputSchema["anyOf"] == [
-        {"required": ["session"]},
-        {"required": ["pid"]},
-    ]
-    assert by_name["mgba_live_status"].inputSchema["anyOf"] == [
-        {"required": ["session"]},
-        {"required": ["all"], "properties": {"all": {"const": True}}},
-    ]
-    assert by_name["mgba_live_run_lua"].inputSchema["oneOf"] == [
-        {"required": ["file"]},
-        {"required": ["code"]},
-    ]
-    assert by_name["mgba_live_run_lua_and_view"].inputSchema["oneOf"] == [
-        {"required": ["file"]},
-        {"required": ["code"]},
-    ]
-    assert by_name["mgba_live_start_with_lua"].inputSchema["oneOf"] == [
-        {"required": ["file"]},
-        {"required": ["code"]},
-    ]
-    assert by_name["mgba_live_start_with_lua_and_view"].inputSchema["oneOf"] == [
-        {"required": ["file"]},
-        {"required": ["code"]},
-    ]
+    # Strict function-calling clients reject top-level JSON Schema combinators.
+    forbidden_top = ("oneOf", "anyOf", "allOf", "not", "enum")
+    for tool in tools:
+        schema = tool.inputSchema
+        assert isinstance(schema, dict), f"{tool.name}: inputSchema must be an object schema"
+        assert schema.get("type") == "object", f"{tool.name}: inputSchema type must be object"
+        bad = [k for k in forbidden_top if k in schema]
+        assert not bad, f"{tool.name}: inputSchema must not use top-level {bad}"
 
 
 def test_status_requires_session_unless_all(monkeypatch: Any) -> None:
@@ -242,6 +225,39 @@ def test_status_requires_session_unless_all(monkeypatch: Any) -> None:
     payload = _first_payload(contents)
     assert isinstance(payload["value"], list)
     assert "screenshot" not in payload
+
+
+def test_attach_requires_session_or_pid(monkeypatch: Any) -> None:
+    monkeypatch.setattr(mcp_server, "_controller", _FakeController())
+
+    with pytest.raises(ValueError, match="session_required"):
+        asyncio.run(mcp_server.call_tool("mgba_live_attach", {}))
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "base_args"),
+    [
+        ("mgba_live_start_with_lua", {"rom": "/tmp/game.gba"}),
+        ("mgba_live_start_with_lua_and_view", {"rom": "/tmp/game.gba"}),
+        ("mgba_live_run_lua", {"session": "session-123"}),
+        ("mgba_live_run_lua_and_view", {"session": "session-123"}),
+    ],
+)
+def test_lua_tools_require_exactly_one_source(
+    monkeypatch: Any, tool_name: str, base_args: dict[str, Any]
+) -> None:
+    monkeypatch.setattr(mcp_server, "_controller", _FakeController())
+
+    with pytest.raises(ValueError, match="Exactly one of file or code"):
+        asyncio.run(mcp_server.call_tool(tool_name, dict(base_args)))
+
+    with pytest.raises(ValueError, match="Exactly one of file or code"):
+        asyncio.run(
+            mcp_server.call_tool(
+                tool_name,
+                {**base_args, "file": "/tmp/script.lua", "code": "return true"},
+            )
+        )
 
 
 def test_single_session_tools_require_session(monkeypatch: Any) -> None:

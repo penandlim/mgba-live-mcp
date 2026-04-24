@@ -45,6 +45,10 @@ def _render_tool_section(tool: Tool) -> str:
     description = str(data.get("description") or "_No description provided._")
     input_schema = data.get("inputSchema")
     output_schema = data.get("outputSchema")
+    runtime_rule = mcp_server.TOOL_RUNTIME_ARGUMENT_RULES.get(name)
+    runtime_rule_lines = []
+    if runtime_rule is not None:
+        runtime_rule_lines = [f"- Runtime argument rule: {runtime_rule}"]
 
     return "\n".join(
         [
@@ -53,6 +57,7 @@ def _render_tool_section(tool: Tool) -> str:
             description,
             "",
             f"- Required input fields: {_format_required_fields(input_schema)}",
+            *runtime_rule_lines,
             "",
             "### Input Schema",
             "",

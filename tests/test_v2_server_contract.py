@@ -228,6 +228,7 @@ def test_lua_heterogeneity_survives_all_registered_composites(runtime, monkeypat
         ("attach", {}, "session_required"),
         ("run_lua", {"code": "return true"}, "invalid_arguments"),
         ("input_tap", {"session": "s1", "key": "A", "frames": False}, "invalid_arguments"),
+        ("input_tap", {"session": "s1", "key": "A", "framse": 3}, "invalid_arguments"),
         ("input_set", {"session": "s1", "keys": [1]}, "invalid_arguments"),
         (
             "input_tap_and_view",

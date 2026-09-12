@@ -29,6 +29,9 @@ request is identified separately by `pending_request_id`, not confused
 with a refused request's execution outcome. CLI failures print this
 envelope to stderr and exit nonzero. Error envelopes are not successes
 and are not validated against the success output schema.
+Tool argument objects reject unknown fields with `invalid_arguments`.
+Malformed MCP request envelopes, such as argument arrays, are rejected
+by the SDK with JSON-RPC `-32602` before tool dispatch.
 
 `execution_outcome` is domain-owned: `not_started` means no requested
 execution began, `partial` means an operation performed work before
@@ -84,6 +87,7 @@ Start a session; launches an executable and prunes dead sessions.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "fast": {
       "description": "Shortcut for fps_target=600.",
@@ -183,6 +187,7 @@ Start and run unrestricted Lua. Metadata only; not safely retryable.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "code": {
       "description": "Inline Lua code. Provide exactly one of file or code.",
@@ -288,6 +293,7 @@ Start, run unrestricted Lua, settle, capture. Not safely retryable.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "code": {
       "description": "Inline Lua code. Provide exactly one of file or code.",
@@ -418,6 +424,7 @@ Attach to a managed session; updates the CLI active-session marker.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "pid": {
       "description": "PID of a managed session. Provide session or pid.",
@@ -510,6 +517,7 @@ Show metadata; archives dead sessions and refreshes the active marker.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "all": {
       "description": "If true, list all sessions. Otherwise pass session.",
@@ -670,6 +678,7 @@ Capture a screenshot using a temporary file; no emulator mutation.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "session": {
       "description": "Session id.",
@@ -754,6 +763,7 @@ Stop a managed group; retire its generation. Repeated stop confirms exit.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "grace": {
       "description": "Kill grace period in seconds.",
@@ -853,6 +863,7 @@ Unrestricted Lua; may change emulator/files/processes. No safe retry.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "code": {
       "description": "Inline Lua code. Provide exactly one of file or code.",
@@ -938,6 +949,7 @@ Unrestricted Lua, settle, capture; changes may persist. No safe retry.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "code": {
       "description": "Inline Lua code. Provide exactly one of file or code.",
@@ -1047,6 +1059,7 @@ Tap a key for N frames. Metadata only.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "frames": {
       "default": 1,
@@ -1149,6 +1162,7 @@ Tap a key, optionally wait additional frames, then return one screenshot.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "frames": {
       "default": 1,
@@ -1281,6 +1295,7 @@ Replace held keys and cancel scheduled releases; the game keeps running.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "keys": {
       "items": {
@@ -1379,6 +1394,7 @@ Clear held keys from a live session.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "keys": {
       "items": {
@@ -1499,6 +1515,7 @@ Save a screenshot; may overwrite the requested file.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "out": {
       "description": "Optional persisted PNG output path.",
@@ -1577,6 +1594,7 @@ Read memory addresses from a live session.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "addresses": {
       "items": {
@@ -1674,6 +1692,7 @@ Read a contiguous memory range from a live session.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "length": {
       "type": "integer"
@@ -1783,6 +1802,7 @@ Dump pointer table entries from a live session.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "count": {
       "type": "integer"
@@ -1925,6 +1945,7 @@ Dump OAM entries from a live session.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "count": {
       "default": 40,
@@ -2064,6 +2085,7 @@ Dump structured entity bytes from a live session.
 
 ```json
 {
+  "additionalProperties": false,
   "properties": {
     "base": {
       "default": 49664,

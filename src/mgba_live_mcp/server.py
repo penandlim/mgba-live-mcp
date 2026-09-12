@@ -229,6 +229,7 @@ def _tool(
     open_world: bool = False,
     **definition: Any,
 ) -> Tool:
+    definition["inputSchema"]["additionalProperties"] = False
     return Tool(
         **definition,
         outputSchema={"type": "object", **TypeAdapter(result_type).json_schema()},
@@ -605,12 +606,11 @@ def _validators(name: str) -> tuple[Validator, Validator]:
 
 @server.call_tool(validate_input=False)
 async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
-    args = arguments or {}
-    context = {
-        "tool": name,
-        "session_id": args.get("session") or args.get("session_id"),
-        "pid": args.get("pid"),
-    }
+    args = arguments
+    context: dict[str, Any] = {"tool": name}
+    if isinstance(args, dict):
+        context["session_id"] = args.get("session") or args.get("session_id")
+        context["pid"] = args.get("pid")
     try:
         context["mcp_request_id"] = server.request_context.request_id
     except LookupError:
@@ -676,11 +676,6 @@ async def _dispatch_tool(
     timeout = float(args.get("timeout", 20.0))
 
     if name == "mgba_live_start":
-        if args.get("script") is not None:
-            raise ValueError(
-                "mgba_live_start no longer accepts script. "
-                "Use mgba_live_start_with_lua with file or code."
-            )
         payload = await _controller.start(timeout=timeout, **_build_start_kwargs(args))
         return payload
 

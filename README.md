@@ -256,6 +256,9 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
   JSON text/structured content. Known session, bridge request and MCP request
   context is retained; error objects do not match the success output schemas.
   CLI failures use the same domain codes/context as JSON on stderr and exit nonzero.
+- Tool argument objects reject unknown fields with `invalid_arguments` rather than
+  silently ignoring typos. Malformed MCP request envelopes (such as argument arrays)
+  are rejected by the SDK with JSON-RPC `-32602` before tool dispatch.
 - `not_started`, `partial` and `unknown` execution outcomes are not interchangeable:
   do not blindly retry a mutation after a partial composite or ambiguous timeout.
   See the generated [error inventory and schemas](docs/mcp-reference.md).

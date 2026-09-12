@@ -27,7 +27,8 @@
   image-only screenshot bytes, and audited behavior annotations (#47).
 - Standardize MCP/CLI failures with domain-owned codes, phases, execution
   outcomes and known session/request context; unknown tools and missing visuals
-  now return errors instead of apparent successes. CLI errors are JSON on stderr.
+  now return errors instead of apparent successes. Unknown tool argument fields are
+  rejected instead of ignored. CLI errors are compact JSON on stderr.
 - Preserve heterogeneous and falsy Lua values without collapsing them, and keep
   command/capture counters separate; generate the schema/annotation/error reference
   from authoritative definitions.

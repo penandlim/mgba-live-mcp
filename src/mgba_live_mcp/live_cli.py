@@ -265,7 +265,10 @@ class _Parser(argparse.ArgumentParser):
         failure = DomainError(
             "invalid_arguments", message, phase="validation", execution_outcome="not_started"
         )
-        print(json.dumps(error_payload(failure, command=self.prog)), file=sys.stderr)
+        print(
+            json.dumps(error_payload(failure, command=self.prog), separators=(",", ":")),
+            file=sys.stderr,
+        )
         raise SystemExit(2)
 
 

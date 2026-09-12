@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from mgba_live_mcp.errors import DomainError
 from mgba_live_mcp.session_transactions import (
     archive_session,
     atomic_write_json,
@@ -143,7 +144,11 @@ def test_process_contention_preserves_unread_response_and_other_sessions(tmp_pat
     with _child(_hold_owner, str(directory), "after_response") as (process, connection):
         assert _receive(connection) == "ready"
         original = (directory / "response.json").read_bytes()
-        assert _attempt(directory) == "session_busy"
+        with pytest.raises(DomainError) as refused:
+            with transaction(directory):
+                pytest.fail("a competing operation must not be admitted")
+        assert refused.value.code == "session_busy"
+        assert refused.value.execution_outcome == "not_started"
         with transaction(tmp_path / "independent", create=True) as other:
             other.publish("other-request", lambda: None)
             other.complete("other-request")
@@ -159,6 +164,22 @@ def test_process_contention_preserves_unread_response_and_other_sessions(tmp_pat
     with transaction(directory) as successor:
         successor.publish("next-request", lambda: _response(directory, "next-request"))
         successor.complete("next-request")
+
+
+def test_publish_refusal_does_not_start_replacement_request(tmp_path: Path) -> None:
+    with transaction(tmp_path) as owner:
+        owner.publish("first", (tmp_path / "first").touch)
+        with pytest.raises(DomainError) as refused:
+            owner.publish("second", (tmp_path / "second").touch)
+        assert refused.value.code == "session_busy"
+        assert refused.value.phase == "publish"
+        assert refused.value.execution_outcome == "not_started"
+        assert refused.value.context["request_id"] == "second"
+        assert refused.value.context["pending_request_id"] == "first"
+        assert not (tmp_path / "second").exists()
+        journal = transaction_status(tmp_path)
+        assert journal is not None
+        assert journal["operation"]["pending_request"] == "first"
 
 
 @pytest.mark.parametrize(

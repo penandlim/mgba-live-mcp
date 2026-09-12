@@ -275,7 +275,8 @@ def test_busy_session_retains_pending_request(runtime):
     result = invoke("mgba_live_get_view", {"session": "s1"})
     error = structured(result)["error"]
     assert result.isError and error["code"] == "session_busy"
-    assert error["request_id"] == "pending-request"
+    assert error["pending_request_id"] == "pending-request"
+    assert "request_id" not in error
     assert error["phase"] == "reconcile" and error["execution_outcome"] == "not_started"
 
 

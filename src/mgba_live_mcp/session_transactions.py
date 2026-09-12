@@ -28,7 +28,17 @@ def _error(code: str, directory: Path, stage: str, detail: str, **context: Any) 
         f"session={directory.name} stage={stage} {detail}",
         phase=stage,
         execution_outcome="not_started"
-        if stage in {"acquire", "reserve", "admission", "reconcile"}
+        if stage
+        in {
+            "acquire",
+            "reserve",
+            "admission",
+            "reconcile",
+            "publish",
+            _OPERATION_LOCK,
+            _STOP_LOCK,
+        }
+        or stage.endswith(".initialization.lock")
         else "unknown",
         session_id=directory.name,
         **context,
@@ -163,6 +173,11 @@ def _leased_directory(path: Path, *, create: bool, lock: str) -> Iterator[_Direc
             lease = directory.lock(lock)
             lease.__enter__()
         yield directory
+    except DomainError as exc:
+        # The parent initialization lock belongs to this session, not its parent directory.
+        if exc.phase == f".{path.name}.initialization.lock":
+            exc.context["session_id"] = path.name
+        raise
     finally:
         if lease is not None:
             lease.__exit__(None, None, None)
@@ -318,7 +333,8 @@ class Transaction:
                     self._directory.path,
                     "publish",
                     f"request={operation['pending_request']} unresolved; use recovery stop",
-                    request_id=operation["pending_request"],
+                    request_id=request_id,
+                    pending_request_id=operation["pending_request"],
                 )
             operation["started"] = True
             operation["pending_request"] = request_id
@@ -401,7 +417,7 @@ def transaction(
                     "reconcile",
                     f"generation={state['generation']} operation={abandoned['id']} "
                     f"request={abandoned['pending_request']} unresolved; use recovery stop",
-                    request_id=abandoned["pending_request"],
+                    pending_request_id=abandoned["pending_request"],
                     generation=state["generation"],
                 )
             operation_id = uuid.uuid4().hex

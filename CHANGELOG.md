@@ -30,6 +30,11 @@
 
 ## 0.5.0
 
+- Make default `make test` and `make check` offline unit checks; retain
+  explicit checksum-verified ROM provisioning for native validation.
+- Remove redundant ROM cache/provisioning from the default CI job and document
+  the separation between offline checks and the optional native smoke.
+
 - Remove top-level JSON Schema combinators from MCP tool input schemas so
   strict function-calling clients can load the tool list.
 - Preserve runtime validation for conditional arguments, including

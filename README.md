@@ -62,10 +62,21 @@ args = ["--from", "git+https://github.com/penandlim/mgba-live-mcp", "mgba-live-m
 uv sync
 ```
 
-2. Provision the checksum-verified open-source test ROM used by emulator-backed tests:
+2. Default checks are offline unit checks. They do not download a ROM or
+   require mGBA:
+
+```bash
+make test
+make check
+```
+
+For the optional native emulator smoke, provision the checksum-verified
+open-source test ROM explicitly, then use the native target documented by
+issue #59:
 
 ```bash
 make test-rom
+make verify-test-rom
 ```
 
 3. Run the MCP server:

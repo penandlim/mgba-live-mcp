@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Preserve cross-process session ownership across MCP cancellation, command
+  timeouts, startup-with-Lua, and settled visual composites (#46).
+- Journal pending execution and fence recovery by directory generation; prevent
+  late workers and archival from reopening unresolved or replaced sessions.
+- Verify native Linux/macOS process birth and dedicated-group ownership before
+  TERM/KILL, then confirm bounded group termination independently of hung command
+  ownership (#51). Refuse destructive control of unverified PID-only records.
+- Expose process/transaction state and distinct stop outcomes; retain unresolved
+  sessions for inspection and allow CLI stop to report already-exited targets.
+- Verify macOS zombie birth with native rusage start/exit times and boot identity
+  before reaping, refusing PID replacements and unavailable metadata.
+- Preserve startup return codes while allowing normal status/pruning to reap
+  birth-verified children after bridge readiness.
+- Remove interrupted temporary captures only after completion or confirmed stop.
+
 ## 0.5.0
 
 - Remove top-level JSON Schema combinators from MCP tool input schemas so

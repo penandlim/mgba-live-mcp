@@ -71,8 +71,8 @@ make check
 ```
 
 For the optional native emulator smoke, provision the checksum-verified
-open-source test ROM explicitly, then use the native target documented by
-issue #59:
+open-source test ROM explicitly. The native smoke workflow/target is tracked
+separately in issue #59 and is not provided by this offline-check change:
 
 ```bash
 make test-rom

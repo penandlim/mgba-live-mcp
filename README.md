@@ -282,6 +282,9 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
   can reap a birth-verified child and archive its confirmed-dead group. Recovery
   stop can also reap verified children; unavailable or mismatched zombie birth
   metadata never authorizes reaping.
+  A missing `ready` field means readiness is unknown, not complete. Use recovery
+  stop to reap and retire such a session after native ownership is verified;
+  do not add readiness metadata or reap a PID merely to force pruning.
 
 ## Local CLI (Dev/Debug)
 

@@ -579,9 +579,9 @@ def test_native_owned_group_returns_only_after_confirmed_exit(ignore_term: bool)
 
 
 @pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX identity support")
-@pytest.mark.parametrize("ready", [False, True], ids=["startup", "ready"])
+@pytest.mark.parametrize("ready", [False, True, None], ids=["startup", "ready", "unknown"])
 def test_status_prunes_ready_children_but_preserves_startup_exit_status(
-    tmp_path: Path, ready: bool
+    tmp_path: Path, ready: bool | None
 ) -> None:
     manager = SessionManager(runtime_root=tmp_path)
     manager.ensure_runtime_dirs()
@@ -590,8 +590,9 @@ def test_status_prunes_ready_children_but_preserves_startup_exit_status(
             "id": "owned-child",
             "pid": proc.pid,
             "process_identity": pc.capture_identity(proc.pid),
-            "ready": ready,
         }
+        if ready is not None:
+            record["ready"] = ready
         with manager.transaction("owned-child", create=True):
             manager.write_session(record)
         manager.set_active_session("owned-child")
@@ -611,7 +612,11 @@ def test_status_prunes_ready_children_but_preserves_startup_exit_status(
         else:
             assert manager.prune_dead_sessions() == []
             assert manager.get_active_session_id() == "owned-child"
-            assert proc.wait(timeout=5) == -signal.SIGTERM
+            if ready is None:
+                result = manager.stop(session="owned-child")
+                assert result["outcome"] == "already_exited"
+            else:
+                assert proc.wait(timeout=5) == -signal.SIGTERM
             assert manager.prune_dead_sessions() == ["owned-child"]
 
 

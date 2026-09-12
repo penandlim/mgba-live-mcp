@@ -242,6 +242,10 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
 
 - Initialization reports the installed `mgba-live-mcp` package version, not the
   MCP SDK version. Every tool declares a success `outputSchema` and behavior hints.
+  The runtime requires `mcp>=1.26.0,<2` because the server uses the SDK's 1.x
+  low-level API; MCP 2.x is not supported.
+  Initialize/catalog/error smoke is verified with locked SDK 1.26.0 and a fresh
+  wheel install resolving SDK 1.30.0, not an exhaustive compatibility matrix.
 - Success `structuredContent` is identical to the first compact JSON text block.
   Existing fields are preserved, including `value` for all-session status and
   heterogeneous Lua `data`/`lua` values (`false`, `0`, `""`, arrays, objects, null).

@@ -124,7 +124,9 @@ async def scenario(root: Path, binary: Path, rom: Path, *, inject_failure: bool)
 
     def cli(*args: str) -> dict[str, Any]:
         command = [sys.executable, "-m", "mgba_live_mcp.live_cli", *args]
-        completed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=25)
+        completed = subprocess.run(
+            command, env=env, capture_output=True, encoding="utf-8", errors="replace", timeout=25
+        )
         record(
             "cli",
             {
@@ -316,16 +318,23 @@ async def run(args: argparse.Namespace, root: Path) -> None:
     )
     if os.environ["QT_QPA_PLATFORM"] == "xcb":
         require(os.environ.get("DISPLAY"), "DISPLAY is required for the xcb backend")
-    version = subprocess.run([str(binary), "--version"], capture_output=True, text=True, timeout=10)
+    version = subprocess.run(
+        [str(binary), "--version"],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=10,
+    )
+    version_text = (version.stdout + version.stderr).strip()
     require(
-        version.returncode == 0 and MGBA_COMMIT in version.stdout,
-        f"Expected pinned Qt mGBA ({MGBA_COMMIT}): {version.stdout}{version.stderr}",
+        version.returncode == 0 and MGBA_COMMIT in version_text,
+        f"Expected pinned Qt mGBA ({MGBA_COMMIT}): {version_text}",
     )
     provenance = {
         "mgba_commit": MGBA_COMMIT,
         "binary": str(binary),
         "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-        "version": version.stdout.strip(),
+        "version": version_text,
         "platform": platform.platform(),
         "python": sys.version,
         "display": os.environ.get("DISPLAY"),

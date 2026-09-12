@@ -34,7 +34,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y build-essential cmake pkg-config \
             qtbase5-dev qtmultimedia5-dev qttools5-dev qttools5-dev-tools \
             liblua5.4-dev libpng-dev zlib1g-dev libsqlite3-dev libepoxy-dev xvfb xauth
-          uv sync --frozen --group native
+          uv sync --frozen --group native --group typecheck
       - name: Build pinned Qt and Lua frontend
         timeout-minutes: 20
         run: make native-build

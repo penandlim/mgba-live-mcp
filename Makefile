@@ -17,7 +17,7 @@ native-build:
 	uv run python native/provision.py
 
 native-smoke:
-	uv run --group native ty check native/
+	uv run --group native --group typecheck ty check native/
 	uv run --group native python native/smoke.py --mgba "$(MGBA_PATH)" --build-provenance "$(NATIVE_PROVENANCE)" --artifacts "$(NATIVE_ARTIFACTS)"
 
 lint:

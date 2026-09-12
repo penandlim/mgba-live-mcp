@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
-import re
 import shutil
 import signal
 import subprocess
 import tempfile
 import time
 import uuid
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from . import process_control, session_transactions
 
 MODULE_PATH = Path(__file__).resolve()
 PACKAGE_DIR = MODULE_PATH.parent
@@ -99,6 +102,19 @@ class SessionManager:
         self.active_session_file = self.runtime_root / "active_session"
         self.bridge_script = (bridge_script or DEFAULT_BRIDGE_SCRIPT).resolve()
 
+    def transaction(
+        self, session: str, *, create: bool = False, composite: bool = False
+    ) -> AbstractContextManager[session_transactions.Transaction]:
+        return session_transactions.transaction(
+            self.session_dir(session), create=create, composite=composite
+        )
+
+    def _process_state(self, session: dict[str, Any]) -> str:
+        return process_control.process_state(
+            int(session["pid"]),
+            session.get("process_identity"),
+        )
+
     def ensure_runtime_dirs(self) -> None:
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.archived_sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -124,7 +140,7 @@ class SessionManager:
         return json.loads(self.session_file(session_id).read_text())
 
     def write_session(self, data: dict[str, Any]) -> None:
-        self.session_file(data["id"]).write_text(json.dumps(data, indent=2))
+        session_transactions.atomic_write_json(self.session_file(data["id"]), data)
 
     def iter_sessions(self) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -142,19 +158,12 @@ class SessionManager:
         return items
 
     def pid_alive(self, pid: int) -> bool:
-        try:
-            waited_pid, _ = os.waitpid(pid, os.WNOHANG)
-        except ChildProcessError:
-            pass
-        except OSError:
+        if pid <= 0:
             return False
-        else:
-            if waited_pid == pid:
-                return False
-            if waited_pid == 0:
-                return True
         try:
             os.kill(pid, 0)
+            return True
+        except PermissionError:
             return True
         except OSError:
             return False
@@ -184,14 +193,15 @@ class SessionManager:
             if active_path.exists():
                 try:
                     active_session = json.loads(active_path.read_text())
+                    active_state = self._process_state(active_session)
                 except Exception:
-                    active_session = None
-                if isinstance(active_session, dict) and self.pid_alive(int(active_session["pid"])):
+                    active_state = None
+                if active_state is not None and active_state != "dead":
                     return
 
         for candidate in self.iter_sessions():
             try:
-                if self.pid_alive(int(candidate["pid"])):
+                if self._process_state(candidate) != "dead":
                     self.set_active_session(candidate["id"])
                     return
             except Exception:
@@ -210,18 +220,18 @@ class SessionManager:
         for candidate in self.sessions_dir.glob("*/session.json"):
             try:
                 session = json.loads(candidate.read_text())
-                pid = int(session["pid"])
+                state = self._process_state(session)
             except Exception:
                 continue
 
-            if self.pid_alive(pid):
+            if state != "dead":
                 continue
 
             session_id = str(session.get("id") or candidate.parent.name)
             try:
                 archived = self.archive_session_destination(session_id)
-                shutil.move(str(candidate.parent), str(archived))
-                removed.append(session_id)
+                if session_transactions.archive_session(candidate.parent, archived):
+                    removed.append(session_id)
             except OSError:
                 continue
 
@@ -279,14 +289,6 @@ class SessionManager:
         tmp_path.write_text(lua_doc)
         tmp_path.replace(command_path)
 
-    def command_file_matches_request_id(self, command_path: Path, request_id: str) -> bool:
-        try:
-            lua_doc = command_path.read_text()
-        except OSError:
-            return False
-        pattern = rf'\bid\s*=\s*"{re.escape(request_id)}"'
-        return re.search(pattern, lua_doc) is not None
-
     def send_command(
         self,
         session: dict[str, Any],
@@ -294,45 +296,57 @@ class SessionManager:
         payload: dict[str, Any] | None = None,
         *,
         timeout: float = 10.0,
+        _startup_process: subprocess.Popen[Any] | None = None,
     ) -> dict[str, Any]:
-        payload = payload or {}
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be a finite positive number")
         command_path = Path(session["command_path"])
         response_path = Path(session["response_path"])
+        with session_transactions.transaction(command_path.parent) as operation:
+            if session.get("generation", operation.generation) != operation.generation:
+                raise RuntimeError("session_generation_changed: session metadata is stale.")
+            if "pid" in session:
+                state = self._process_state(session)
+                if state in {"dead", "identity_mismatch"}:
+                    raise RuntimeError(
+                        f"session_{state}: session '{session.get('id')}' "
+                        f"process is {state} before publishing '{kind}'."
+                    )
+            request_id = uuid.uuid4().hex
+            command = {"id": request_id, "kind": kind, **(payload or {})}
 
-        request_id = uuid.uuid4().hex
-        command = {"id": request_id, "kind": kind, **payload}
+            def publish() -> None:
+                if command_path.exists():
+                    raise RuntimeError("session_busy: an unclaimed bridge command still exists.")
+                response_path.unlink(missing_ok=True)
+                self.write_command(command_path, command)
 
-        start = time.time()
-        while command_path.exists():
-            if time.time() - start > timeout:
-                raise RuntimeError("session_busy: bridge is busy (command.lua still present).")
-            time.sleep(0.02)
-
-        if response_path.exists():
-            response_path.unlink()
-
-        self.write_command(command_path, command)
-
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if response_path.exists():
+            operation.publish(request_id, publish)
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                operation.check()
+                if _startup_process is not None and _startup_process.poll() is not None:
+                    raise RuntimeError("session_dead: process exited before bridge readiness.")
                 try:
                     response = json.loads(response_path.read_text())
-                except json.JSONDecodeError:
-                    time.sleep(0.02)
-                    continue
-                if response.get("id") != request_id:
-                    time.sleep(0.02)
-                    continue
-                return response
-            time.sleep(0.02)
-
-        if command_path.exists() and self.command_file_matches_request_id(command_path, request_id):
-            try:
-                command_path.unlink()
-            except OSError:
-                pass
-        raise TimeoutError(f"Timed out waiting for response to command '{kind}'.")
+                except (FileNotFoundError, json.JSONDecodeError):
+                    response = None
+                if isinstance(response, dict) and response.get("id") == request_id:
+                    operation.complete(request_id)
+                    return response
+                if "pid" in session:
+                    state = self._process_state(session)
+                    if state in {"dead", "identity_mismatch"}:
+                        raise RuntimeError(
+                            f"session_{state}: session '{session.get('id')}' "
+                            f"process became {state} during '{kind}'."
+                        )
+                time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
+            raise TimeoutError(
+                f"Timed out waiting for response to command '{kind}' "
+                f"(request_id={request_id}; execution outcome unknown). "
+                "The session remains busy until the response arrives or recovery stop succeeds."
+            )
 
     def handle_response(self, response: dict[str, Any]) -> Any:
         if not response.get("ok"):
@@ -405,117 +419,109 @@ class SessionManager:
         ready_timeout: float = 20.0,
         config: list[str] | None = None,
     ) -> dict[str, Any]:
-        self.ensure_runtime_dirs()
-        self.prune_dead_sessions()
-
+        if not math.isfinite(ready_timeout) or ready_timeout <= 0:
+            raise ValueError("ready_timeout must be a finite positive number")
         rom_path = Path(rom).resolve()
         if not rom_path.exists():
             raise RuntimeError(f"ROM not found: {rom_path}")
-
-        resolved_session_id = session_id or datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-        sdir = self.session_dir(resolved_session_id)
-        if sdir.exists():
-            raise RuntimeError(f"Session already exists: {resolved_session_id}")
-        sdir.mkdir(parents=True, exist_ok=False)
-        (sdir / "screenshots").mkdir(exist_ok=True)
-        scripts_dir = sdir / "scripts"
-        scripts_dir.mkdir(exist_ok=True)
-        session_bridge_script = self.prepare_bridge_script(scripts_dir)
-
-        command_path = sdir / "command.lua"
-        response_path = sdir / "response.json"
-        heartbeat_path = sdir / "heartbeat.json"
-        stdout_log = sdir / "stdout.log"
-        stderr_log = sdir / "stderr.log"
-
-        resolved_fps_target = (
-            fps_target if fps_target is not None else (600.0 if fast else default_fps_target())
-        )
         resolved_mgba_path = mgba_path or self.detect_mgba_binary()
         startup_scripts = self.resolve_startup_scripts(script or [])
-        command = self.build_start_command(
-            mgba_path=resolved_mgba_path,
-            fps_target=resolved_fps_target,
-            config_overrides=list(config or []),
-            savestate=savestate,
-            startup_scripts=startup_scripts,
-            bridge_script=session_bridge_script,
-            log_level=log_level,
-            rom=rom_path,
-        )
-
-        env = os.environ.copy()
-        env["MGBA_LIVE_SESSION_DIR"] = str(sdir)
-        env["MGBA_LIVE_COMMAND"] = str(command_path)
-        env["MGBA_LIVE_RESPONSE"] = str(response_path)
-        env["MGBA_LIVE_HEARTBEAT"] = str(heartbeat_path)
-        env["MGBA_LIVE_HEARTBEAT_INTERVAL"] = str(heartbeat_interval)
-
-        stdout_f = stdout_log.open("w")
-        stderr_f = stderr_log.open("w")
-        try:
-            proc = subprocess.Popen(
-                command,
-                cwd=str(sdir),
-                env=env,
-                stdout=stdout_f,
-                stderr=stderr_f,
-                start_new_session=True,
+        self.ensure_runtime_dirs()
+        self.prune_dead_sessions()
+        resolved_session_id = session_id or self._new_session_id()
+        with self.transaction(resolved_session_id, create=True, composite=True) as operation:
+            sdir = self.session_dir(resolved_session_id)
+            (sdir / "screenshots").mkdir(exist_ok=True)
+            scripts_dir = sdir / "scripts"
+            scripts_dir.mkdir(exist_ok=True)
+            session_bridge_script = self.prepare_bridge_script(scripts_dir)
+            command_path = sdir / "command.lua"
+            response_path = sdir / "response.json"
+            heartbeat_path = sdir / "heartbeat.json"
+            stdout_log = sdir / "stdout.log"
+            stderr_log = sdir / "stderr.log"
+            resolved_fps_target = (
+                fps_target if fps_target is not None else (600.0 if fast else default_fps_target())
             )
-        finally:
-            stdout_f.close()
-            stderr_f.close()
-
-        session = {
-            "id": resolved_session_id,
-            "pid": proc.pid,
-            "rom": str(rom_path),
-            "fps_target": resolved_fps_target,
-            "mgba_path": resolved_mgba_path,
-            "startup_scripts": startup_scripts,
-            "created_at": now_utc(),
-            "session_dir": str(sdir),
-            "command_path": str(command_path),
-            "response_path": str(response_path),
-            "heartbeat_path": str(heartbeat_path),
-            "stdout_log": str(stdout_log),
-            "stderr_log": str(stderr_log),
-        }
-        self.write_session(session)
-        self.set_active_session(resolved_session_id)
-
-        ready_deadline = time.time() + ready_timeout
-        while time.time() < ready_deadline:
-            poll = getattr(proc, "poll", None)
-            returncode = poll() if callable(poll) else getattr(proc, "returncode", None)
-            if returncode is not None:
-                stderr_excerpt = self.read_log_excerpt(stderr_log)
-                stdout_excerpt = self.read_log_excerpt(stdout_log)
-                detail_lines = [
-                    f"mGBA process exited early with {format_process_exit(returncode)}.",
+            command = self.build_start_command(
+                mgba_path=resolved_mgba_path,
+                fps_target=resolved_fps_target,
+                config_overrides=list(config or []),
+                savestate=savestate,
+                startup_scripts=startup_scripts,
+                bridge_script=session_bridge_script,
+                log_level=log_level,
+                rom=rom_path,
+            )
+            env = os.environ.copy()
+            env["MGBA_LIVE_SESSION_DIR"] = str(sdir)
+            env["MGBA_LIVE_COMMAND"] = str(command_path)
+            env["MGBA_LIVE_RESPONSE"] = str(response_path)
+            env["MGBA_LIVE_HEARTBEAT"] = str(heartbeat_path)
+            env["MGBA_LIVE_HEARTBEAT_INTERVAL"] = str(heartbeat_interval)
+            with stdout_log.open("w") as stdout_f, stderr_log.open("w") as stderr_f:
+                proc = subprocess.Popen(
+                    command,
+                    cwd=str(sdir),
+                    env=env,
+                    stdout=stdout_f,
+                    stderr=stderr_f,
+                    start_new_session=True,
+                )
+            session: dict[str, Any] = {
+                "id": resolved_session_id,
+                "generation": operation.generation,
+                "pid": proc.pid,
+                "rom": str(rom_path),
+                "fps_target": resolved_fps_target,
+                "mgba_path": resolved_mgba_path,
+                "startup_scripts": startup_scripts,
+                "created_at": now_utc(),
+                "session_dir": str(sdir),
+                "command_path": str(command_path),
+                "response_path": str(response_path),
+                "heartbeat_path": str(heartbeat_path),
+                "stdout_log": str(stdout_log),
+                "stderr_log": str(stderr_log),
+            }
+            self.write_session(session)
+            try:
+                session["process_identity"] = process_control.capture_identity(proc.pid)
+                self.write_session(session)
+                self.handle_response(
+                    self.send_command(session, "ping", timeout=ready_timeout, _startup_process=proc)
+                )
+                operation.check()
+            except Exception as exc:
+                returncode = proc.poll()
+                details = [
+                    (
+                        f"mGBA process exited early with {format_process_exit(returncode)}."
+                        if returncode is not None
+                        else f"Session '{resolved_session_id}' bridge startup failed: {exc}"
+                    ),
                     f"Session dir: {sdir}",
                 ]
+                stderr_excerpt = self.read_log_excerpt(stderr_log)
+                stdout_excerpt = self.read_log_excerpt(stdout_log)
                 if stderr_excerpt:
-                    detail_lines.append(f"stderr:\n{stderr_excerpt}")
+                    details.append(f"stderr:\n{stderr_excerpt}")
                 elif stdout_excerpt:
-                    detail_lines.append(f"stdout:\n{stdout_excerpt}")
+                    details.append(f"stdout:\n{stdout_excerpt}")
                 else:
-                    detail_lines.append("No stdout/stderr was captured before exit.")
-                raise RuntimeError("\n".join(detail_lines))
-            try:
-                response = self.send_command(session, "ping", timeout=1.0)
-            except Exception:
-                time.sleep(0.2)
-                continue
-            if response.get("ok"):
-                return {
-                    "status": "started",
-                    "session_id": resolved_session_id,
-                    "pid": proc.pid,
-                    "fps_target": resolved_fps_target,
-                    "session_dir": str(sdir),
-                }
-        raise RuntimeError("Session created but bridge did not become ready before timeout.")
+                    details.append("No stdout/stderr was captured before failure.")
+                raise RuntimeError("\n".join(details)) from exc
+            self.set_active_session(resolved_session_id)
+            return {
+                "status": "started",
+                "session_id": resolved_session_id,
+                "pid": proc.pid,
+                "fps_target": resolved_fps_target,
+                "session_dir": str(sdir),
+            }
+
+    def _new_session_id(self) -> str:
+        return f"{datetime.now(UTC):%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:8]}"
 
     def attach(
         self,
@@ -543,10 +549,13 @@ class SessionManager:
                 heartbeat = json.loads(hb_path.read_text())
             except Exception:
                 heartbeat = None
+        state = self._process_state(session)
         return {
             "session_id": session["id"],
             "pid": session["pid"],
-            "alive": self.pid_alive(int(session["pid"])),
+            "alive": state != "dead",
+            "process_state": state,
+            "transaction": session_transactions.transaction_status(self.session_dir(session["id"])),
             "rom": session["rom"],
             "fps_target": session["fps_target"],
             "mgba_path": session.get("mgba_path"),
@@ -563,62 +572,47 @@ class SessionManager:
         if all:
             payloads: list[dict[str, Any]] = []
             for candidate in self.iter_sessions():
-                if not self.pid_alive(int(candidate["pid"])):
+                if self._process_state(candidate) == "dead":
                     continue
                 payloads.append(self._status_payload(candidate))
             return payloads
-        return self._status_payload(self.require_session(session, require_alive=True))
-
-    def terminate_session_process(self, pid: int, *, grace: float = 1.0) -> None:
-        def ignore_if_target_exited(exc: PermissionError) -> None:
-            deadline = time.time() + 1.0
-            while time.time() < deadline:
-                if not self.pid_alive(pid):
-                    return
-                time.sleep(0.05)
-            if not self.pid_alive(pid):
-                return
-            raise exc
-
-        try:
-            pgid = os.getpgid(pid)
-        except ProcessLookupError:
-            return
-        try:
-            os.killpg(pgid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        except PermissionError as exc:
-            ignore_if_target_exited(exc)
-            return
-        deadline = time.time() + grace
-        while time.time() < deadline:
-            if not self.pid_alive(pid):
-                return
-            time.sleep(0.05)
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-        except ProcessLookupError:
-            return
-        except PermissionError as exc:
-            ignore_if_target_exited(exc)
+        return self._status_payload(self.require_session(session, require_alive=False))
 
     def stop(self, *, session: str, grace: float = 1.0) -> dict[str, Any]:
-        target = self.require_session(session, require_alive=False)
-        pid = int(target["pid"])
-        alive_before = self.pid_alive(pid)
-        if alive_before:
-            self.terminate_session_process(pid, grace=grace)
-        alive_after = self.pid_alive(pid)
-        if self.get_active_session_id() == target["id"] and not alive_after:
-            self._refresh_active_session()
-        return {
+        if not math.isfinite(grace) or grace < 0:
+            raise ValueError("grace must be a finite non-negative number")
+        with session_transactions.recovery(self.session_dir(session)) as recovery:
+            target = self.require_session(session, require_alive=False)
+            pid = int(target["pid"])
+            try:
+                outcome = process_control.terminate_owned_process(
+                    pid, target.get("process_identity"), grace=grace
+                )
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"{exc}; session={session} generation={recovery.generation}"
+                ) from exc
+            recovery.finish()
+            views_dir = self.session_dir(session) / ".views"
+            cleanup_errors = []
+            for pending_view in views_dir.glob("*.png"):
+                try:
+                    pending_view.unlink(missing_ok=True)
+                except OSError as exc:
+                    cleanup_errors.append(f"{pending_view}: {exc}")
+            if self.get_active_session_id() == target["id"]:
+                self._refresh_active_session()
+        payload: dict[str, Any] = {
             "session_id": target["id"],
             "pid": pid,
-            "alive_before": alive_before,
-            "alive_after": alive_after,
-            "stopped": alive_before and not alive_after,
+            "alive_before": outcome != "already_exited",
+            "alive_after": False,
+            "stopped": outcome == "stopped",
+            "outcome": outcome,
         }
+        if cleanup_errors:
+            payload["cleanup_errors"] = cleanup_errors
+        return payload
 
     def run_lua(
         self,
@@ -714,21 +708,40 @@ class SessionManager:
         no_save: bool = False,
         timeout: float = 20.0,
     ) -> dict[str, Any]:
+        with self.transaction(session):
+            return self._screenshot(session=session, out=out, no_save=no_save, timeout=timeout)
+
+    def _screenshot(
+        self,
+        *,
+        session: str,
+        out: str | None = None,
+        no_save: bool = False,
+        timeout: float = 20.0,
+    ) -> dict[str, Any]:
         target = self.require_session(session, require_alive=True)
         if no_save and out:
             raise ValueError("Use either out or no_save, not both.")
 
         if no_save:
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            views_dir = self.session_dir(session) / ".views"
+            views_dir.mkdir(exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=views_dir, suffix=".png", delete=False) as tmp:
                 out_path = Path(tmp.name).resolve()
             result_path = out_path
+            completed = False
             try:
                 response = self.send_command(
                     target, "screenshot", {"path": str(out_path)}, timeout=timeout
                 )
+                completed = True
                 data = self.handle_response(response)
                 if isinstance(data, dict) and isinstance(data.get("path"), str):
                     result_path = Path(data["path"])
+                if result_path != out_path:
+                    raise RuntimeError(
+                        "snapshot_failed: bridge returned an unexpected output path."
+                    )
                 png_bytes = result_path.read_bytes()
                 return {
                     "session_id": target["id"],
@@ -736,14 +749,10 @@ class SessionManager:
                     "png_base64": base64.b64encode(png_bytes).decode(),
                 }
             finally:
-                try:
-                    out_path.unlink()
-                except OSError:
-                    pass
-                if result_path != out_path:
+                if completed or ("pid" in target and self._process_state(target) == "dead"):
                     try:
-                        result_path.unlink()
-                    except OSError:
+                        out_path.unlink()
+                    except FileNotFoundError:
                         pass
 
         if out:
@@ -868,3 +877,147 @@ class SessionManager:
             "frame": response.get("frame"),
             "entities": data,
         }
+
+    @staticmethod
+    def _lua_result(payload: dict[str, Any]) -> Any:
+        data = payload.get("data")
+        return data.get("result", data) if isinstance(data, dict) else data
+
+    @staticmethod
+    def _response_frame(payload: dict[str, Any]) -> int:
+        frame = payload.get("frame")
+        if isinstance(frame, bool) or not isinstance(frame, (int, float)):
+            raise RuntimeError("settle_failed: frame polling did not return a frame.")
+        return int(frame)
+
+    def _wait_for_frame(self, session: str, target_frame: int, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(f"settle_failed: timed out waiting for frame >= {target_frame}.")
+            result = self.run_lua(session=session, code="return true", timeout=min(remaining, 5.0))
+            if self._response_frame(result) >= target_frame:
+                return
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+
+    def _settle_lua(self, session: str, result: dict[str, Any], timeout: float) -> None:
+        value = self._lua_result(result)
+        macro_key = value.get("macro_key") if isinstance(value, dict) else None
+        if not isinstance(macro_key, str) or not macro_key:
+            self.run_lua(session=session, code="return true", timeout=min(timeout, 5.0))
+            return
+        code = (
+            f"local macro = _G[{to_lua_string(macro_key)}]; "
+            "if macro == nil then return true end; "
+            "local active = macro.active; "
+            "if active == nil then return true end; "
+            "return active == false"
+        )
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("settle_failed: Lua macro did not complete.")
+            result = self.run_lua(session=session, code=code, timeout=min(remaining, 5.0))
+            if self._lua_result(result) is True:
+                return
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+
+    def run_lua_and_view(
+        self, *, session: str, timeout: float = 20.0, **kwargs: Any
+    ) -> dict[str, Any]:
+        with self.transaction(session, composite=True) as operation:
+            result = self.run_lua(session=session, timeout=timeout, **kwargs)
+            try:
+                self._settle_lua(session, result, timeout)
+            except Exception as exc:
+                operation.mark_uncertain()
+                raise RuntimeError(f"settle_failed: session '{session}': {exc}") from exc
+            try:
+                view = self.get_view(session=session, timeout=timeout)
+            except Exception as exc:
+                raise RuntimeError(f"snapshot_failed: session '{session}': {exc}") from exc
+            return {
+                **result,
+                "screenshot": {"frame": view.get("frame")},
+                "png_base64": view.get("png_base64"),
+            }
+
+    def input_tap_and_view(
+        self,
+        *,
+        session: str,
+        key: str,
+        frames: int = 1,
+        wait_frames: int = 0,
+        timeout: float = 20.0,
+    ) -> dict[str, Any]:
+        with self.transaction(session, composite=True) as operation:
+            result = self.input_tap(session=session, key=key, frames=frames, timeout=timeout)
+            try:
+                tap_frame = self._response_frame(result)
+                data = result.get("data")
+                duration = data.get("duration") if isinstance(data, dict) else None
+                if (
+                    isinstance(duration, bool)
+                    or not isinstance(duration, (int, float))
+                    or duration < 1
+                ):
+                    raise RuntimeError("input_tap did not return a valid duration.")
+                self._wait_for_frame(session, tap_frame + int(duration) + wait_frames, timeout)
+            except Exception as exc:
+                operation.mark_uncertain()
+                raise RuntimeError(f"settle_failed: session '{session}': {exc}") from exc
+            try:
+                view = self.get_view(session=session, timeout=timeout)
+            except Exception as exc:
+                raise RuntimeError(f"snapshot_failed: session '{session}': {exc}") from exc
+            return {
+                **result,
+                "screenshot": {"frame": view.get("frame")},
+                "png_base64": view.get("png_base64"),
+            }
+
+    def start_with_lua(self, *, timeout: float = 20.0, **kwargs: Any) -> dict[str, Any]:
+        return self._start_with_lua(timeout=timeout, include_view=False, **kwargs)
+
+    def start_with_lua_and_view(self, *, timeout: float = 20.0, **kwargs: Any) -> dict[str, Any]:
+        return self._start_with_lua(timeout=timeout, include_view=True, **kwargs)
+
+    def _start_with_lua(
+        self, *, timeout: float, include_view: bool, **kwargs: Any
+    ) -> dict[str, Any]:
+        file, code = kwargs.get("file"), kwargs.get("code")
+        if bool(file) == bool(code):
+            raise ValueError("Exactly one of file or code is required.")
+        start_kwargs = {key: value for key, value in kwargs.items() if key not in {"file", "code"}}
+        session = start_kwargs.get("session_id") or self._new_session_id()
+        start_kwargs["session_id"] = session
+        start_kwargs.setdefault("ready_timeout", timeout)
+        self.ensure_runtime_dirs()
+        with self.transaction(session, create=True, composite=True) as operation:
+            started = self.start(**start_kwargs)
+            try:
+                result = self.run_lua(session=session, file=file, code=code, timeout=timeout)
+                if include_view:
+                    try:
+                        self._settle_lua(session, result, timeout)
+                    except Exception:
+                        operation.mark_uncertain()
+                        raise
+                    view = self.get_view(session=session, timeout=timeout)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Session '{session}' post-start operation failed: {exc}"
+                    " Inspect status before retrying."
+                ) from exc
+            payload = {
+                "session_id": session,
+                "pid": started.get("pid"),
+                "lua": self._lua_result(result),
+            }
+            if include_view:
+                payload["screenshot"] = {"frame": view.get("frame")}
+                payload["png_base64"] = view.get("png_base64")
+            return payload

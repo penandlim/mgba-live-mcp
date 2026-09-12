@@ -62,10 +62,6 @@ def read_log_excerpt(path: Path, max_chars: int = 4000) -> str:
     return _manager().read_log_excerpt(path, max_chars=max_chars)
 
 
-def prune_dead_sessions() -> list[str]:
-    return _manager().prune_dead_sessions()
-
-
 def set_active_session(session_id: str) -> None:
     _manager().set_active_session(session_id)
 
@@ -429,7 +425,6 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     ensure_runtime_dirs()
-    prune_dead_sessions()
     args.func(args)
 
 

@@ -112,8 +112,9 @@ Important runtime notes:
 - If auto-discovery fails, pass `mgba_path` in `mgba_live_start` or
   `mgba_live_start_with_lua`.
 - Runtime state is stored at `~/.mgba-live-mcp/runtime` (sessions, logs, command/response files).
-- Dead or crashed session directories are moved to
-  `~/.mgba-live-mcp/runtime/archived_sessions/` instead of being deleted.
+- Confirmed-dead session directories are moved to
+  `~/.mgba-live-mcp/runtime/archived_sessions/` when no command or recovery worker
+  still owns them. Missing process metadata alone never authorizes archival.
 - Archived sessions are not treated as active and are not returned by `mgba_live_status` calls.
 - This is a hard cutover from repo-local `.runtime`; no hybrid fallback is used.
 - This is also a hard API cutover at `0.4.0`: single-session tools require
@@ -121,6 +122,8 @@ Important runtime notes:
   only from explicit visual tools.
 - If you have old repo-local sessions, migrate manually by copying `.runtime/*` to
   `~/.mgba-live-mcp/runtime/`.
+  Copied PID-only records cannot authorize destructive stop; start a new managed
+  session to establish ownership.
 - `mgba_live_status` with `all=true` lists sessions from this shared user-level runtime root.
 - `scripts/mgba_live_bridge.lua` is transitional for local workflows; packaged
   `src/mgba_live_mcp/resources/mgba_live_bridge.lua` is the runtime source of truth.
@@ -223,10 +226,63 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
 - Visual tools fail hard on settle or snapshot failure instead of returning a
   warning alongside a screenshot.
 
+### Transaction ownership and recovery
+
+- CLI processes and MCP clients share filesystem-backed, per-session ownership.
+  A second operation gets `session_busy`; different sessions remain independent.
+  Startup-with-Lua and visual composites hold ownership across their entire
+  mutation, settling, capture, and cleanup sequence.
+- Cancelling an MCP request does not cancel its synchronous worker or emulator
+  execution. The worker retains ownership until it finishes. A command timeout
+  leaves its request pending: deleting `command.lua` would not cancel Lua already
+  executing inside the emulator.
+- `transaction.json` records the directory generation, owner, pending request,
+  and `ready`/`stopping`/`stopped` state. Abandoned single commands can be reclaimed
+  only when execution is resolved; an interrupted, started composite requires
+  recovery stop. Do not delete lock files or the journal to bypass `session_busy`.
+- Use `mgba_live_stop` (CLI: `stop --session <id>`) to recover a hung operation.
+  Stop fences the generation without waiting for the command lock, then verifies
+  process identity and terminates the dedicated group. Late workers cannot
+  publish into a stopped or replaced generation.
+- Recovery that cannot confirm termination leaves the session registered and
+  fenced. Inspect `process_state` and `transaction` in status before retrying
+  stop. An unresolved in-memory capture stays under the session's `.views/`
+  directory until completion or confirmed stop; successful views leave no file.
+
+### Process identity and stop outcomes
+
+- Supported ownership inspection: Linux `/proc` boot identity plus process
+  start ticks; macOS native `libproc` birth seconds/microseconds, absolute start
+  ticks from `proc_pid_rusage`, and the kernel boot UUID. The recorded PID must
+  also be the dedicated process-group and session leader. Absolute birth and exit
+  times remain available for zombies; matching birth is required before reaping.
+  Unsupported platforms and missing identity data fail closed; this does not
+  provide Windows process control.
+- Birth and group ownership are checked immediately before TERM and, if needed,
+  KILL. Success requires confirmed group disappearance, not merely successful
+  signal delivery or leader exit. Remaining or unverifiable group members keep
+  the session unresolved.
+- Termination uses a monotonic budget of `grace + 1` seconds: TERM gets up to
+  `grace`, with at most one additional second for escalation, permission/exit
+  races, and final confirmation. Each brief journal-state lock acquisition has
+  a separate 0.5-second bound; command and recovery ownership acquisition is
+  nonblocking. Filesystem and native syscall latency are outside those wait
+  budgets.
+- Stop returns `outcome: stopped` or `outcome: already_exited`. Refusals identify
+  `identity_mismatch`, `identity_unverified`, `permission_denied`, or
+  `termination_unconfirmed`, including the session, generation, and signal stage.
+  CLI stop does not archive its target before reporting this outcome.
+- Status includes `process_state` and the transaction snapshot. The compatibility
+  `alive` field remains conservative (`true`) when death cannot be established;
+  it is not proof of ownership. Legacy PID-only records cannot authorize signals.
+- Passive inspection does not reap children or consume startup exit codes.
+  Recovery stop can reap verified children; unavailable or mismatched zombie
+  birth metadata never authorizes reaping.
+
 ## Local CLI (Dev/Debug)
 
-The MCP server wraps `scripts/mgba_live.py`. This script is a compatibility shim
-that delegates to the packaged module CLI.
+The MCP controller and CLI both call the shared in-process `SessionManager`.
+`scripts/mgba_live.py` is a compatibility shim for the packaged module CLI.
 
 ```bash
 uv run python scripts/mgba_live.py --help

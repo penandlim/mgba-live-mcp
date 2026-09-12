@@ -305,6 +305,13 @@ class SessionManager:
         with session_transactions.transaction(command_path.parent) as operation:
             if session.get("generation", operation.generation) != operation.generation:
                 raise RuntimeError("session_generation_changed: session metadata is stale.")
+            if "pid" in session:
+                state = self._process_state(session)
+                if state in {"dead", "identity_mismatch"}:
+                    raise RuntimeError(
+                        f"session_{state}: session '{session.get('id')}' "
+                        f"process is {state} before publishing '{kind}'."
+                    )
             request_id = uuid.uuid4().hex
             command = {"id": request_id, "kind": kind, **(payload or {})}
 

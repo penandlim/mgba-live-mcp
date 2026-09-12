@@ -137,6 +137,8 @@ def test_owned_response_wait_survives_indeterminate_process_inspection(
     def uncertain_inspection(session: dict[str, Any]) -> str:
         pending = session_transactions.transaction_status(directory)
         assert pending is not None
+        if pending["operation"]["pending_request"] is None:
+            return "alive"
         Path(target["command_path"]).unlink()
         Path(target["response_path"]).write_text(
             json.dumps({"id": pending["operation"]["pending_request"], "ok": True, "frame": 7})
@@ -146,6 +148,21 @@ def test_owned_response_wait_survives_indeterminate_process_inspection(
     monkeypatch.setattr(manager, "_process_state", uncertain_inspection)
     assert manager.send_command(target, "ping", timeout=1)["frame"] == 7
     journal = session_transactions.transaction_status(directory)
+    assert journal is not None and journal["operation"] is None
+
+
+@pytest.mark.parametrize("state", ["dead", "identity_mismatch"])
+def test_dead_or_replaced_process_is_refused_before_command_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    manager = _manager(tmp_path)
+    _write_session(manager, "replaced", 1234)
+    target = manager.load_session("replaced")
+    monkeypatch.setattr(manager, "_process_state", lambda session: state)
+    with pytest.raises(RuntimeError, match=f"session_{state}"):
+        manager.send_command(target, "ping", timeout=1)
+    assert not Path(target["command_path"]).exists()
+    journal = session_transactions.transaction_status(manager.session_dir("replaced"))
     assert journal is not None and journal["operation"] is None
 
 

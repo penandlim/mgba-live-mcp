@@ -19,6 +19,8 @@
   strings, and explicit null values (Copilot review of the ownership changes).
 - Keep owned response waits active through indeterminate process inspection;
   only confirmed death or a mismatched birth aborts before the command deadline.
+- Refuse known-dead or replaced processes before command publication, leaving
+  no pending request that would require unnecessary recovery.
 
 ## 0.5.0
 

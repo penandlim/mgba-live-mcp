@@ -56,11 +56,11 @@ def main() -> None:
     def run(name: str, command: list[str], timeout: int = 120) -> str:
         commands.append(command)
         print(f"Native provisioning: {name}", flush=True)
-        with (root / f"{name}.log").open("w") as log:
+        with (root / f"{name}.log").open("wb") as log:
             subprocess.run(
                 command, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=timeout
             )
-        return (root / f"{name}.log").read_text()
+        return (root / f"{name}.log").read_text(encoding="utf-8", errors="replace")
 
     source, build = root / "source", root / "build"
     try:
@@ -101,8 +101,6 @@ def main() -> None:
         help_text = run("help", [str(binary), "--help"])
         if "--script" not in help_text:
             raise RuntimeError("Built Qt frontend does not expose --script")
-        for name in ("CMakeCache.txt", "include/mgba/flags.h", "version.c"):
-            shutil.copyfile(build / name, root / Path(name).name)
         dependencies = run(
             "dependencies",
             ["otool", "-L", str(binary)] if platform.system() == "Darwin" else ["ldd", str(binary)],
@@ -127,6 +125,9 @@ def main() -> None:
         (root / "provenance.json").write_text(json.dumps(manifest, indent=2) + "\n")
         print(f"Native provisioning complete: {binary}", flush=True)
     finally:
+        for name in ("CMakeCache.txt", "include/mgba/flags.h", "version.c"):
+            if (build / name).is_file():
+                shutil.copyfile(build / name, root / Path(name).name)
         (root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
 
 

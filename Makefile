@@ -14,10 +14,11 @@ NATIVE_PROVENANCE ?= .native/mgba/provenance.json
 NATIVE_ARTIFACTS ?= .native/smoke-$(shell date -u +%Y%m%dT%H%M%SZ)
 
 native-build:
-	uv run python scripts/provision_native.py
+	uv run python native/provision.py
 
 native-smoke:
-	uv run --group native python scripts/native_smoke.py --mgba "$(MGBA_PATH)" --build-provenance "$(NATIVE_PROVENANCE)" --artifacts "$(NATIVE_ARTIFACTS)"
+	uv run --group native ty check native/
+	uv run --group native python native/smoke.py --mgba "$(MGBA_PATH)" --build-provenance "$(NATIVE_PROVENANCE)" --artifacts "$(NATIVE_ARTIFACTS)"
 
 lint:
 	uv run ruff format --check .

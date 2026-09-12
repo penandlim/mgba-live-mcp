@@ -27,7 +27,6 @@ dev = [
     { include-group = "lint" },
     { include-group = "typecheck" },
     { include-group = "test" },
-    { include-group = "native" },
 ]
 lint = [
     "pre-commit>=4.0.0",

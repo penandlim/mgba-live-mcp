@@ -26,8 +26,10 @@ jobs:
       - uses: astral-sh/setup-uv@v4
       - name: Install native build and display dependencies
         timeout-minutes: 5
+        shell: bash
         run: |
           mkdir -p .native
+          exec > >(tee .native/dependencies.log) 2>&1
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y build-essential cmake pkg-config \
             qtbase5-dev qtmultimedia5-dev qttools5-dev qttools5-dev-tools \
@@ -44,7 +46,9 @@ jobs:
           key: native-ucity-gbc-v1.3-9422ee2ca7b7ea1d46b58b2a429fff3f354dfd3e732dee1e7ae6220f148ce6e0
       - name: Provision public ROM once or verify cache hit
         timeout-minutes: 2
+        shell: bash
         run: |
+          exec > >(tee .native/rom.log) 2>&1
           if [ '${{ steps.rom-cache.outputs.cache-hit }}' = 'true' ]; then
             make verify-test-rom
           else
@@ -66,6 +70,8 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           path: |
+            .native/dependencies.log
+            .native/rom.log
             .native/mgba/*.log
             .native/mgba/*.json
             .native/mgba/CMakeCache.txt

@@ -308,6 +308,9 @@ benchmark. It requires a real Qt frontend built from upstream mGBA commit
 (reports `0.11.0`). A program named `mgba`, or a version string alone, is not proof
 of Lua support: the smoke must actually load the packaged bridge and execute Lua.
 The stock macOS Qt 0.10.5 app was tested and rejected: it has no `--script` option.
+Native-only Python dependencies stay in the optional `native` group. The
+`native/` scripts are type-checked when selecting `make native-smoke`, separately
+from the default offline type-check paths.
 
 ### Clean Ubuntu 22.04 machine
 
@@ -334,7 +337,7 @@ and builds the `mgba-qt` target there; it does not install over another emulator
 It also fetches the pinned 0.10.5 commit solely for Linux AppStream release metadata.
 Required options include `BUILD_QT=ON`, `FORCE_QT_VERSION=5`,
 `ENABLE_SCRIPTING=ON`, `USE_LUA=5.4`, `USE_PNG=ON`, and `USE_ZLIB=ON`.
-The full options are in `scripts/provision_native.py` and retained `commands.json`
+The full options are in `native/provision.py` and retained `commands.json`
 and `CMakeCache.txt`. Keep the native Qt SQLite library feature enabled: this pin's
 Qt initialization crashes with it disabled. This is mGBA's existing local library,
 not a new server database or service.
@@ -348,7 +351,7 @@ is keyed by the pinned checksum and verified even on a cache hit; corrupt cached
 ROMs fail rather than becoming successful skips.
 
 Builds refuse to reuse an existing output directory. For another independent
-build use `uv run python scripts/provision_native.py --root /new/build/path` and
+build use `uv run python native/provision.py --root /new/build/path` and
 set `MGBA_PATH=/new/build/path/build/qt/mgba-qt` and
 `NATIVE_PROVENANCE=/new/build/path/provenance.json` on `make native-smoke`.
 `NATIVE_ARTIFACTS=/new/results/path` chooses a new diagnostic directory; the default
@@ -392,7 +395,7 @@ save/load-state or OAM semantics.
 
 | OS / architecture | Native build | Display | Evidence / status |
 | --- | --- | --- | --- |
-| Ubuntu 22.04 x86-64 | Pinned commit above, Qt5, Lua5.4 | Xvfb + xcb + Mesa software GL | CI target; see `native-qt-lua` run on PR #69 |
+| Ubuntu 22.04 x86-64 | Same pin; Qt 5.15.3, Lua 5.4.4, GCC 11.4.0, CMake 3.22.1 | Xvfb + xcb + Mesa software GL | Verified: both real sequences and retained artifacts; [native workflow runs](https://github.com/penandlim/mgba-live-mcp/actions/workflows/native-smoke.yml) |
 | macOS 26.6.2 arm64 | Same pin; Qt 5.15.18, Lua 5.4.8, LLVM 22.1.4, CMake 4.3.2 | Cocoa | Verified: both real sequences, decoded pixels, confirmed cleanup |
 | macOS stock Qt 0.10.5 | Official app at `26b7884…` | Cocoa | Rejected: `--script` unavailable |
 | Windows; other OS/native versions; Lua 5.5 | Not exercised by this smoke | — | Unverified; no support claim (Windows managed process ownership is unsupported) |

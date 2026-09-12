@@ -24,6 +24,9 @@ jobs:
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
       - name: Install native build and display dependencies
         timeout-minutes: 5
         shell: bash
@@ -35,9 +38,50 @@ jobs:
             qtbase5-dev qtmultimedia5-dev qttools5-dev qttools5-dev-tools \
             liblua5.4-dev libpng-dev zlib1g-dev libsqlite3-dev libepoxy-dev xvfb xauth
           uv sync --frozen --group native --group typecheck
+      - name: Fingerprint deterministic native build inputs
+        id: native-inputs
+        shell: bash
+        env:
+          LC_ALL: C
+          RECIPE_HASH: ${{ hashFiles('native/provision.py', 'Makefile', '.github/workflows/native-smoke.yml') }}
+        run: |
+          {
+            printf 'os=ubuntu-22.04\narch=%s\nworkspace=%s\n' "$RUNNER_ARCH" "$GITHUB_WORKSPACE"
+            printf 'CC=%s\nCXX=%s\nCFLAGS=%s\nCXXFLAGS=%s\nCPPFLAGS=%s\nLDFLAGS=%s\n' \
+              "${CC:-}" "${CXX:-}" "${CFLAGS:-}" "${CXXFLAGS:-}" "${CPPFLAGS:-}" "${LDFLAGS:-}"
+            printf 'CMAKE_PREFIX_PATH=%s\nPKG_CONFIG_PATH=%s\nCMAKE_GENERATOR=%s\n' \
+              "${CMAKE_PREFIX_PATH:-}" "${PKG_CONFIG_PATH:-}" "${CMAKE_GENERATOR:-}"
+            command -v cc c++ cmake pkg-config
+            cc --version
+            c++ --version
+            cmake --version
+            pkg-config --version
+            dpkg-query -W -f='${binary:Package}\t${Version}\t${Architecture}\n' | LC_ALL=C sort
+          } > .native/cache-inputs.txt
+          fingerprint=$(sha256sum .native/cache-inputs.txt | cut -d ' ' -f1)
+          pin=$(uv run python -c 'from native.provision import MGBA_COMMIT; print(MGBA_COMMIT)')
+          echo "key=native-qt-lua-v1-ubuntu22-${RUNNER_ARCH}-${pin}-${RECIPE_HASH}-${fingerprint}" >> "$GITHUB_OUTPUT"
+      - name: Restore exact pinned native build
+        id: native-cache
+        uses: actions/cache@v4
+        with:
+          path: .native/mgba
+          key: ${{ steps.native-inputs.outputs.key }}
+      - name: Record native cache outcome
+        shell: bash
+        env:
+          NATIVE_CACHE_KEY: ${{ steps.native-inputs.outputs.key }}
+          NATIVE_CACHE_HIT: ${{ steps.native-cache.outputs.cache-hit }}
+        run: |
+          printf 'key=%s\ncache-hit=%s\n' "$NATIVE_CACHE_KEY" "$NATIVE_CACHE_HIT" | tee .native/cache-status.log
       - name: Build pinned Qt and Lua frontend
+        if: steps.native-cache.outputs.cache-hit != 'true'
         timeout-minutes: 20
         run: make native-build
+      - name: Verify restored native source and executable
+        if: steps.native-cache.outputs.cache-hit == 'true'
+        timeout-minutes: 2
+        run: uv run python native/provision.py --verify-existing
       - name: Restore checksum-keyed public ROM cache
         id: rom-cache
         uses: actions/cache@v4
@@ -72,12 +116,14 @@ jobs:
           path: |
             .native/dependencies.log
             .native/rom.log
+            .native/cache-inputs.txt
+            .native/cache-status.log
             .native/mgba/*.log
             .native/mgba/*.json
             .native/mgba/CMakeCache.txt
             .native/mgba/flags.h
             .native/mgba/version.c
-            .native/mgba/os-release
+            .native/mgba/*os-release
             .native/xvfb.log
             .native/smoke/
             !.native/**/*.gbc

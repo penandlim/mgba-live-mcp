@@ -125,6 +125,30 @@ def test_timeout_keeps_unresolved_work_fenced_until_its_response(
     assert manager.send_command(target, "ping", timeout=0.1)["frame"] == 7
 
 
+@pytest.mark.parametrize("state", ["permission_denied", "identity_unverified"])
+def test_owned_response_wait_survives_indeterminate_process_inspection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    manager = _manager(tmp_path)
+    _write_session(manager, "inspection-race", 1234)
+    target = manager.load_session("inspection-race")
+    directory = manager.session_dir("inspection-race")
+
+    def uncertain_inspection(session: dict[str, Any]) -> str:
+        pending = session_transactions.transaction_status(directory)
+        assert pending is not None
+        Path(target["command_path"]).unlink()
+        Path(target["response_path"]).write_text(
+            json.dumps({"id": pending["operation"]["pending_request"], "ok": True, "frame": 7})
+        )
+        return state
+
+    monkeypatch.setattr(manager, "_process_state", uncertain_inspection)
+    assert manager.send_command(target, "ping", timeout=1)["frame"] == 7
+    journal = session_transactions.transaction_status(directory)
+    assert journal is not None and journal["operation"] is None
+
+
 def test_build_start_command_includes_scripts_bridge_and_rom(tmp_path: Path) -> None:
     manager = _manager(tmp_path)
     startup = tmp_path / "boot.lua"

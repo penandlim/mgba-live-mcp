@@ -17,6 +17,8 @@
 - Remove interrupted temporary captures only after completion or confirmed stop.
 - Preserve falsy Lua results in startup composites, including false, zero, empty
   strings, and explicit null values (Copilot review of the ownership changes).
+- Keep owned response waits active through indeterminate process inspection;
+  only confirmed death or a mismatched birth aborts before the command deadline.
 
 ## 0.5.0
 

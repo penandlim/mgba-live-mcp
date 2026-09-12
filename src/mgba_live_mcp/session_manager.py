@@ -329,7 +329,7 @@ class SessionManager:
                     return response
                 if "pid" in session:
                     state = self._process_state(session)
-                    if state != "alive":
+                    if state in {"dead", "identity_mismatch"}:
                         raise RuntimeError(
                             f"session_{state}: session '{session.get('id')}' "
                             f"process became {state} during '{kind}'."

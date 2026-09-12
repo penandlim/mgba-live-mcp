@@ -192,7 +192,8 @@ async def scenario(root: Path, binary: Path, rom: Path, *, inject_failure: bool)
                         require(
                             payload.get("session_id") == SESSION, "MCP session identity mismatch"
                         )
-                        metadata_only(payload)
+                        if not visual:
+                            metadata_only(payload)
                         require(len(images) == (1 if visual else 0), "Unexpected MCP image count")
                         return payload, images
 

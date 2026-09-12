@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add explicit pinned Qt5/Lua5.4 native provisioning and a separate native CI
+  smoke (#59), exercising the real CLI/MCP bridge, observed input/callback
+  completion, fully decoded PNG pixels and identity-confirmed process exit.
+- Prove scoped cleanup with a controlled live-session failure; retain native
+  provenance, logs, heartbeat/journal snapshots and images for 14 days in CI.
+- Document clean-machine setup, verified/unverified native combinations and
+  µCity ROM/media attribution and redistribution requirements.
 - Apply native birth/group identity consistently to attach and command admission,
   expose verified ownership in status, and remove PID-only liveness helpers (#51).
 - Preserve startup return codes while allowing normal status/pruning to reap

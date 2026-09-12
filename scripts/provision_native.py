@@ -73,6 +73,13 @@ def main() -> None:
         revision = run("revision", ["git", "-C", str(source), "rev-parse", "HEAD"]).strip()
         if revision != MGBA_COMMIT:
             raise RuntimeError(f"Unexpected mGBA revision: {revision}")
+        # Linux AppStream generation requires a release tag, even for a commit build.
+        release = "26b7884bc25a5933960f3cdcd98bac1ae14d42e2"
+        run(
+            "release-fetch",
+            ["git", "-C", str(source), "fetch", "--depth", "1", MGBA_REPOSITORY, release],
+        )
+        run("release-tag", ["git", "-C", str(source), "tag", "0.10.5", release])
         run("configure", ["cmake", "-S", str(source), "-B", str(build), *CMAKE_FLAGS])
         flags = (build / "include/mgba/flags.h").read_text()
         for flag in ("ENABLE_SCRIPTING", "USE_LUA", "USE_PNG"):

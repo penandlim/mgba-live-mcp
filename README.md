@@ -71,9 +71,9 @@ make test
 make check
 ```
 
-For the optional native emulator smoke, provision the checksum-verified
-open-source test ROM explicitly. The native smoke workflow/target is tracked
-separately in issue #59 and is not provided by this offline-check change:
+For real emulator validation, use the explicit
+[native Qt/Lua smoke](#native-qtlua-smoke) below. Its ROM provisioning and emulator
+execution are never prerequisites of `make test` or `make check`:
 
 ```bash
 make test-rom
@@ -299,6 +299,138 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
   A missing `ready` field means readiness is unknown, not complete. Use recovery
   stop to reap and retire such a session after native ownership is verified;
   do not add readiness metadata or reap a PID merely to force pruning.
+
+## Native Qt/Lua Smoke
+
+`make native-smoke` is an opt-in integration check, not a unit test or gameplay
+benchmark. It requires a real Qt frontend built from upstream mGBA commit
+[`543a197582c30364584d773a974d7f991892fa43`](https://github.com/mgba-emu/mgba/tree/543a197582c30364584d773a974d7f991892fa43)
+(reports `0.11.0`). A program named `mgba`, or a version string alone, is not proof
+of Lua support: the smoke must actually load the packaged bridge and execute Lua.
+The stock macOS Qt 0.10.5 app was tested and rejected: it has no `--script` option.
+
+### Clean Ubuntu 22.04 machine
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), clone this
+repository, and run the following from its root:
+
+```bash
+sudo apt-get update
+sudo apt-get install --no-install-recommends -y build-essential cmake git pkg-config \
+  qtbase5-dev qtmultimedia5-dev qttools5-dev qttools5-dev-tools \
+  liblua5.4-dev libpng-dev zlib1g-dev libsqlite3-dev libepoxy-dev xvfb xauth
+uv python install 3.11
+uv sync --python 3.11 --frozen --group dev --group native
+make native-build
+make test-rom
+QT_QPA_PLATFORM=xcb LIBGL_ALWAYS_SOFTWARE=1 QT_X11_NO_MITSHM=1 \
+  xvfb-run --auto-servernum --error-file=.native/xvfb.log \
+  --server-args='-screen 0 1024x768x24 -nolisten tcp' \
+  make native-smoke
+```
+
+The build helper fetches the exact commit into a **new** `.native/mgba/` directory
+and builds the `mgba-qt` target there; it does not install over another emulator.
+It also fetches the pinned 0.10.5 commit solely for Linux AppStream release metadata.
+Required options include `BUILD_QT=ON`, `FORCE_QT_VERSION=5`,
+`ENABLE_SCRIPTING=ON`, `USE_LUA=5.4`, `USE_PNG=ON`, and `USE_ZLIB=ON`.
+The full options are in `scripts/provision_native.py` and retained `commands.json`
+and `CMakeCache.txt`. Keep the native Qt SQLite library feature enabled: this pin's
+Qt initialization crashes with it disabled. This is mGBA's existing local library,
+not a new server database or service.
+
+The helper checks compiled Lua/scripting/PNG flags and the Qt `--script` option.
+The smoke then proves actual API availability, callback delivery and rendering.
+Build provenance retains the exact source commit, executable SHA-256, compiler
+configuration, linked libraries, OS package versions (Linux), and version output.
+`--build-provenance` verifies that the smoke uses that executable. The ROM cache
+is keyed by the pinned checksum and verified even on a cache hit; corrupt cached
+ROMs fail rather than becoming successful skips.
+
+Builds refuse to reuse an existing output directory. For another independent
+build use `uv run python scripts/provision_native.py --root /new/build/path` and
+set `MGBA_PATH=/new/build/path/build/qt/mgba-qt` and
+`NATIVE_PROVENANCE=/new/build/path/provenance.json` on `make native-smoke`.
+`NATIVE_ARTIFACTS=/new/results/path` chooses a new diagnostic directory; the default
+is timestamped under `.native/`. Never point it at an existing user runtime.
+
+### What it checks and retains
+
+Each of two runs gets a private HOME, runtime, ROM/save copy and explicitly named
+owned session. The CLI starts it, reads live heartbeat/status, loads metadata-only
+Lua and taps A. A real Lua callback observes both press and automatic release.
+The real MCP stdio client uses the **same session ID** to read Lua metadata, run a
+small B-key callback macro, observe its press/release, and check that the callback
+is removed with no further input across at least 30 subsequent callback deliveries.
+The visual tool returns an image that Pillow fully decodes to 160×144 RGB pixels;
+a PNG signature/base64 string alone or a blank image fails.
+
+The normal run stops through MCP and verifies the recorded process identity is
+dead. The second deliberately raises an error after decoding the image, before
+normal stop; `finally` must observe the still-live owned process, stop that exact
+session, and confirm death. Any unexpected failure or failed cleanup fails the
+whole invocation. No executable-name kill, global runtime sweep, fake emulator,
+or green missing-prerequisite skip is used.
+
+Both runs retain command results (CLI and MCP), native stdout/stderr, heartbeat
+snapshots, bridge files/journals, a pre-cleanup runtime snapshot, decoded PNGs,
+pixel hashes, provenance and final outcomes. Nothing is deleted from the
+diagnostic directory. The separate `native-qt-lua` CI job always uploads these
+diagnostics for **14 days**, including failed runs; ROMs and saves are excluded.
+Source fetch/configure phases have 120-second limits, compilation 15 minutes,
+readiness 15 seconds, macro/input observation phases 10 seconds, each MCP request
+15 seconds, and the complete two-scenario smoke 120 seconds plus bounded cleanup.
+The CI job has a 30-minute outer deadline and uses Xvfb's explicit X11 backend.
+
+This proves callback progress and observed key transitions, **not exact
+pause/step/frame semantics**. The logged native `currentFrame()` and bridge
+callback counters are not assumed equivalent. Capability metadata also records
+the loaded platform and state-method/flag availability; it does not prove
+save/load-state or OAM semantics.
+
+### Tested native matrix
+
+| OS / architecture | Native build | Display | Evidence / status |
+| --- | --- | --- | --- |
+| Ubuntu 22.04 x86-64 | Pinned commit above, Qt5, Lua5.4 | Xvfb + xcb + Mesa software GL | CI target; see `native-qt-lua` run on PR #69 |
+| macOS 26.6.2 arm64 | Same pin; Qt 5.15.18, Lua 5.4.8, LLVM 22.1.4, CMake 4.3.2 | Cocoa | Verified: both real sequences, decoded pixels, confirmed cleanup |
+| macOS stock Qt 0.10.5 | Official app at `26b7884…` | Cocoa | Rejected: `--script` unavailable |
+| Windows; other OS/native versions; Lua 5.5 | Not exercised by this smoke | — | Unverified; no support claim (Windows managed process ownership is unsupported) |
+
+The verified macOS build used `CC`/`CXX` from Homebrew LLVM, an explicit
+`SDKROOT="$(xcrun --show-sdk-path)"`, and `CMAKE_PREFIX_PATH` containing Qt5 and
+Lua5.4 prefixes (colon-separated). Run with `QT_QPA_PLATFORM=cocoa`; set
+`MGBA_PATH` to `<build>/qt/mGBA.app/Contents/MacOS/mGBA`. Do not substitute a
+Homebrew `lua@5.4` symlink without checking its headers/version: a local installation
+was actually Lua5.5. The exercised Lua5.4.8 source archive is
+[`lua-5.4.8.tar.gz`](https://www.lua.org/ftp/lua-5.4.8.tar.gz), SHA-256
+`4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae`
+([upstream checksums](https://www.lua.org/ftp/)); it was built with
+`make macosx install INSTALL_TOP=<private-prefix>`. Ubuntu instructions above
+remain the automated clean-machine reference.
+
+### Public ROM attribution and redistribution
+
+The existing helper downloads **µCity 1.3**, by **Antonio Niño Díaz
+(AntonioND/SkyLyrac)**, directly from the
+[upstream release](https://github.com/AntonioND/ucity/releases/tag/v1.3).
+The pinned `ucity.gbc` SHA-256 is
+`9422ee2ca7b7ea1d46b58b2a429fff3f354dfd3e732dee1e7ae6220f148ce6e0`.
+[The release's own notices](https://github.com/AntonioND/ucity/blob/v1.3/readme.rst)
+license the game under **GPL-3.0-or-later**, graphics/music under **CC-BY-SA-4.0**,
+and identify separately licensed components such as **BSD-2-Clause GBT Player**.
+The [GPL text](https://github.com/AntonioND/ucity/blob/v1.3/gpl-3.0.txt) and
+[corresponding source and component notices](https://github.com/AntonioND/ucity/tree/v1.3)
+are available at the pinned tag.
+
+Do not redistribute the ROM as if it were MIT-licensed repository code: retain
+the copyright/license notices and provide Corresponding Source as required by
+GPLv3, including applicable component notices. Redistributed screenshots of the
+game's graphics must retain attribution and the
+[CC-BY-SA-4.0 terms](https://creativecommons.org/licenses/by-sa/4.0/).
+Diagnostic provenance carries this attribution/source link alongside the images.
+Commercial ROMs are never used; diagnostic uploads do not redistribute the ROM,
+save data or mGBA binaries.
 
 ## Local CLI (Dev/Debug)
 

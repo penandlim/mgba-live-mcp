@@ -665,7 +665,7 @@ def test_attach_status_commands_and_stop_share_native_ownership_conclusions(
             lambda: manager.run_lua(session="unverified", code="return true"),
             lambda: manager.stop(session="unverified", grace=0),
         ):
-            with pytest.raises(RuntimeError, match=state):
+            with pytest.raises(RuntimeError, match=f"^{state}:"):
                 operation()
         assert signals == []
         assert not (directory / "command.lua").exists()

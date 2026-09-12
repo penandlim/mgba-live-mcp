@@ -250,7 +250,7 @@ class SessionManager:
         if require_alive:
             state = self._process_state(session)
             if state != "alive":
-                code = "session_dead" if state == "dead" else f"session_{state}"
+                code = "session_dead" if state == "dead" else state
                 raise RuntimeError(f"{code}: session '{session_id}' process is {state}.")
         return session
 

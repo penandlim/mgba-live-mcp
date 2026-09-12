@@ -6,6 +6,8 @@
   expose verified ownership in status, and remove PID-only liveness helpers (#51).
 - Preserve startup return codes while allowing normal status/pruning to reap
   birth-verified children only after bridge readiness (#51).
+- Keep identity, permission, and termination refusal codes consistent across
+  admission and recovery; retain `session_dead` for confirmed exit (#51).
 - Preserve cross-process session ownership across MCP cancellation, command
   timeouts, startup-with-Lua, and settled visual composites (#46).
 - Journal pending execution and fence recovery by directory generation; prevent

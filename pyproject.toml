@@ -27,6 +27,7 @@ dev = [
     { include-group = "lint" },
     { include-group = "typecheck" },
     { include-group = "test" },
+    { include-group = "native" },
 ]
 lint = [
     "pre-commit>=4.0.0",
@@ -35,6 +36,9 @@ lint = [
 test = [
     "pytest>=9.0.2",
     "pytest-cov>=7.0.0",
+]
+native = [
+    "Pillow==11.3.0",
 ]
 typecheck = [
     "ty>=0.0.17",

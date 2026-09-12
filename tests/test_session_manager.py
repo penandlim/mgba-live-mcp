@@ -237,6 +237,23 @@ def test_status_all_filters_dead_sessions_and_includes_heartbeat(
     assert payload[0]["identity_verified"] is True
 
 
+@pytest.mark.parametrize("pid", [0, 0x80000000])
+def test_status_retains_out_of_range_pid_records_without_reporting_them_alive(
+    tmp_path: Path, pid: int
+) -> None:
+    manager = _manager(tmp_path)
+    _write_session(manager, "invalid-pid", pid)
+    status = manager.status(session="invalid-pid")
+    assert isinstance(status, dict)
+    assert status["alive"] is False
+    assert status["identity_verified"] is False
+    assert status["process_state"] == "identity_unverified"
+    assert manager.prune_dead_sessions() == []
+    assert manager.session_file("invalid-pid").exists()
+    with pytest.raises(RuntimeError, match="identity_unverified"):
+        manager.stop(session="invalid-pid", grace=0)
+
+
 def test_recovery_stop_fences_an_active_command_and_clears_active_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

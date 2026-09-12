@@ -277,6 +277,8 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
   death cannot be established; it is not proof of ownership. Attach-by-PID and
   ordinary command admission require verified process birth and group ownership.
   Legacy PID-only records cannot authorize signals or commands.
+  Out-of-range PID numbers report `alive: false` and `identity_unverified`;
+  their records remain inspectable rather than being archived as confirmed exits.
 - Until bridge readiness is committed in `session.json`, inspection does not
   reap children or consume startup exit codes. After readiness, status/pruning
   can reap a birth-verified child and archive its confirmed-dead group. Recovery

@@ -547,7 +547,7 @@ class SessionManager:
         return {
             "session_id": session["id"],
             "pid": session["pid"],
-            "alive": state != "dead",
+            "alive": 0 < int(session["pid"]) <= 0x7FFFFFFF and state != "dead",
             "process_state": state,
             "identity_verified": state == "alive",
             "transaction": session_transactions.transaction_status(self.session_dir(session["id"])),

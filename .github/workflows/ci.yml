@@ -21,6 +21,8 @@ jobs:
       - uses: astral-sh/setup-uv@v4
       # With dependencies installed, unit checks are offline with respect to
       # ROM/mGBA provisioning; native smoke work is tracked separately in #59.
+      - name: Install Lua for packaged bridge contract tests
+        run: sudo apt-get update && sudo apt-get install -y lua5.4
       - name: Install dev dependencies
         run: uv sync --group dev
       - name: Run checks

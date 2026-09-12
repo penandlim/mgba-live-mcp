@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
+from .errors import DomainError, error_payload
 from .session_manager import (
     DEFAULT_BRIDGE_SCRIPT,
     DEFAULT_RUNTIME_ROOT,
@@ -258,10 +260,17 @@ def add_timeout_arg(parser: argparse.ArgumentParser, default: float = 10.0) -> N
     )
 
 
+class _Parser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        failure = DomainError(
+            "invalid_arguments", message, phase="validation", execution_outcome="not_started"
+        )
+        print(json.dumps(error_payload(failure, command=self.prog)), file=sys.stderr)
+        raise SystemExit(2)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Live controller for persistent mGBA playtest sessions."
-    )
+    parser = _Parser(description="Live controller for persistent mGBA playtest sessions.")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_start = sub.add_parser("start", help="Start a managed mGBA session.")
@@ -420,8 +429,18 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    ensure_runtime_dirs()
-    args.func(args)
+    try:
+        ensure_runtime_dirs()
+        args.func(args)
+    except Exception as exc:
+        failure = error_payload(
+            exc,
+            command=args.cmd,
+            session_id=getattr(args, "session", None) or getattr(args, "session_id", None),
+            pid=getattr(args, "pid", None),
+        )
+        print(json.dumps(failure, separators=(",", ":")), file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

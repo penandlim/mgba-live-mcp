@@ -13,6 +13,8 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
+from .errors import DomainError
+
 _JOURNAL = "transaction.json"
 _OPERATION_LOCK = ".operation.lock"
 _STATE_LOCK = ".state.lock"
@@ -20,8 +22,17 @@ _STOP_LOCK = ".stop.lock"
 _CURRENT: ContextVar[tuple[Transaction, ...]] = ContextVar("session_transactions", default=())
 
 
-def _error(code: str, directory: Path, stage: str, detail: str) -> RuntimeError:
-    return RuntimeError(f"{code}: session={directory.name} stage={stage} {detail}")
+def _error(code: str, directory: Path, stage: str, detail: str, **context: Any) -> DomainError:
+    return DomainError(
+        code,
+        f"session={directory.name} stage={stage} {detail}",
+        phase=stage,
+        execution_outcome="not_started"
+        if stage in {"acquire", "reserve", "admission", "reconcile"}
+        else "unknown",
+        session_id=directory.name,
+        **context,
+    )
 
 
 def _execution() -> tuple[int, int, object]:
@@ -130,7 +141,10 @@ def atomic_write_json(path: Path, payload: Any) -> None:
 def _leased_directory(path: Path, *, create: bool, lock: str) -> Iterator[_Directory]:
     # This short, per-session parent lock closes mkdir -> operation-lock admission races.
     # Unlike the directory's operation lock, it is never held across emulator execution.
-    parent = _Directory(path.parent)
+    try:
+        parent = _Directory(path.parent)
+    except FileNotFoundError as exc:
+        raise _error("session_not_found", path, "acquire", "directory is missing") from exc
     directory = None
     lease = None
     try:
@@ -304,6 +318,7 @@ class Transaction:
                     self._directory.path,
                     "publish",
                     f"request={operation['pending_request']} unresolved; use recovery stop",
+                    request_id=operation["pending_request"],
                 )
             operation["started"] = True
             operation["pending_request"] = request_id
@@ -325,6 +340,7 @@ class Transaction:
                     self._directory.path,
                     "complete",
                     f"request={request_id} is not owned",
+                    request_id=request_id,
                 )
             state["operation"]["pending_request"] = None
             state["operation"]["uncertain"] = False
@@ -385,6 +401,8 @@ def transaction(
                     "reconcile",
                     f"generation={state['generation']} operation={abandoned['id']} "
                     f"request={abandoned['pending_request']} unresolved; use recovery stop",
+                    request_id=abandoned["pending_request"],
+                    generation=state["generation"],
                 )
             operation_id = uuid.uuid4().hex
             state["operation"] = {
@@ -455,10 +473,8 @@ def recovery(directory: Path) -> Iterator[Recovery]:
         with owned.lock(_STATE_LOCK, blocking=True):
             try:
                 state = _read_state(owned)
-            except RuntimeError as exc:
-                if not str(exc).startswith(
-                    ("session_state_corrupt:", "session_generation_changed:")
-                ):
+            except DomainError as exc:
+                if exc.code not in {"session_state_corrupt", "session_generation_changed"}:
                     raise
                 # A broken journal can be replaced only on this still-owned inode.
                 # Its new generation starts fenced; it is never exposed as ready.
@@ -502,9 +518,7 @@ def archive_session(directory: Path, destination: Path) -> bool:
                 return True
     except FileNotFoundError:
         return False
-    except RuntimeError as exc:
-        if str(exc).startswith(
-            ("session_busy:", "session_not_found:", "session_generation_changed:")
-        ):
+    except DomainError as exc:
+        if exc.code in {"session_busy", "session_not_found", "session_generation_changed"}:
             return False
         raise

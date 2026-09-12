@@ -18,6 +18,8 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
+from .errors import DomainError, ExecutionOutcome
+
 # macOS SDK: sys/proc_info.h (proc_bsdinfo, PROC_PIDTBSDINFO,
 # PROC_FLAG_SLEADER), sys/param.h (MAXCOMLEN), sys/proc.h (SZOMB), and
 # libproc.h (proc_pidinfo). uid_t and gid_t are uint32_t in sys/_types.h.
@@ -216,8 +218,21 @@ def _owned_group(pid: int, identity: dict[str, Any]) -> bool:
     )
 
 
-def _failure(code: str, pid: int, stage: str, detail: str = "") -> RuntimeError:
-    return RuntimeError(f"{code}: pid={pid} stage={stage}; {detail}".rstrip("; "))
+def _failure(
+    code: str,
+    pid: int,
+    stage: str,
+    detail: str = "",
+    *,
+    execution_outcome: ExecutionOutcome = "not_started",
+) -> DomainError:
+    return DomainError(
+        code,
+        f"pid={pid} stage={stage}; {detail}".rstrip("; "),
+        phase=stage,
+        execution_outcome=execution_outcome,
+        pid=pid,
+    )
 
 
 def capture_identity(pid: int) -> dict[str, Any]:
@@ -390,7 +405,13 @@ def terminate_owned_process(
                 )
             if state == "dead":
                 return "stopped" if attempted else "already_exited"
-            raise _failure(state, pid, stage, "Pre-signal ownership check failed")
+            raise _failure(
+                state,
+                pid,
+                stage,
+                "Pre-signal ownership check failed",
+                execution_outcome="unknown" if attempted else "not_started",
+            )
         attempted = True
         try:
             os.killpg(pid, sig)
@@ -407,7 +428,9 @@ def terminate_owned_process(
             )
             if state == "identity_mismatch":
                 code = state
-            raise _failure(code, pid, stage, f"{exc}; observed={state}") from exc
+            raise _failure(
+                code, pid, stage, f"{exc}; observed={state}", execution_outcome="unknown"
+            ) from exc
         state = _wait_for_exit(pid, identity, min(deadline, time.monotonic() + duration))
         if state == "dead":
             return "stopped"
@@ -418,5 +441,11 @@ def terminate_owned_process(
             if state == "dead":
                 return "stopped"
         code = "termination_unconfirmed" if state == "alive" else state
-        raise _failure(code, pid, stage, "Exit confirmation expired; session remains unresolved")
+        raise _failure(
+            code,
+            pid,
+            stage,
+            "Exit confirmation expired; session remains unresolved",
+            execution_outcome="unknown",
+        )
     raise AssertionError("Unreachable termination state")

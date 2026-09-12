@@ -325,11 +325,10 @@ def test_screenshot_supports_no_save_and_output_path(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"png-bytes")
         sent.append((kind, payload, timeout))
-        return {"frame": 44}
+        return {"ok": True, "frame": 44, "data": {"path": str(path)}}
 
     monkeypatch.setattr(manager, "require_session", lambda session, require_alive=True: target)
     monkeypatch.setattr(manager, "send_command", fake_send_command)
-    monkeypatch.setattr(manager, "handle_response", lambda response: {"path": sent[-1][1]["path"]})
 
     in_memory = manager.screenshot(session="session-1", no_save=True, timeout=6.0)
     out_path = tmp_path / "shot.png"

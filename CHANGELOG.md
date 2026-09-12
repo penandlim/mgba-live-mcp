@@ -22,6 +22,18 @@
   birth-verified children only after bridge readiness (#51).
 - Keep identity, permission, and termination refusal codes consistent across
   admission and recovery; retain `session_dead` for confirmed exit (#51).
+- Report the installed product version during MCP initialization and expose
+  per-tool Pydantic success schemas, matching structured/compact text content,
+  image-only screenshot bytes, and audited behavior annotations (#47).
+- Standardize MCP/CLI failures with domain-owned codes, phases, execution
+  outcomes and known session/request context; unknown tools and missing visuals
+  now return errors instead of apparent successes. CLI errors are JSON on stderr.
+- Preserve heterogeneous and falsy Lua values without collapsing them, and keep
+  command/capture counters separate; generate the schema/annotation/error reference
+  from authoritative definitions.
+- Encode Lua `nil` results explicitly as JSON null rather than silently dropping
+  the `result` key and producing an empty array. Empty tables retain their prior
+  array representation; false/zero/empty-string and shared-table results are preserved.
 - Preserve cross-process session ownership across MCP cancellation, command
   timeouts, startup-with-Lua, and settled visual composites (#46).
 - Journal pending execution and fence recovery by directory generation; prevent

@@ -9,6 +9,7 @@ import pytest
 
 import mgba_live_mcp.live_cli as live_cli
 from mgba_live_mcp import process_control
+from mgba_live_mcp.errors import DomainError
 from mgba_live_mcp.session_manager import SessionManager
 
 
@@ -17,8 +18,10 @@ def test_resolve_session_requires_explicit_session(
 ) -> None:
     manager = SessionManager(runtime_root=tmp_path)
     monkeypatch.setattr(live_cli, "_manager", lambda: manager)
-    with pytest.raises(ValueError, match="session_required"):
+    with pytest.raises(DomainError) as error:
         live_cli.resolve_session(argparse.Namespace(session=None))
+    assert error.value.code == "session_required"
+    assert error.value.execution_outcome == "not_started"
 
 
 def test_parser_requires_session_for_existing_session_commands() -> None:

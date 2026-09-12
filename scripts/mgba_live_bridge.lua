@@ -2,6 +2,8 @@
 -- Loaded once via: mgba-qt --script mgba_live_bridge.lua <rom>
 
 local frame = 0
+-- Lua drops nil-valued table fields; retain an explicit JSON null for Lua results.
+local json_null = {}
 
 local session_dir = os.getenv("MGBA_LIVE_SESSION_DIR") or "."
 local command_path = os.getenv("MGBA_LIVE_COMMAND") or (session_dir .. "/command.lua")
@@ -59,7 +61,7 @@ end
 
 local function json_encode(value)
   local t = type(value)
-  if t == "nil" then
+  if t == "nil" or rawequal(value, json_null) then
     return "null"
   end
   if t == "boolean" then
@@ -429,7 +431,7 @@ local function handle_command(cmd)
     if err then
       error(err)
     end
-    return { result = result }
+    return { result = result == nil and json_null or result }
   end
 
   if kind == "run_lua_inline" then
@@ -437,7 +439,7 @@ local function handle_command(cmd)
     if err then
       error(err)
     end
-    return { result = result }
+    return { result = result == nil and json_null or result }
   end
 
   error("unknown command: " .. tostring(kind))

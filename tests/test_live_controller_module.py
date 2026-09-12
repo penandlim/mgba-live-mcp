@@ -1,54 +1,90 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import threading
+from pathlib import Path
+from typing import Any
+
 import pytest
 
 from mgba_live_mcp.live_controller import LiveControllerClient
+from mgba_live_mcp.session_manager import SessionManager
 
 
-class _StartManager:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, dict[str, object]]] = []
+class _StartManager(SessionManager):
+    def __init__(self, runtime_root: Path) -> None:
+        super().__init__(runtime_root=runtime_root)
+        self.started = threading.Event()
+        self.release_start = threading.Event()
+        self.value = 0
 
-    def start(self, **kwargs):
-        self.calls.append(("start", dict(kwargs)))
-        return {"session_id": kwargs.get("session_id") or "session-123", "pid": 4321}
+    def start(self, *, session_id: str | None = None, **kwargs: Any) -> dict[str, Any]:
+        session = session_id or "session-123"
+        with self.transaction(session, create=True):
+            self.value = 1
+        # This boundary is outside start's primitive transaction, but must remain
+        # inside the startup composite's reservation until Lua/capture complete.
+        self.started.set()
+        if not self.release_start.wait(5):
+            raise TimeoutError("Test startup was not released")
+        return {"session_id": session, "pid": 4321}
 
-    def run_lua(self, **kwargs):
-        self.calls.append(("run_lua", dict(kwargs)))
-        return {"session_id": kwargs["session"], "frame": 100, "data": {"result": {"ok": True}}}
+    def run_lua(self, *, session: str, **kwargs: Any) -> dict[str, Any]:
+        with self.transaction(session):
+            self.value += 1
+            return {"session_id": session, "frame": self.value, "data": {"result": self.value}}
 
-    def get_view(self, **kwargs):
-        self.calls.append(("get_view", dict(kwargs)))
-        return {"session_id": kwargs["session"], "frame": 200, "png_base64": "AA=="}
+    def get_view(self, *, session: str, **kwargs: Any) -> dict[str, Any]:
+        with self.transaction(session):
+            image = base64.b64encode(str(self.value).encode()).decode()
+            return {"session_id": session, "frame": self.value, "png_base64": image}
 
 
 @pytest.mark.anyio
-async def test_start_maps_timeout_to_ready_timeout() -> None:
-    manager = _StartManager()
+@pytest.mark.parametrize("with_view", [False, True])
+async def test_startup_composite_owns_reserved_session_after_start_returns(
+    tmp_path: Path, with_view: bool
+) -> None:
+    manager = _StartManager(tmp_path)
     client = LiveControllerClient(manager=manager)
-
-    result = await client.start(rom="/tmp/game.gba", timeout=9.0, session_id="session-1")
-
-    assert result == {"session_id": "session-1", "pid": 4321}
-    assert manager.calls == [
-        ("start", {"rom": "/tmp/game.gba", "session_id": "session-1", "ready_timeout": 9.0})
-    ]
-
-
-@pytest.mark.anyio
-async def test_start_with_lua_and_view_combines_start_lua_and_snapshot() -> None:
-    manager = _StartManager()
-    client = LiveControllerClient(manager=manager)
-
-    result = await client.start_with_lua_and_view(
-        rom="/tmp/game.gba",
-        code="return 1",
-        timeout=7.0,
-        session_id="session-1",
+    contender = LiveControllerClient(manager=_StartManager(tmp_path))
+    operation = client.start_with_lua_and_view if with_view else client.start_with_lua
+    first = asyncio.create_task(
+        operation(rom="/tmp/game.gba", code="return 1", timeout=7, session_id="session-1")
     )
+    try:
+        assert await asyncio.to_thread(manager.started.wait, 2)
+        with pytest.raises(RuntimeError, match="session_busy"):
+            await asyncio.wait_for(contender.get_view(session="session-1"), 2)
+        manager.release_start.set()
+        result = await asyncio.wait_for(first, 2)
+        if with_view:
+            assert base64.b64decode(result["png_base64"]) == b"3"
+            assert result["screenshot"]["frame"] == 3
+        else:
+            assert manager.value == 2
+            assert "png_base64" not in result
+    finally:
+        manager.release_start.set()
+        await asyncio.gather(first, return_exceptions=True)
 
-    assert result["session_id"] == "session-1"
-    assert result["pid"] == 4321
-    assert result["lua"] == {"ok": True}
-    assert result["screenshot"] == {"frame": 200}
-    assert [call[0] for call in manager.calls] == ["start", "run_lua", "run_lua", "get_view"]
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("with_view", [False, True])
+@pytest.mark.parametrize("value", [False, 0, "", None, {}])
+async def test_startup_composite_preserves_falsy_lua_results(
+    tmp_path: Path, with_view: bool, value: Any
+) -> None:
+    class FalsyManager(_StartManager):
+        def run_lua(self, *, session: str, **kwargs: Any) -> dict[str, Any]:
+            with self.transaction(session):
+                return {"session_id": session, "frame": 1, "data": {"result": value}}
+
+    manager = FalsyManager(tmp_path)
+    manager.release_start.set()
+    client = LiveControllerClient(manager=manager)
+    operation = client.start_with_lua_and_view if with_view else client.start_with_lua
+    result = await operation(rom="/tmp/game.gba", code="return nil", session_id="falsy")
+    assert result["lua"] == value
+    assert type(result["lua"]) is type(value)

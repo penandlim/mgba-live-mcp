@@ -53,6 +53,7 @@ callbacks:add("frame", function()
 end)
 return {lua=_VERSION, keys=emu:getKeys(), frame=emu:currentFrame(),
         platform=emu:platform(), platforms={GB=C.PLATFORM.GB, GBA=C.PLATFORM.GBA},
+        oam={base=emu.memory.oam:base(), bound=emu.memory.oam:bound(), size=emu.memory.oam:size()},
         state_api={saveFile=emu.saveStateFile ~= nil, loadFile=emu.loadStateFile ~= nil,
                    saveBuffer=emu.saveStateBuffer ~= nil, loadBuffer=emu.loadStateBuffer ~= nil},
         state_flags={ALL=C.SAVESTATE.ALL, SAVEDATA=C.SAVESTATE.SAVEDATA,
@@ -335,12 +336,10 @@ async def run(args: argparse.Namespace, root: Path) -> None:
         "rom_license": "GPL-3.0-or-later; graphics/music CC-BY-SA-4.0; GBT Player BSD-2-Clause",
         "rom_source_and_notices": "https://github.com/AntonioND/ucity/tree/v1.3",
     }
-    if args.build_provenance:
-        build = json.loads(args.build_provenance.read_text())
-        require(
-            build["binary_sha256"] == provenance["binary_sha256"], "Build binary checksum mismatch"
-        )
-        provenance["build"] = build
+    build = json.loads(args.build_provenance.read_text())
+    require(build["commit"] == MGBA_COMMIT, "Build source commit mismatch")
+    require(build["binary_sha256"] == provenance["binary_sha256"], "Build binary checksum mismatch")
+    provenance["build"] = build
     save(root / "provenance.json", provenance)
     outcomes = []
     for name, injected in (("success", False), ("controlled-failure", True)):
@@ -353,7 +352,7 @@ def main() -> int:
     parser.add_argument("--mgba", required=True, type=Path)
     parser.add_argument("--rom", type=Path, default=Path("roms/ucity.gbc"))
     parser.add_argument("--artifacts", required=True, type=Path, help="New directory; never reused")
-    parser.add_argument("--build-provenance", type=Path)
+    parser.add_argument("--build-provenance", required=True, type=Path)
     args = parser.parse_args()
     root = args.artifacts.resolve()
     root.mkdir(parents=True, exist_ok=False)

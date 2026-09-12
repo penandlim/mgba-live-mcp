@@ -16,7 +16,7 @@ NATIVE_ARTIFACTS ?= .native/smoke-$(shell date -u +%Y%m%dT%H%M%SZ)
 native-build:
 	uv run python scripts/provision_native.py
 
-native-smoke: verify-test-rom
+native-smoke:
 	uv run --group native python scripts/native_smoke.py --mgba "$(MGBA_PATH)" --build-provenance "$(NATIVE_PROVENANCE)" --artifacts "$(NATIVE_ARTIFACTS)"
 
 lint:

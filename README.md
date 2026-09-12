@@ -312,6 +312,15 @@ Native-only Python dependencies stay in the optional `native` group. The
 `native/` scripts are type-checked when selecting `make native-smoke`, separately
 from the default offline type-check paths.
 
+Bridge JSON is serialized before opening a same-directory temporary file, then
+published by rename only after successful write and close. Failed publication
+preserves the prior complete snapshot. The native smoke includes a deterministic
+Lua I/O gate: while the writer is held after open, the previous heartbeat must
+remain readable; after release, a newer complete JSON snapshot must appear.
+This does not replace or retry the normal liveness/heartbeat assertion.
+Pre-cleanup diagnostics copy published files, not the bridge's transient
+`heartbeat.json.tmp` and `response.json.tmp` scratch files.
+
 ### Clean Ubuntu 22.04 machine
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/), clone this

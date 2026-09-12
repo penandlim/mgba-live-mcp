@@ -75,6 +75,29 @@ id = callbacks:add("frame", function()
 end)
 return {registered=true}
 """
+PUBLICATION_GUARD = """
+local path = os.getenv("MGBA_LIVE_HEARTBEAT")
+local original_open = io.open
+local reader = assert(original_open(path, "r"))
+local previous = reader:read("*a")
+reader:close()
+io.open = function(name, mode)
+  local file, err = original_open(name, mode)
+  if file and mode == "w" and (name == path or name == path .. ".tmp") then
+    io.open = original_open
+    local marker = assert(original_open(path .. ".opened", "w"))
+    marker:write("opened")
+    marker:close()
+    local deadline = os.time() + 10
+    repeat
+      local release = original_open(path .. ".release", "r")
+      if release then release:close(); break end
+    until os.time() >= deadline
+  end
+  return file, err
+end
+return previous
+"""
 
 
 class ControlledFailure(Exception):
@@ -172,6 +195,33 @@ async def scenario(root: Path, binary: Path, rom: Path, *, inject_failure: bool)
         record("owned-session", session_record)
         status = cli("status", "--session", SESSION)
         require(status.get("alive") and status.get("heartbeat"), "Missing live heartbeat")
+        if not inject_failure:
+            heartbeat = Path(session_record["heartbeat_path"])
+            previous = cli(
+                "run-lua", "--session", SESSION, "--code", PUBLICATION_GUARD, "--timeout", "10"
+            )["data"]["result"]
+            try:
+                deadline = time.monotonic() + 5
+                while not Path(str(heartbeat) + ".opened").exists():
+                    require(time.monotonic() < deadline, "Native writer did not reach open gate")
+                    await asyncio.sleep(0.01)
+                held = heartbeat.read_text()
+            finally:
+                Path(str(heartbeat) + ".release").write_text("continue")
+            require(held == previous, "Published heartbeat changed before the completed swap")
+            after = cli(
+                "run-lua",
+                "--session",
+                SESSION,
+                "--timeout",
+                "10",
+                "--code",
+                "local f=assert(io.open(os.getenv('MGBA_LIVE_HEARTBEAT'),'r')); "
+                "local value=f:read('*a'); f:close(); return value",
+            )["data"]["result"]
+            before_value, after_value = json.loads(held), json.loads(after)
+            record("atomic-publication", {"while_open": before_value, "after_swap": after_value})
+            require(after_value["frame"] > before_value["frame"], "Heartbeat did not advance")
         cli("run-lua", "--session", SESSION, "--code", MONITOR, "--timeout", "10")
         cli("input-tap", "--session", SESSION, "--key", "A", "--frames", "12", "--timeout", "10")
         params = StdioServerParameters(
@@ -275,7 +325,11 @@ async def scenario(root: Path, binary: Path, rom: Path, *, inject_failure: bool)
         # Preserve the exact owned runtime before stop/archive/view cleanup can mutate it.
         try:
             if runtime.exists():
-                shutil.copytree(runtime, root / "before-cleanup")
+                shutil.copytree(
+                    runtime,
+                    root / "before-cleanup",
+                    ignore=shutil.ignore_patterns("heartbeat.json.tmp", "response.json.tmp"),
+                )
         except OSError as exc:
             result["diagnostics_error"] = str(exc)
         try:

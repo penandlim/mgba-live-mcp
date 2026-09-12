@@ -7,6 +7,9 @@
   completion, fully decoded PNG pixels and identity-confirmed process exit.
 - Prove scoped cleanup with a controlled live-session failure; retain native
   provenance, logs, heartbeat/journal snapshots and images for 14 days in CI.
+- Atomically publish native bridge JSON after checked write/close, preserving
+  the previous snapshot on failure. Add a real-Lua publication-boundary
+  regression for the zero-byte heartbeat race found by native CI (#59).
 - Document clean-machine setup, verified/unverified native combinations and
   µCity ROM/media attribution and redistribution requirements.
 - Apply native birth/group identity consistently to attach and command admission,

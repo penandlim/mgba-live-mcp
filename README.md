@@ -122,8 +122,8 @@ Important runtime notes:
   only from explicit visual tools.
 - If you have old repo-local sessions, migrate manually by copying `.runtime/*` to
   `~/.mgba-live-mcp/runtime/`.
-  Copied PID-only records cannot authorize destructive stop; start a new managed
-  session to establish ownership.
+  Copied PID-only records remain inspectable, but cannot authorize live commands
+  or destructive stop; start a new managed session to establish ownership.
 - `mgba_live_status` with `all=true` lists sessions from this shared user-level runtime root.
 - `scripts/mgba_live_bridge.lua` is transitional for local workflows; packaged
   `src/mgba_live_mcp/resources/mgba_live_bridge.lua` is the runtime source of truth.
@@ -272,12 +272,16 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
   `identity_mismatch`, `identity_unverified`, `permission_denied`, or
   `termination_unconfirmed`, including the session, generation, and signal stage.
   CLI stop does not archive its target before reporting this outcome.
-- Status includes `process_state` and the transaction snapshot. The compatibility
-  `alive` field remains conservative (`true`) when death cannot be established;
-  it is not proof of ownership. Legacy PID-only records cannot authorize signals.
-- Passive inspection does not reap children or consume startup exit codes.
-  Recovery stop can reap verified children; unavailable or mismatched zombie
-  birth metadata never authorizes reaping.
+- Status includes `process_state`, `identity_verified`, and the transaction
+  snapshot. The compatibility `alive` field remains conservative (`true`) when
+  death cannot be established; it is not proof of ownership. Attach-by-PID and
+  ordinary command admission require verified process birth and group ownership.
+  Legacy PID-only records cannot authorize signals or commands.
+- Until bridge readiness is committed in `session.json`, inspection does not
+  reap children or consume startup exit codes. After readiness, status/pruning
+  can reap a birth-verified child and archive its confirmed-dead group. Recovery
+  stop can also reap verified children; unavailable or mismatched zombie birth
+  metadata never authorizes reaping.
 
 ## Local CLI (Dev/Debug)
 

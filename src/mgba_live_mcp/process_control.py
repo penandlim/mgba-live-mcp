@@ -275,8 +275,8 @@ def process_state(pid: int, identity: dict[str, Any] | None, *, reap: bool = Fal
     """Return alive/dead or a conservative ownership/inspection failure code.
 
     Legacy records can be confirmed dead, but cannot be confirmed owned/alive.
-    Reaping is opt-in for recovery. Passive observers preserve their Popen
-    owner's exit status.
+    Reaping is opt-in for recovery or maintenance after readiness. Startup
+    observers must preserve their Popen owner's exit status.
     """
     if sys.platform not in {"linux", "darwin"} or not _valid_pid(pid):
         return "identity_unverified"

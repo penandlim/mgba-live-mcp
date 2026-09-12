@@ -47,7 +47,7 @@ def test_require_session_raises_session_dead_for_non_live_process(
 ) -> None:
     manager = _manager(tmp_path)
     _write_session(manager, "session-dead", 1234)
-    monkeypatch.setattr(manager, "pid_alive", lambda pid: False)
+    monkeypatch.setattr(manager, "_process_state", lambda session: "dead")
 
     with pytest.raises(RuntimeError, match="session_dead"):
         manager.require_session("session-dead")
@@ -234,6 +234,7 @@ def test_status_all_filters_dead_sessions_and_includes_heartbeat(
     assert isinstance(payload, list)
     assert [item["session_id"] for item in payload] == ["session-live"]
     assert payload[0]["heartbeat"] == heartbeat
+    assert payload[0]["identity_verified"] is True
 
 
 def test_recovery_stop_fences_an_active_command_and_clears_active_session(
@@ -282,6 +283,7 @@ def test_unconfirmed_stop_preserves_session_and_blocks_new_commands(
     status = manager.status(session="session-1")
     assert isinstance(status, dict)
     assert status["process_state"] == "permission_denied"
+    assert status["identity_verified"] is False
     with pytest.raises(RuntimeError, match="session_stopping"):
         with manager.transaction("session-1"):
             pytest.fail("unconfirmed stop admitted another operation")

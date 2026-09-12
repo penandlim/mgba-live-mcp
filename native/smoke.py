@@ -32,7 +32,7 @@ MGBA_COMMIT = "543a197582c30364584d773a974d7f991892fa43"
 SESSION = "native-smoke"
 PROBE = "return {keys=emu:getKeys(), frame=emu:currentFrame(), smoke=native_smoke}"
 MONITOR = """
-assert(emu.getKeys and emu.addKey and emu.clearKey and emu.screenshot)
+assert(emu.getKey and emu.getKeys and emu.addKey and emu.clearKey and emu.screenshot)
 assert(callbacks.add and callbacks.remove)
 native_smoke = {ticks=0, pressed=false, released=false, macro_calls=0,
                 macro_done=false, macro_pressed=false, macro_released=false,

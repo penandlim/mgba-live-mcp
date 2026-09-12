@@ -13,6 +13,7 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
+from jsonschema.protocols import Validator
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, ContentBlock, ImageContent, TextContent, Tool, ToolAnnotations
@@ -596,6 +597,12 @@ async def list_tools() -> list[Tool]:
     return list(_tools().values())
 
 
+@cache
+def _validators(name: str) -> tuple[Validator, Validator]:
+    tool = _tools()[name]
+    return Draft202012Validator(tool.inputSchema), Draft202012Validator(tool.outputSchema)
+
+
 @server.call_tool(validate_input=False)
 async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
     args = arguments or {}
@@ -617,8 +624,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 phase="dispatch",
                 execution_outcome="not_started",
             )
+        input_validator, output_validator = _validators(name)
         try:
-            Draft202012Validator(tool.inputSchema).validate(args)
+            input_validator.validate(args)
         except ValidationError as exc:
             raise DomainError(
                 "invalid_arguments",
@@ -647,7 +655,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
             )
         public = {key: value for key, value in payload.items() if key != "png_base64"}
         try:
-            Draft202012Validator(tool.outputSchema).validate(public)
+            output_validator.validate(public)
         except ValidationError as exc:
             raise DomainError("invalid_result", exc.message, phase="result") from exc
         content: list[ContentBlock] = [_text_content(public)]

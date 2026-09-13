@@ -101,12 +101,23 @@ local function json_encode(value)
 end
 
 local function write_text(path, text)
-  local f, err = io.open(path, "w")
+  -- The bridge is the sole writer of its heartbeat and response files.
+  local temporary = path .. ".tmp"
+  local f, err = io.open(temporary, "w")
   if not f then
     return false, err
   end
-  f:write(text)
-  f:close()
+  local written, write_err = f:write(text)
+  local closed, close_err = f:close()
+  if not written or not closed then
+    os.remove(temporary)
+    return false, write_err or close_err
+  end
+  local renamed, rename_err = os.rename(temporary, path)
+  if not renamed then
+    os.remove(temporary)
+    return false, rename_err
+  end
   return true, nil
 end
 

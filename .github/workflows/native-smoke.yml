@@ -1,0 +1,126 @@
+name: native-smoke
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-qt-lua:
+    name: native-qt-lua (Ubuntu 22.04, Qt5, Lua5.4)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: xcb
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      QT_X11_NO_MITSHM: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install native build and display dependencies
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          mkdir -p .native
+          exec > >(tee .native/dependencies.log) 2>&1
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential cmake pkg-config \
+            qtbase5-dev qtmultimedia5-dev qttools5-dev qttools5-dev-tools \
+            liblua5.4-dev libpng-dev zlib1g-dev libsqlite3-dev libepoxy-dev xvfb xauth
+          uv sync --frozen --group native --group typecheck
+      - name: Fingerprint deterministic native build inputs
+        id: native-inputs
+        shell: bash
+        env:
+          LC_ALL: C
+          RECIPE_HASH: ${{ hashFiles('native/provision.py', 'Makefile', '.github/workflows/native-smoke.yml') }}
+        run: |
+          {
+            printf 'os=ubuntu-22.04\narch=%s\nworkspace=%s\n' "$RUNNER_ARCH" "$GITHUB_WORKSPACE"
+            printf 'CC=%s\nCXX=%s\nCFLAGS=%s\nCXXFLAGS=%s\nCPPFLAGS=%s\nLDFLAGS=%s\n' \
+              "${CC:-}" "${CXX:-}" "${CFLAGS:-}" "${CXXFLAGS:-}" "${CPPFLAGS:-}" "${LDFLAGS:-}"
+            printf 'CMAKE_PREFIX_PATH=%s\nPKG_CONFIG_PATH=%s\nCMAKE_GENERATOR=%s\n' \
+              "${CMAKE_PREFIX_PATH:-}" "${PKG_CONFIG_PATH:-}" "${CMAKE_GENERATOR:-}"
+            command -v cc c++ cmake pkg-config
+            cc --version
+            c++ --version
+            cmake --version
+            pkg-config --version
+            dpkg-query -W -f='${binary:Package}\t${Version}\t${Architecture}\n' | LC_ALL=C sort
+          } > .native/cache-inputs.txt
+          fingerprint=$(sha256sum .native/cache-inputs.txt | cut -d ' ' -f1)
+          pin=$(uv run python -c 'from native.provision import MGBA_COMMIT; print(MGBA_COMMIT)')
+          echo "key=native-qt-lua-v1-ubuntu22-${RUNNER_ARCH}-${pin}-${RECIPE_HASH}-${fingerprint}" >> "$GITHUB_OUTPUT"
+      - name: Restore exact pinned native build
+        id: native-cache
+        uses: actions/cache@v4
+        with:
+          path: .native/mgba
+          key: ${{ steps.native-inputs.outputs.key }}
+      - name: Record native cache outcome
+        shell: bash
+        env:
+          NATIVE_CACHE_KEY: ${{ steps.native-inputs.outputs.key }}
+          NATIVE_CACHE_HIT: ${{ steps.native-cache.outputs.cache-hit }}
+        run: |
+          printf 'key=%s\ncache-hit=%s\n' "$NATIVE_CACHE_KEY" "$NATIVE_CACHE_HIT" | tee .native/cache-status.log
+      - name: Build pinned Qt and Lua frontend
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 20
+        run: make native-build
+      - name: Restore checksum-keyed public ROM cache
+        id: rom-cache
+        uses: actions/cache@v4
+        with:
+          path: roms/ucity.gbc
+          key: native-ucity-gbc-v1.3-9422ee2ca7b7ea1d46b58b2a429fff3f354dfd3e732dee1e7ae6220f148ce6e0
+      - name: Provision public ROM once or verify cache hit
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          exec > >(tee .native/rom.log) 2>&1
+          if [ '${{ steps.rom-cache.outputs.cache-hit }}' = 'true' ]; then
+            make verify-test-rom
+          else
+            make test-rom
+          fi
+      - name: Exercise real CLI and MCP plus controlled failure cleanup
+        timeout-minutes: 4
+        run: |
+          timeout --signal=TERM --kill-after=15s 150s \
+            xvfb-run --auto-servernum --error-file=.native/xvfb.log \
+            --server-args='-screen 0 1024x768x24 -nolisten tcp' \
+            make native-smoke NATIVE_ARTIFACTS=.native/smoke
+      - name: Retain native diagnostics on success and failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-qt-lua-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
+          include-hidden-files: true
+          if-no-files-found: error
+          path: |
+            .native/dependencies.log
+            .native/rom.log
+            .native/cache-inputs.txt
+            .native/cache-status.log
+            .native/mgba/*.log
+            .native/mgba/*.json
+            .native/mgba/CMakeCache.txt
+            .native/mgba/flags.h
+            .native/mgba/version.c
+            .native/mgba/os-release
+            .native/xvfb.log
+            .native/smoke/
+            !.native/**/*.gbc
+            !.native/**/*.sav

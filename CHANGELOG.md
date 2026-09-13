@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Add explicit pinned Qt5/Lua5.4 native provisioning and a separate native CI
+  smoke (#59), exercising the real CLI/MCP bridge, observed input/callback
+  completion, fully decoded PNG pixels and identity-confirmed process exit.
+- Prove scoped cleanup with a controlled live-session failure; retain native
+  provenance, logs, heartbeat/journal snapshots and images for 14 days in CI.
+- Atomically publish native bridge JSON after checked write/close, preserving
+  the previous snapshot on failure. Add a real-Lua publication-boundary
+  regression for the zero-byte heartbeat race found by native CI (#59).
+- Cache the complete pinned native build using exact recipe/toolchain inputs
+  and enable uv caching; retain all real native checks on hits. Verified
+  same-head cold/warm jobs took 176/55 seconds, with compilation skipped only
+  after an exact cache hit (#59).
+- Document clean-machine setup, verified/unverified native combinations and
+  µCity ROM/media attribution and redistribution requirements.
 - Apply native birth/group identity consistently to attach and command admission,
   expose verified ownership in status, and remove PID-only liveness helpers (#51).
 - Preserve startup return codes while allowing normal status/pruning to reap

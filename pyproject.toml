@@ -36,6 +36,9 @@ test = [
     "pytest>=9.0.2",
     "pytest-cov>=7.0.0",
 ]
+native = [
+    "Pillow==11.3.0",
+]
 typecheck = [
     "ty>=0.0.17",
 ]

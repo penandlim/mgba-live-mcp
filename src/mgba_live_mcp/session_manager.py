@@ -834,9 +834,7 @@ class SessionManager:
         )
         resolved_session_id = session_id if session_id is not None else self._new_session_id()
         self.ensure_runtime_dirs()
-        # Release the status-reader gate only after transaction finalization and diagnostics.
         with (
-            ExitStack() as child_cleanup,
             error_context("startup", session_id=resolved_session_id),
             self.transaction(resolved_session_id, create=True, composite=True) as operation,
         ):
@@ -898,7 +896,9 @@ class SessionManager:
                 env["MGBA_LIVE_HEARTBEAT"] = session["heartbeat_path"]
                 env["MGBA_LIVE_HEARTBEAT_INTERVAL"] = str(options["heartbeat_interval"])
                 phase = "spawn"
+                # Release the waiter after registration, never after readiness or diagnostics.
                 with (
+                    ExitStack() as child_cleanup,
                     directory.create_file("stdout.log") as stdout_f,
                     directory.create_file("stderr.log") as stderr_f,
                     operation.startup_guard(),

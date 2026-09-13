@@ -11,7 +11,8 @@
 - Reap registered children from dedicated parent-owned waiters so external CLI
   stop can confirm MCP-owned process exit while the server stays alive. Share
   the original `Popen` reader to preserve exit codes across registration/status
-  races without weakening native birth or process-group checks (#61).
+  races. Release them after registration, before readiness I/O, so blocked startup
+  cannot prevent external recovery exit confirmation (#61).
 - Bind child admission and prelaunch rollback to the already-held parent
   directory so namespace replacement cannot redirect coordination-file writes.
   Keep literal session IDs in initialization-lock refusal diagnostics (#61).

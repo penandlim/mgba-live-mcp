@@ -278,13 +278,13 @@ def forget_child(proc: subprocess.Popen[Any]) -> None:
 
 
 def watch_child(proc: subprocess.Popen[Any]) -> threading.Event:
-    """Reap a registered local child after its startup owner releases the event."""
-    startup_finished = threading.Event()
+    """Reap via Popen once the protected birth/metadata registration finishes."""
+    registration_finished = threading.Event()
 
     def wait() -> None:
         try:
-            # Startup retains its exit-status reader until diagnosis is complete.
-            startup_finished.wait()
+            # Registration, not later startup I/O, owns this short status-reader gate.
+            registration_finished.wait()
             proc.wait()
         finally:
             forget_child(proc)
@@ -292,9 +292,9 @@ def watch_child(proc: subprocess.Popen[Any]) -> threading.Event:
     try:
         threading.Thread(target=wait, name=f"mgba-reap-{proc.pid}", daemon=True).start()
     except BaseException:
-        startup_finished.set()
+        registration_finished.set()
         raise
-    return startup_finished
+    return registration_finished
 
 
 def _reap_child(pid: int, identity: dict[str, Any] | None) -> None:

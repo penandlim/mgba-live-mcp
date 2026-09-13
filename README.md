@@ -364,11 +364,12 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
   A missing `ready` field means readiness is unknown, not complete. Use recovery
   stop to reap and retire such a session after native ownership is verified;
   do not add readiness metadata or reap a PID merely to force pruning.
-- After startup finishes, the parent automatically reaps each registered child
-  on exit, including while an MCP server is idle. External CLI stop can confirm
-  exit without waiting for another MCP operation or server shutdown. Dedicated
-  waiters hold no transaction lease, send no signals, and share the original
-  `Popen` exit-status reader with permitted native inspection.
+- After native birth and metadata registration, the parent automatically reaps
+  each child on exit, even if its startup response read is blocked or an MCP
+  server is idle. External CLI stop can confirm exit without waiting for that
+  worker or server shutdown. Dedicated waiters hold no transaction lease, send
+  no signals, and share the original `Popen` exit-status reader with permitted
+  inspection.
 
 ## Native Qt/Lua Smoke
 

@@ -835,3 +835,67 @@ def test_external_stop_confirms_exit_while_startup_parent_stays_alive(
     assert stopped["alive_after"] is False
     assert process_control.process_state(child.pid, record["process_identity"]) == "dead"
     assert child.wait(timeout=1) == -signal.SIGTERM
+
+
+def test_external_stop_reaps_child_while_readiness_response_read_is_blocked(
+    runtime: _Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reading, release = threading.Event(), threading.Event()
+    response_path = runtime.manager.session_dir("blocked-readiness") / "response.json"
+    read_text = Path.read_text
+
+    def blocked_read(path: Path, *args: Any, **kwargs: Any) -> str:
+        if path == response_path:
+            reading.set()
+            _wait(release)
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", blocked_read)
+    code = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "from mgba_live_mcp.errors import DomainError, error_payload\n"
+        "from mgba_live_mcp.session_manager import SessionManager\n"
+        "manager = SessionManager(runtime_root=Path(sys.argv[1]))\n"
+        "try:\n"
+        "    print(json.dumps(manager.stop(session='blocked-readiness', grace=0.2)))\n"
+        "except DomainError as exc:\n"
+        "    print(json.dumps(error_payload(exc)))\n"
+        "    sys.exit(1)\n"
+    )
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        worker = executor.submit(runtime.start, "blocked-readiness")
+        try:
+            _wait(reading)
+            child = runtime.children[0]
+            record = runtime.manager.load_session("blocked-readiness")
+            assert record["startup"]["state"] == "starting"
+            # The startup worker stays inside the actual response-read boundary.
+            # No parent poll/wait helps the independent recovery process reap it.
+            with monkeypatch.context() as patch:
+                patch.setattr(subprocess, "Popen", type(child))
+                result = subprocess.run(
+                    [sys.executable, "-c", code, str(runtime.manager.runtime_root)],
+                    env={
+                        **os.environ,
+                        "PYTHONPATH": str(Path(session_manager.__file__).resolve().parent.parent),
+                    },
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            assert not worker.done()
+            stopped = json.loads(result.stdout)
+            assert result.returncode == 0, stopped
+            assert stopped["outcome"] == "stopped"
+            assert stopped["alive_after"] is False
+            assert process_control.process_state(child.pid, record["process_identity"]) == "dead"
+            assert child.wait(timeout=1) == -signal.SIGTERM
+        finally:
+            release.set()
+        with pytest.raises(DomainError) as failure:
+            worker.result(timeout=5)
+
+    assert failure.value.code == "session_stopped"
+    assert runtime.manager.load_session("blocked-readiness")["ready"] is False
+    assert runtime.manager.get_active_session_id() is None

@@ -8,6 +8,7 @@ import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event, get_ident
 from typing import Any
 
 import pytest
@@ -520,4 +521,217 @@ def test_atomic_active_publication_failure_preserves_previous_ready_session(
         assert error["code"] == "startup_failed"
         assert manager.active_session_file.read_text() == "previous"
         _assert_discoverable(manager, error, "alive")
+    _stop_and_archive(manager, "stopped")
+
+
+@pytest.mark.parametrize("composite", [False, True], ids=["start", "start-with-lua"])
+@pytest.mark.parametrize("boundary", ["directory-fsync", "guard-exit", "transaction-finish"])
+def test_post_activation_failure_preserves_previous_ready_session(
+    manager: _PythonManager,
+    monkeypatch: pytest.MonkeyPatch,
+    composite: bool,
+    boundary: str,
+) -> None:
+    replace = session_transactions.os.replace
+    fsync = session_transactions.os.fsync
+    owned_state = session_transactions.Transaction._owned_state
+    finish = session_transactions.Transaction._finish
+    active_replaced = False
+    injected = False
+
+    def fail_at(stage: str) -> None:
+        nonlocal injected
+        if stage == boundary and active_replaced and not injected:
+            injected = True
+            raise OSError(errno.EIO, f"injected failure after activation: {stage}")
+
+    def publish_active(src: Any, dst: Any, **kwargs: Any) -> None:
+        nonlocal active_replaced
+        replace(src, dst, **kwargs)
+        if dst == "active_session":
+            active_replaced = True
+
+    def sync(fd: int) -> None:
+        fail_at("directory-fsync")
+        fsync(fd)
+
+    def check(operation: session_transactions.Transaction) -> dict[str, Any]:
+        fail_at("guard-exit")
+        return owned_state(operation)
+
+    def finalize(operation: session_transactions.Transaction, *, failed: bool = False) -> None:
+        if not failed:
+            fail_at("transaction-finish")
+        finish(operation, failed=failed)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(session_transactions.os, "replace", publish_active)
+        patch.setattr(session_transactions.os, "fsync", sync)
+        patch.setattr(session_transactions.Transaction, "_owned_state", check)
+        patch.setattr(session_transactions.Transaction, "_finish", finalize)
+        with pytest.raises((DomainError, OSError)) as raised:
+            if composite:
+                _composite(manager, code="return true")
+            else:
+                _start(manager)
+        observed = {
+            "active": manager.get_active_session_id(),
+            "startup": manager.load_session("candidate")["startup"],
+            "error": error_payload(raised.value)["error"],
+        }
+    # Restore the test fixture only after recording the actual post-failure state.
+    manager.set_active_session("previous")
+    stopped = manager.stop(session="candidate", grace=0.05)
+    assert stopped["alive_after"] is False
+    manager.children["candidate"].wait(timeout=5)
+    manager.prune_dead_sessions()
+    assert injected
+    assert observed["active"] == "previous", observed
+
+
+def test_later_attachment_survives_a_failed_activation(
+    manager: _PythonManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _start(manager, session_id="later", _activate=False)
+    published, contender_blocked, release_failure = Event(), Event(), Event()
+    replace = session_transactions.os.replace
+    flock = session_transactions.fcntl.flock
+    later_thread = 0
+
+    def replace_then_pause(src: Any, dst: Any, **kwargs: Any) -> None:
+        replace(src, dst, **kwargs)
+        if dst == "active_session" and manager.get_active_session_id() == "candidate":
+            published.set()
+            assert release_failure.wait(5), "The competing activation was not released"
+            raise OSError(errno.EIO, "injected post-publication failure")
+
+    def observe_contention(fd: int, flags: int) -> None:
+        try:
+            flock(fd, flags)
+        except BlockingIOError:
+            if get_ident() == later_thread:
+                contender_blocked.set()
+            raise
+
+    def attach_later() -> dict[str, Any]:
+        nonlocal later_thread
+        later_thread = get_ident()
+        return manager.attach(session="later")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(session_transactions.os, "replace", replace_then_pause)
+        patch.setattr(session_transactions.fcntl, "flock", observe_contention)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(_start, manager)
+            try:
+                assert published.wait(5), "The first activation did not publish"
+                later = executor.submit(attach_later)
+                assert contender_blocked.wait(5), "A later writer did not wait for activation"
+            finally:
+                release_failure.set()
+            with pytest.raises(DomainError) as failed:
+                first.result(timeout=5)
+            attached = later.result(timeout=5)
+    observed = manager.get_active_session_id()
+    restoration = failed.value.context["active_marker_restore"]
+    manager.stop(session="candidate", grace=0.05)
+    manager.stop(session="later", grace=0.05)
+    assert attached["session_id"] == "later"
+    assert restoration["confirmed"] is True
+    assert observed == "later"
+
+
+def test_activation_failure_restores_an_absent_marker(
+    manager: _PythonManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with manager._active_marker() as directory:
+        manager._write_active_marker(directory, None)
+    replace = session_transactions.os.replace
+    injected = False
+
+    def publish_then_fail(src: Any, dst: Any, **kwargs: Any) -> None:
+        nonlocal injected
+        replace(src, dst, **kwargs)
+        if dst == "active_session" and not injected:
+            injected = True
+            raise OSError(errno.EIO, "injected post-publication failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(session_transactions.os, "replace", publish_then_fail)
+        with pytest.raises(DomainError) as failed:
+            _start(manager)
+        missing = not manager.active_session_file.exists()
+    manager.set_active_session("previous")
+    _stop_and_archive(manager, "stopped")
+    assert missing
+    assert failed.value.context["active_marker_restore"] == {
+        "previous_session": None,
+        "confirmed": True,
+    }
+
+
+def test_failed_active_restoration_reports_the_remaining_marker(
+    manager: _PythonManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    replace = session_transactions.os.replace
+    published = False
+
+    def fail_publication_and_restore(src: Any, dst: Any, **kwargs: Any) -> None:
+        nonlocal published
+        if dst == "active_session" and published:
+            raise OSError(errno.ENOSPC, "injected restore refusal")
+        replace(src, dst, **kwargs)
+        if dst == "active_session":
+            published = True
+            raise OSError(errno.EIO, "injected post-publication failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(session_transactions.os, "replace", fail_publication_and_restore)
+        with pytest.raises(DomainError) as failed:
+            _start(manager)
+        observed = manager.get_active_session_id()
+        metadata = manager.load_session("candidate")
+    manager.set_active_session("previous")
+    _stop_and_archive(manager, "stopped")
+    error = error_payload(failed.value)["error"]
+    assert error["code"] == "startup_failed"
+    assert error["active_marker_restore"]["confirmed"] is False
+    assert error["active_marker_restore"]["previous_session"] == "previous"
+    assert error["active_session"] == observed == "candidate"
+    assert metadata["startup"]["state"] == "failed"
+
+
+def test_retirement_publication_failure_retains_failed_startup_diagnostics(
+    manager: _PythonManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write = session_transactions._Directory.write_json
+    injected = False
+
+    def fail_after_retirement(
+        directory: session_transactions._Directory, name: str, payload: Any
+    ) -> None:
+        nonlocal injected
+        write(directory, name, payload)
+        if (
+            directory.path == manager.session_dir("candidate")
+            and name == "transaction.json"
+            and payload["operation"] is None
+            and not injected
+        ):
+            injected = True
+            raise OSError(errno.EIO, "injected failure after retirement publication")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(session_transactions._Directory, "write_json", fail_after_retirement)
+        with pytest.raises(DomainError) as failed:
+            _start(manager)
+    metadata = manager.load_session("candidate")
+    assert injected
+    assert failed.value.context["metadata_persisted"] is True
+    assert manager.get_active_session_id() == "previous"
+    assert metadata["startup"]["state"] == "failed"
+    with pytest.raises(DomainError) as blocked:
+        with manager.transaction("candidate"):
+            pytest.fail("retirement failure must retain the unresolved startup fence")
+    assert blocked.value.code == "session_busy"
     _stop_and_archive(manager, "stopped")

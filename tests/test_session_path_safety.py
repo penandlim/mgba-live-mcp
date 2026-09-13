@@ -375,7 +375,7 @@ def test_managed_root_symlinks_cannot_redirect_lookup_or_archive_destinations(
 
 @pytest.mark.parametrize(
     "session_id",
-    [" old playtest ", "   ", "세션-é.1", "!@#$%^&()[]{}=+,-_:?*", ".legacy.."],
+    [" old playtest ", "   ", "line\r\nname", "세션-é.1", "!@#$%^&()[]{}=+,-_:?*", ".legacy.."],
 )
 def test_legacy_single_component_ids_remain_usable_without_rewriting_their_names(
     manager: SessionManager, monkeypatch: pytest.MonkeyPatch, session_id: str
@@ -388,7 +388,7 @@ def test_legacy_single_component_ids_remain_usable_without_rewriting_their_names
     assert manager.require_session(session_id)["fps_target"] == 90.0
 
     manager.set_active_session(session_id)
-    assert manager.active_session_file.read_text() == session_id
+    assert manager.active_session_file.read_bytes() == session_id.encode("utf-8")
     assert manager.get_active_session_id() == session_id
     manager.active_session_file.unlink()
     manager.attach(session=session_id)
@@ -406,3 +406,24 @@ def test_legacy_single_component_ids_remain_usable_without_rewriting_their_names
     archived = list(manager.archived_sessions_dir.glob("*/session.json"))
     assert [json.loads(path.read_text())["id"] for path in archived] == [session_id]
     assert manager.get_active_session_id() is None
+
+
+def test_final_activation_cannot_touch_a_replaced_runtime_root(
+    manager: SessionManager, tmp_path: Path
+) -> None:
+    manager.ensure_runtime_dirs()
+    retired = tmp_path / "retired-runtime"
+    with pytest.raises(DomainError):
+        with manager.transaction("candidate", create=True, composite=True) as operation:
+            operation._startup_finalization = manager._activate_startup(
+                operation,
+                "candidate",
+                lambda exc: DomainError("startup_failed", str(exc), phase="activation"),
+            )
+            manager.runtime_root.rename(retired)
+            manager.runtime_root.mkdir()
+            marker = manager.runtime_root / "active_session"
+            marker.write_text("winner")
+            before = _snapshot(manager.runtime_root)
+    assert _snapshot(manager.runtime_root) == before
+    assert (retired / "sessions" / "candidate" / "transaction.json").is_file()

@@ -8,6 +8,7 @@ import subprocess
 import sys
 from importlib.metadata import version
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 import pytest
@@ -111,7 +112,7 @@ def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SessionManager:
     monkeypatch.setattr("mgba_live_mcp.session_manager.subprocess.Popen", lambda *a, **k: Process())
     monkeypatch.setattr(process_control, "capture_identity", lambda pid: {"pid": pid})
     monkeypatch.setattr(process_control, "retain_child", lambda *a: None)
-    monkeypatch.setattr(process_control, "watch_child", lambda *a: None)
+    monkeypatch.setattr(process_control, "watch_child", lambda *a: Event())
     monkeypatch.setattr(process_control, "process_state", lambda *a, **k: "alive")
     monkeypatch.setattr(process_control, "terminate_owned_process", lambda *a, **k: "stopped")
     monkeypatch.setattr(manager, "send_command", bridge)

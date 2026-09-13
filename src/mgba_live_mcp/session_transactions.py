@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, BinaryIO, TextIO
@@ -61,7 +61,7 @@ class _Directory:
     def __init__(self, path: Path, *, dir_fd: int | None = None) -> None:
         self.path = path
         self.fd = os.open(
-            path if dir_fd is None else path.name,
+            path if dir_fd is None else path.name or ".",
             os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
             dir_fd=dir_fd,
         )
@@ -133,9 +133,15 @@ class _Directory:
     @contextmanager
     def lock(self, name: str, *, blocking: bool = False) -> Iterator[None]:
         self.check()
-        fd = os.open(
-            name, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600, dir_fd=self.fd
-        )
+        flags = os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW
+        try:
+            fd = os.open(name, flags, dir_fd=self.fd)
+        except FileNotFoundError:
+            # Concurrent nonexclusive O_CREAT opens can return ENOENT on macOS.
+            try:
+                fd = os.open(name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=self.fd)
+            except FileExistsError:
+                fd = os.open(name, flags, dir_fd=self.fd)
         try:
             # A suspended publisher must not trap recovery in a blocking flock.
             deadline = time.monotonic() + 0.5 if blocking else 0.0
@@ -245,17 +251,24 @@ def _initialization_lock_name(path: Path) -> str:
 
 
 @contextmanager
-def _leased_directory(path: Path, *, create: bool, lock: str) -> Iterator[_Directory]:
+def _leased_directory(
+    path: Path, *, create: bool, lock: str
+) -> Iterator[tuple[_Directory, _Directory, _Directory]]:
     # This short, per-session parent lock closes mkdir -> operation-lock admission races.
     # Unlike the directory's operation lock, it is never held across emulator execution.
     try:
-        parent = _Directory(path.parent)
+        grandparent = _Directory(path.parent.parent)
     except FileNotFoundError as exc:
         raise _error("session_not_found", path, "acquire", "directory is missing") from exc
+    parent = None
     directory = None
     lease = None
     created_identity = None
     try:
+        try:
+            parent = _Directory(path.parent, dir_fd=grandparent.fd)
+        except FileNotFoundError as exc:
+            raise _error("session_not_found", path, "acquire", "directory is missing") from exc
         with parent.lock(_initialization_lock_name(path)):
             if create:
                 try:
@@ -269,7 +282,7 @@ def _leased_directory(path: Path, *, create: bool, lock: str) -> Iterator[_Direc
                     info = os.stat(path.name, dir_fd=parent.fd, follow_symlinks=False)
                     created_identity = [info.st_dev, info.st_ino]
                 try:
-                    directory = _Directory(path)
+                    directory = _Directory(path, dir_fd=parent.fd)
                 except FileNotFoundError as exc:
                     raise _error(
                         "session_not_found", path, "acquire", "directory is missing"
@@ -304,10 +317,10 @@ def _leased_directory(path: Path, *, create: bool, lock: str) -> Iterator[_Direc
                     except (RuntimeError, OSError) as cleanup_error:
                         exc.add_note(f"Prelaunch rollback failed for {path}: {cleanup_error}")
                 raise
-        yield directory
+        yield grandparent, parent, directory
     except DomainError as exc:
         # The parent initialization lock belongs to this session, not its parent directory.
-        if exc.phase == f".{path.name}.initialization.lock":
+        if exc.phase == _initialization_lock_name(path):
             exc.context["session_id"] = path.name
         raise
     finally:
@@ -315,7 +328,9 @@ def _leased_directory(path: Path, *, create: bool, lock: str) -> Iterator[_Direc
             lease.__exit__(None, None, None)
         if directory is not None:
             directory.close()
-        parent.close()
+        if parent is not None:
+            parent.close()
+        grandparent.close()
 
 
 def _new_state(directory: _Directory, status: str) -> dict[str, Any]:
@@ -482,39 +497,46 @@ def _remove_prelaunch(
 
 def _rollback_prelaunch(
     directory: _Directory,
+    parent: _Directory,
     generation: str | None,
     operation_id: str | None,
     *,
     allow_uninitialized: bool = False,
 ) -> None:
-    parent = _Directory(directory.path.parent)
-    try:
-        with parent.lock(_initialization_lock_name(directory.path), blocking=True):
-            _remove_prelaunch(
-                directory,
-                parent,
-                generation,
-                operation_id,
-                allow_uninitialized=allow_uninitialized,
-            )
-    finally:
-        parent.close()
+    with parent.lock(_initialization_lock_name(directory.path), blocking=True):
+        _remove_prelaunch(
+            directory,
+            parent,
+            generation,
+            operation_id,
+            allow_uninitialized=allow_uninitialized,
+        )
 
 
 class Transaction:
     """Synchronous ownership retained by the actual worker, not its awaiting asyncio caller."""
 
     def __init__(
-        self, directory: _Directory, generation: str, operation_id: str, *, created: bool
+        self,
+        directory: _Directory,
+        parent: _Directory,
+        grandparent: _Directory,
+        generation: str,
+        operation_id: str,
+        *,
+        created: bool,
     ) -> None:
         self.generation = generation
         self._directory = directory
+        self._parent = parent
+        self._grandparent = grandparent
         self._operation_id = operation_id
         self._created = created
         self._owner = _execution()
         self._active = True
         self._rolled_back = False
         self._startup_guarded = False
+        self._startup_finalization: AbstractContextManager[None] | None = None
 
     def _check_owner(self) -> None:
         if not self._active or self._owner != _execution():
@@ -575,7 +597,7 @@ class Transaction:
             raise _error(
                 "session_busy", self._directory.path, "rollback", "reservation was not created here"
             )
-        _rollback_prelaunch(self._directory, self.generation, self._operation_id)
+        _rollback_prelaunch(self._directory, self._parent, self.generation, self._operation_id)
         self._rolled_back = True
         self._active = False
 
@@ -647,7 +669,18 @@ class Transaction:
                 return
             if operation["pending_request"] is None and not operation["uncertain"]:
                 state["operation"] = None
-                self._directory.write_json(_JOURNAL, state)
+                try:
+                    self._directory.write_json(_JOURNAL, state)
+                except BaseException as exc:
+                    # Publication may have succeeded before its durability check failed.
+                    # Preserve this still-leased owner for startup failure diagnostics.
+                    state["operation"] = operation
+                    operation["uncertain"] = True
+                    try:
+                        self._directory.write_json(_JOURNAL, state)
+                    except (RuntimeError, OSError) as restore_error:
+                        exc.add_note(f"Could not preserve finalization fence: {restore_error}")
+                    raise
 
 
 @contextmanager
@@ -668,7 +701,11 @@ def transaction(
             return
 
     operation_id = uuid.uuid4().hex
-    with _leased_directory(path, create=create, lock=_OPERATION_LOCK) as owned:
+    with _leased_directory(path, create=create, lock=_OPERATION_LOCK) as (
+        grandparent,
+        parent,
+        owned,
+    ):
         generation = None
         try:
             with owned.lock(_STATE_LOCK, blocking=True):
@@ -704,12 +741,16 @@ def transaction(
                     "uncertain": False,
                 }
                 owned.write_json(_JOURNAL, state)
-                current = Transaction(owned, state["generation"], operation_id, created=create)
+                current = Transaction(
+                    owned, parent, grandparent, state["generation"], operation_id, created=create
+                )
             token = _CURRENT.set((*_CURRENT.get(), current))
         except BaseException as exc:
             if create:
                 try:
-                    _rollback_prelaunch(owned, generation, operation_id, allow_uninitialized=True)
+                    _rollback_prelaunch(
+                        owned, parent, generation, operation_id, allow_uninitialized=True
+                    )
                 except (RuntimeError, OSError) as cleanup_error:
                     exc.add_note(f"Prelaunch rollback failed for {path}: {cleanup_error}")
             raise
@@ -725,7 +766,8 @@ def transaction(
                     pass
                 raise
             else:
-                current._finish()
+                with current._startup_finalization or nullcontext():
+                    current._finish()
         finally:
             current._active = False
             _CURRENT.reset(token)
@@ -766,7 +808,7 @@ class Recovery:
 def recovery(directory: Path) -> Iterator[Recovery]:
     """Fence immediately without the operation lock; failure deliberately leaves stopping."""
     path = Path(os.path.abspath(directory))
-    with _leased_directory(path, create=False, lock=_STOP_LOCK) as owned:
+    with _leased_directory(path, create=False, lock=_STOP_LOCK) as (_, _, owned):
         with owned.lock(_STATE_LOCK, blocking=True):
             try:
                 state = _read_state(owned)
@@ -808,7 +850,7 @@ def archive_session(directory: Path, destination: Path) -> bool:
     """Move a caller-verified dead session only when no operation or recovery owns it."""
     path = Path(os.path.abspath(directory))
     try:
-        with _leased_directory(path, create=False, lock=_OPERATION_LOCK) as owned:
+        with _leased_directory(path, create=False, lock=_OPERATION_LOCK) as (_, _, owned):
             with owned.lock(_STOP_LOCK), owned.lock(_STATE_LOCK, blocking=True):
                 owned.check()
                 os.rename(path, destination)

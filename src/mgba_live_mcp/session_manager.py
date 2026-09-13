@@ -13,7 +13,8 @@ import subprocess
 import tempfile
 import time
 import uuid
-from contextlib import AbstractContextManager
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -247,53 +248,139 @@ class SessionManager:
             return text
         return text[-max_chars:]
 
-    def set_active_session(self, session_id: str) -> None:
-        self.session_dir(session_id)
-        session_transactions.atomic_write_text(
-            self._managed_path(self.active_session_file), session_id
-        )
-
-    def get_active_session_id(self) -> str | None:
-        path = self._managed_path(self.active_session_file)
+    @staticmethod
+    def _read_active_marker(directory: session_transactions._Directory) -> str | None:
+        directory.check()
         try:
-            fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+            fd = os.open(
+                "active_session",
+                os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=directory.fd,
+            )
         except FileNotFoundError:
             return None
-        with os.fdopen(fd) as stream:
+        with os.fdopen(fd, encoding="utf-8", newline="") as stream:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise DomainError(
+                    "io_error",
+                    "Active session marker is not a regular file.",
+                    phase="active_marker",
+                )
             value = stream.read()
-        return self.validate_session_id(value)
+        directory.check()
+        return value
+
+    @staticmethod
+    def _write_active_marker(
+        directory: session_transactions._Directory, session_id: str | None
+    ) -> None:
+        if session_id is not None:
+            directory.write_text("active_session", session_id)
+        else:
+            directory.check()
+            try:
+                os.unlink("active_session", dir_fd=directory.fd)
+            except FileNotFoundError:
+                return
+            os.fsync(directory.fd)
+            directory.check()
+
+    @contextmanager
+    def _active_marker(
+        self,
+        *,
+        startup: bool = False,
+        directory: session_transactions._Directory | None = None,
+    ) -> Iterator[session_transactions._Directory]:
+        close_directory = directory is None
+        if directory is None:
+            directory = session_transactions._Directory(self._managed_path(self.runtime_root))
+        try:
+            with directory.lock(".active_session.lock", blocking=True):
+                previous = self._read_active_marker(directory)
+                try:
+                    yield directory
+                except BaseException as exc:
+                    restoration: dict[str, Any] = {"previous_session": previous}
+                    try:
+                        self._write_active_marker(directory, previous)
+                        restoration["confirmed"] = True
+                    except (OSError, DomainError) as restore_error:
+                        restoration.update(confirmed=False, error=str(restore_error))
+                    if not isinstance(exc, Exception):
+                        exc.add_note(f"Active marker restoration: {restoration}")
+                        raise
+                    failure = (
+                        exc
+                        if isinstance(exc, DomainError)
+                        else DomainError(
+                            "startup_failed" if startup else "io_error",
+                            str(exc),
+                            phase="activation",
+                            execution_outcome="unknown",
+                        )
+                    )
+                    failure.context["active_marker_restore"] = restoration
+                    try:
+                        failure.context["active_session"] = self._read_active_marker(directory)
+                    except (OSError, DomainError, ValueError) as observation:
+                        failure.context["active_session_error"] = str(observation)
+                    if failure is exc:
+                        raise
+                    raise failure from exc
+        finally:
+            if close_directory:
+                directory.close()
+
+    def set_active_session(self, session_id: str) -> None:
+        self.session_dir(session_id)
+        with self._active_marker() as directory:
+            self._write_active_marker(directory, session_id)
+
+    def get_active_session_id(self) -> str | None:
+        try:
+            directory = session_transactions._Directory(self._managed_path(self.runtime_root))
+        except FileNotFoundError:
+            return None
+        try:
+            value = self._read_active_marker(directory)
+        finally:
+            directory.close()
+        return self.validate_session_id(value) if value is not None else None
 
     def _refresh_active_session(self) -> None:
-        active = self.get_active_session_id()
-        if active:
-            active_path = self.session_file(active)
-            if active_path.exists():
+        if not self._managed_path(self.runtime_root).exists():
+            return
+        with self._active_marker() as directory:
+            active = self._read_active_marker(directory)
+            if active:
+                active_path = self.session_file(active)
+                if active_path.exists():
+                    try:
+                        active_session = self.load_session(active)
+                        active_state = (
+                            self._process_state(active_session)
+                            if active_session.get("startup", {}).get("state") != "failed"
+                            else "dead"
+                        )
+                    except Exception:
+                        active_state = None
+                    if active_state is not None and active_state != "dead":
+                        return
+
+            for candidate in self.iter_sessions():
                 try:
-                    active_session = self.load_session(active)
-                    active_state = (
-                        self._process_state(active_session)
-                        if active_session.get("startup", {}).get("state") != "failed"
-                        else "dead"
+                    eligible = (
+                        candidate.get("ready") is not False
+                        and candidate.get("startup", {}).get("state") not in {"starting", "failed"}
+                        and self._process_state(candidate) != "dead"
                     )
                 except Exception:
-                    active_state = None
-                if active_state is not None and active_state != "dead":
+                    continue
+                if eligible:
+                    self._write_active_marker(directory, candidate["id"])
                     return
-
-        for candidate in self.iter_sessions():
-            try:
-                if (
-                    candidate.get("ready") is not False
-                    and candidate.get("startup", {}).get("state") not in {"starting", "failed"}
-                    and self._process_state(candidate) != "dead"
-                ):
-                    self.set_active_session(candidate["id"])
-                    return
-            except Exception:
-                continue
-
-        if self.active_session_file.exists():
-            self.active_session_file.unlink()
+            self._write_active_marker(directory, None)
 
     def prune_dead_sessions(self) -> list[str]:
         removed: list[str] = []
@@ -747,7 +834,9 @@ class SessionManager:
         )
         resolved_session_id = session_id if session_id is not None else self._new_session_id()
         self.ensure_runtime_dirs()
+        # Release the status-reader gate only after transaction finalization and diagnostics.
         with (
+            ExitStack() as child_cleanup,
             error_context("startup", session_id=resolved_session_id),
             self.transaction(resolved_session_id, create=True, composite=True) as operation,
         ):
@@ -828,6 +917,7 @@ class SessionManager:
                     process_control.retain_child(proc, session["process_identity"])
                     operation.write_metadata(session)
                     release_reaper = process_control.watch_child(proc)
+                    child_cleanup.callback(release_reaper.set)
                     registered = True
                 phase = "readiness"
                 self.handle_response(
@@ -843,9 +933,14 @@ class SessionManager:
                     session["ready"] = True
                     session["startup"] = {"state": "ready"}
                     operation.write_metadata(session)
-                    if options["_activate"]:
-                        phase = "activation"
-                        self.set_active_session(resolved_session_id)
+                if options["_activate"]:
+                    operation._startup_finalization = self._activate_startup(
+                        operation,
+                        resolved_session_id,
+                        lambda exc: self._postspawn_failure(
+                            exc, operation, session, proc, "activation", registered
+                        ),
+                    )
             except BaseException as exc:
                 if proc is None:
                     failure = self._prelaunch_failure(exc, operation, resolved_session_id, phase)
@@ -858,9 +953,7 @@ class SessionManager:
                 exc.add_note(str(failure))
                 raise
             finally:
-                if release_reaper is not None:
-                    release_reaper.set()
-                elif proc is not None:
+                if release_reaper is None and proc is not None:
                     process_control.forget_child(proc)
             return {
                 "status": "started",
@@ -869,6 +962,28 @@ class SessionManager:
                 "fps_target": options["fps_target"],
                 "session_dir": str(sdir),
             }
+
+    @contextmanager
+    def _activate_startup(
+        self,
+        operation: session_transactions.Transaction,
+        session_id: str,
+        on_failure: Callable[[BaseException], DomainError],
+    ) -> Iterator[None]:
+        try:
+            # Lock order is singleton marker first, then the short session state guard.
+            with self._active_marker(startup=True, directory=operation._grandparent) as directory:
+                with operation.startup_guard():
+                    self._write_active_marker(directory, session_id)
+                yield
+        except BaseException as exc:
+            failure = on_failure(exc)
+            if isinstance(exc, Exception):
+                if failure is exc:
+                    raise
+                raise failure from exc
+            exc.add_note(str(failure))
+            raise
 
     @staticmethod
     def _prelaunch_failure(
@@ -1018,6 +1133,8 @@ class SessionManager:
     ) -> dict[str, Any] | list[dict[str, Any]]:
         if session is not None:
             self.session_dir(session)
+            if not all:
+                self.load_session(session)
         elif not all:
             self.require_session(None)
         self.prune_dead_sessions()
@@ -1555,37 +1672,15 @@ class SessionManager:
                         view = self.get_view(session=session, timeout=timeout)
                     except Exception as exc:
                         raise self._composite_error(exc, "snapshot_failed", session) from exc
-                with operation.startup_guard():
-                    self.set_active_session(session)
-            except BaseException as exc:
-                failure = (
-                    exc
-                    if isinstance(exc, DomainError)
-                    else DomainError(
-                        "startup_failed",
-                        f"Session '{session}' post-start operation failed: {exc} "
-                        "Inspect status before retrying.",
-                        phase="post_start",
-                        execution_outcome="partial",
-                    )
+                operation._startup_finalization = self._activate_startup(
+                    operation,
+                    session,
+                    lambda exc: self._post_start_failure(
+                        exc, operation, session, started.get("pid")
+                    ),
                 )
-                failure.context.update(session_id=session, pid=started.get("pid"))
-                if failure.execution_outcome == "not_started":
-                    failure.execution_outcome = "partial"
-                try:
-                    target = self.load_session(session)
-                    failure.context.update(
-                        process_state=self._process_state(target),
-                        session_dir=target["session_dir"],
-                        stdout_log=target["stdout_log"],
-                        stderr_log=target["stderr_log"],
-                    )
-                    target.setdefault("startup", {}).update(
-                        state="failed", post_start_error=error_payload(failure)["error"]
-                    )
-                    operation.write_metadata(target)
-                except (OSError, DomainError, KeyError) as publication:
-                    failure.context["metadata_error"] = str(publication)
+            except BaseException as exc:
+                failure = self._post_start_failure(exc, operation, session, started.get("pid"))
                 if isinstance(exc, Exception):
                     raise failure from exc
                 exc.add_note(str(failure))
@@ -1599,3 +1694,40 @@ class SessionManager:
                 payload["screenshot"] = {"frame": view.get("frame")}
                 payload["png_base64"] = view.get("png_base64")
             return payload
+
+    def _post_start_failure(
+        self,
+        exc: BaseException,
+        operation: session_transactions.Transaction,
+        session: str,
+        pid: int | None,
+    ) -> DomainError:
+        failure = (
+            exc
+            if isinstance(exc, DomainError)
+            else DomainError(
+                "startup_failed",
+                f"Session '{session}' post-start operation failed: {exc} "
+                "Inspect status before retrying.",
+                phase="post_start",
+                execution_outcome="partial",
+            )
+        )
+        failure.context.update(session_id=session, pid=pid)
+        if failure.execution_outcome == "not_started":
+            failure.execution_outcome = "partial"
+        try:
+            target = self.load_session(session)
+            failure.context.update(
+                process_state=self._process_state(target),
+                session_dir=target["session_dir"],
+                stdout_log=target["stdout_log"],
+                stderr_log=target["stderr_log"],
+            )
+            target.setdefault("startup", {}).update(
+                state="failed", post_start_error=error_payload(failure)["error"]
+            )
+            operation.write_metadata(target)
+        except (OSError, DomainError, KeyError) as publication:
+            failure.context["metadata_error"] = str(publication)
+        return failure

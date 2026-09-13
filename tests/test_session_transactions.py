@@ -12,6 +12,7 @@ from contextvars import copy_context
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 import pytest
@@ -579,7 +580,7 @@ def test_failed_reservation_lease_acquisition_removes_only_its_directory(
     original_open = os.open
 
     def fail_open(path: Any, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
-        target = directory if failure_stage == "open_directory" else ".operation.lock"
+        target = directory.name if failure_stage == "open_directory" else ".operation.lock"
         if path == target:
             raise failure
         return original_open(path, flags, mode, dir_fd=dir_fd)
@@ -931,3 +932,108 @@ def test_rollback_removes_children_through_its_fd_not_a_replacement_path(tmp_pat
     assert (directory / "screenshots" / "winner.png").read_bytes() == b"keep"
     assert json.loads((directory / "session.json").read_text()) == {"owner": "winner"}
     assert _attempt(directory) == "entered"
+
+
+def test_parent_namespace_replacement_cannot_redirect_child_acquisition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = tmp_path / "sessions"
+    parent.mkdir()
+    directory = parent / "session"
+    directory.mkdir()
+    retired = tmp_path / "retired-sessions"
+    outside = tmp_path / "outside"
+    (outside / "session").mkdir(parents=True)
+    sentinel = outside / "session" / "keep"
+    sentinel.write_bytes(b"outside owner")
+    acquired, resume = Event(), Event()
+    original_lock = session_transactions._Directory.lock
+
+    @contextmanager
+    def pause_after_parent_lock(owned: Any, name: str, **kwargs: Any) -> Iterator[None]:
+        with original_lock(owned, name, **kwargs):
+            if owned.path == parent:
+                acquired.set()
+                assert resume.wait(5), "Parent replacement was not released"
+            yield
+
+    def acquire() -> str:
+        try:
+            with transaction(directory):
+                return "entered"
+        except DomainError as exc:
+            return exc.code
+
+    monkeypatch.setattr(session_transactions._Directory, "lock", pause_after_parent_lock)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        worker = executor.submit(acquire)
+        try:
+            assert acquired.wait(5), "The original parent lock was not acquired"
+            parent.rename(retired)
+            parent.symlink_to(outside, target_is_directory=True)
+        finally:
+            resume.set()
+        outcome = worker.result(timeout=5)
+
+    touched = sorted(
+        str(path.relative_to(outside)) for path in outside.rglob("*") if path.is_file()
+    )
+    assert touched == ["session/keep"]
+    assert sentinel.read_bytes() == b"outside owner"
+    assert outcome == "session_generation_changed"
+
+
+def test_parent_namespace_replacement_cannot_redirect_rollback_lock(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    parent = runtime / "sessions"
+    parent.mkdir(parents=True)
+    directory = parent / "session"
+    retired = tmp_path / "retired-runtime"
+    outside = tmp_path / "outside"
+    (outside / "sessions" / "session").mkdir(parents=True)
+    sentinel = outside / "sessions" / "session" / "keep"
+    sentinel.write_bytes(b"outside owner")
+    reserved, resume = Event(), Event()
+
+    def reserve_and_rollback() -> str:
+        try:
+            with transaction(directory, create=True) as owner:
+                reserved.set()
+                assert resume.wait(5), "Parent replacement was not released"
+                owner.rollback()
+                return "removed"
+        except DomainError as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        worker = executor.submit(reserve_and_rollback)
+        try:
+            assert reserved.wait(5), "The original reservation was not acquired"
+            runtime.rename(retired)
+            runtime.symlink_to(outside, target_is_directory=True)
+        finally:
+            resume.set()
+        outcome = worker.result(timeout=5)
+
+    touched = sorted(
+        str(path.relative_to(outside)) for path in outside.rglob("*") if path.is_file()
+    )
+    assert touched == ["sessions/session/keep"]
+    assert sentinel.read_bytes() == b"outside owner"
+    assert (retired / "sessions" / "session" / "transaction.json").is_file()
+    assert outcome == "session_generation_changed"
+
+
+def test_initialization_lock_refusal_preserves_the_requested_session_id(tmp_path: Path) -> None:
+    directory = tmp_path / " session \n\t"
+    directory.mkdir()
+    parent = session_transactions._Directory(tmp_path)
+    try:
+        with parent.lock(session_transactions._initialization_lock_name(directory)):
+            with pytest.raises(DomainError) as refused:
+                with transaction(directory):
+                    pytest.fail("another initialization owner must prevent admission")
+    finally:
+        parent.close()
+    assert refused.value.code == "session_busy"
+    assert refused.value.context["session_id"] == directory.name

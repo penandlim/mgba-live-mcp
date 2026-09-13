@@ -27,13 +27,13 @@
   only confirmed death or a mismatched birth aborts before the command deadline.
 - Refuse known-dead or replaced processes before command publication, leaving
   no pending request that would require unnecessary recovery.
-
-## 0.5.0
-
 - Make default `make test` and `make check` offline unit checks; retain
   explicit checksum-verified ROM provisioning for native validation.
 - Remove redundant ROM cache/provisioning from the default CI job and document
   the separation between offline checks and the optional native smoke.
+
+## 0.5.0
+
 
 - Remove top-level JSON Schema combinators from MCP tool input schemas so
   strict function-calling clients can load the tool list.

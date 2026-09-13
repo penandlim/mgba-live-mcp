@@ -59,7 +59,7 @@ args = ["--from", "git+https://github.com/penandlim/mgba-live-mcp", "mgba-live-m
 1. Install dependencies for this repo:
 
 ```bash
-uv sync
+uv sync --group dev
 ```
 
 2. With dependencies already installed, default checks are offline with

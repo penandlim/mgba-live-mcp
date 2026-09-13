@@ -27,6 +27,10 @@
   only confirmed death or a mismatched birth aborts before the command deadline.
 - Refuse known-dead or replaced processes before command publication, leaving
   no pending request that would require unnecessary recovery.
+- Make default `make test` and `make check` offline unit checks; retain
+  explicit checksum-verified ROM provisioning for native validation.
+- Remove redundant ROM cache/provisioning from the default CI job and document
+  the separation between offline checks and the optional native smoke.
 
 ## 0.5.0
 

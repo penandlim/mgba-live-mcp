@@ -59,13 +59,25 @@ args = ["--from", "git+https://github.com/penandlim/mgba-live-mcp", "mgba-live-m
 1. Install dependencies for this repo:
 
 ```bash
-uv sync
+uv sync --group dev
 ```
 
-2. Provision the checksum-verified open-source test ROM used by emulator-backed tests:
+2. With dependencies already installed, default checks are offline with
+   respect to ROM downloads and mGBA; dependency installation itself may use
+   the network:
+
+```bash
+make test
+make check
+```
+
+For the optional native emulator smoke, provision the checksum-verified
+open-source test ROM explicitly. The native smoke workflow/target is tracked
+separately in issue #59 and is not provided by this offline-check change:
 
 ```bash
 make test-rom
+make verify-test-rom
 ```
 
 3. Run the MCP server:

@@ -34,7 +34,6 @@
 
 ## 0.5.0
 
-
 - Remove top-level JSON Schema combinators from MCP tool input schemas so
   strict function-calling clients can load the tool list.
 - Preserve runtime validation for conditional arguments, including

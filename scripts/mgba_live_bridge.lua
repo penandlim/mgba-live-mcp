@@ -101,7 +101,7 @@ local function json_encode(value)
 end
 
 local function write_text(path, text)
-  -- The bridge is the sole writer in its owned session directory.
+  -- The bridge is the sole writer of its heartbeat and response files.
   local temporary = path .. ".tmp"
   local f, err = io.open(temporary, "w")
   if not f then

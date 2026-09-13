@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 from mgba_live_mcp import process_control as pc
+from mgba_live_mcp.errors import DomainError
 from mgba_live_mcp.session_manager import SessionManager
 
 _PID = 424242
@@ -722,11 +723,10 @@ def test_startup_status_does_not_consume_failed_process_exit_code(tmp_path: Path
                 assert time.monotonic() < deadline, "Startup process did not exit"
                 time.sleep(0.01)
             assert manager.prune_dead_sessions() == []
-            status = manager.status(session="failed-start")
-            assert isinstance(status, dict)
-            assert status["alive"] is True
+            manager.status(session="failed-start")
         finally:
             exit_file.touch()
             inspect_finished.set()
-        with pytest.raises(RuntimeError, match="exited early with exit code 7"):
+        with pytest.raises(DomainError) as failure:
             started.result(timeout=5)
+        assert failure.value.context["exit_code"] == 7

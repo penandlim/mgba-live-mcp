@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,8 @@ import pytest
 
 from mgba_live_mcp.live_controller import LiveControllerClient
 from mgba_live_mcp.session_manager import SessionManager
+
+ROM = Path(__file__).parent / "fixtures" / "synthetic.gb"
 
 
 class _StartManager(SessionManager):
@@ -51,7 +54,13 @@ async def test_startup_composite_owns_reserved_session_after_start_returns(
     contender = LiveControllerClient(manager=_StartManager(tmp_path))
     operation = client.start_with_lua_and_view if with_view else client.start_with_lua
     first = asyncio.create_task(
-        operation(rom="/tmp/game.gba", code="return 1", timeout=7, session_id="session-1")
+        operation(
+            rom=str(ROM),
+            mgba_path=sys.executable,
+            code="return 1",
+            timeout=7,
+            session_id="session-1",
+        )
     )
     try:
         assert await asyncio.to_thread(manager.started.wait, 2)
@@ -85,6 +94,8 @@ async def test_startup_composite_preserves_falsy_lua_results(
     manager.release_start.set()
     client = LiveControllerClient(manager=manager)
     operation = client.start_with_lua_and_view if with_view else client.start_with_lua
-    result = await operation(rom="/tmp/game.gba", code="return nil", session_id="falsy")
+    result = await operation(
+        rom=str(ROM), mgba_path=sys.executable, code="return nil", session_id="falsy"
+    )
     assert result["lua"] == value
     assert type(result["lua"]) is type(value)

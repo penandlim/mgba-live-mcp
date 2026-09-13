@@ -8,17 +8,19 @@ import math
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import time
 import uuid
-from contextlib import AbstractContextManager
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from . import process_control, session_transactions
-from .errors import CommandTimeout, DomainError, error_context
+from .errors import CommandTimeout, DomainError, error_context, error_payload
 
 MODULE_PATH = Path(__file__).resolve()
 PACKAGE_DIR = MODULE_PATH.parent
@@ -106,6 +108,8 @@ class SessionManager:
     def transaction(
         self, session: str, *, create: bool = False, composite: bool = False
     ) -> AbstractContextManager[session_transactions.Transaction]:
+        if not create and self.session_file(session).exists():
+            self.load_session(session)
         return session_transactions.transaction(
             self.session_dir(session), create=create, composite=composite
         )
@@ -117,47 +121,123 @@ class SessionManager:
             reap=session.get("ready") is True,
         )
 
+    @staticmethod
+    def validate_session_id(session_id: Any) -> str:
+        if (
+            not isinstance(session_id, str)
+            or not session_id
+            or session_id in {".", ".."}
+            or any(character in session_id for character in ("/", "\\", "\0"))
+            or Path(session_id).is_absolute()
+        ):
+            raise DomainError(
+                "invalid_arguments",
+                "Session IDs must be nonempty single path components, not dot names or paths.",
+                phase="validation",
+                execution_outcome="not_started",
+            )
+        return session_id
+
+    def _managed_path(self, path: Path) -> Path:
+        relative = path.relative_to(self.runtime_root)
+        current = self.runtime_root
+        for component in ("", *relative.parts):
+            current /= component
+            if current.is_symlink():
+                raise DomainError(
+                    "invalid_arguments",
+                    f"Managed session paths cannot be symlinks: {current}",
+                    phase="validation",
+                    execution_outcome="not_started",
+                )
+        return path
+
     def ensure_runtime_dirs(self) -> None:
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        self.archived_sessions_dir.mkdir(parents=True, exist_ok=True)
+        sessions = self._managed_path(self.sessions_dir)
+        archives = self._managed_path(self.archived_sessions_dir)
+        sessions.mkdir(parents=True, exist_ok=True)
+        archives.mkdir(parents=True, exist_ok=True)
 
     def session_dir(self, session_id: str) -> Path:
-        return self.sessions_dir / session_id
+        return self._managed_path(self.sessions_dir / self.validate_session_id(session_id))
+
+    def _session_path(self, session_id: str, name: str) -> Path:
+        return self._managed_path(self.session_dir(session_id) / name)
 
     def session_file(self, session_id: str) -> Path:
-        return self.session_dir(session_id) / "session.json"
+        return self._session_path(session_id, "session.json")
 
     def archive_session_destination(self, session_id: str) -> Path:
+        self.validate_session_id(session_id)
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-        base = self.archived_sessions_dir / f"{session_id}-{stamp}"
-        if not base.exists():
-            return base
-        for idx in range(1, 1000):
-            candidate = self.archived_sessions_dir / f"{session_id}-{stamp}-{idx}"
-            if not candidate.exists():
-                return candidate
-        raise RuntimeError(f"Unable to allocate archive destination for session: {session_id}")
+        # Archive names are internal; do not append a suffix to a maximum-length valid ID.
+        name = f"{session_id[:32]}-{stamp}-{uuid.uuid4().hex}"
+        return self._managed_path(self.archived_sessions_dir / name)
+
+    def _validate_session_metadata(self, data: Any, session_id: str) -> dict[str, Any]:
+        self.validate_session_id(session_id)
+        if not isinstance(data, dict) or data.get("id") != session_id:
+            raise DomainError(
+                "session_state_corrupt",
+                "Stored session ID does not match its managed directory.",
+                phase="admission",
+                execution_outcome="not_started",
+                session_id=session_id,
+            )
+        expected = {
+            "session_dir": self.session_dir(session_id),
+            **{
+                field: self._session_path(session_id, filename)
+                for field, filename in (
+                    ("command_path", "command.lua"),
+                    ("response_path", "response.json"),
+                    ("heartbeat_path", "heartbeat.json"),
+                    ("stdout_log", "stdout.log"),
+                    ("stderr_log", "stderr.log"),
+                )
+            },
+        }
+        for field, path in expected.items():
+            if field in data and (not isinstance(data[field], str) or Path(data[field]) != path):
+                raise DomainError(
+                    "session_state_corrupt",
+                    f"Stored {field} does not name the managed session path.",
+                    phase="admission",
+                    execution_outcome="not_started",
+                    session_id=session_id,
+                )
+        return data
 
     def load_session(self, session_id: str) -> dict[str, Any]:
-        return json.loads(self.session_file(session_id).read_text())
+        self.session_file(session_id)
+        directory = session_transactions._Directory(self.session_dir(session_id))
+        try:
+            data = directory.read_json("session.json")
+            directory.check()
+        finally:
+            directory.close()
+        return self._validate_session_metadata(data, session_id)
 
     def write_session(self, data: dict[str, Any]) -> None:
-        session_transactions.atomic_write_json(self.session_file(data["id"]), data)
+        session_id = self.validate_session_id(data.get("id"))
+        self._validate_session_metadata(data, session_id)
+        session_transactions.atomic_write_json(self.session_file(session_id), data)
 
     def iter_sessions(self) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = []
-        if not self.sessions_dir.exists():
-            return items
-        for candidate in sorted(
-            self.sessions_dir.glob("*/session.json"),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        ):
+        sessions = self._managed_path(self.sessions_dir)
+        if not sessions.exists():
+            return []
+        items: list[tuple[float, dict[str, Any]]] = []
+        for directory in sessions.iterdir():
             try:
-                items.append(json.loads(candidate.read_text()))
-            except Exception:
+                if directory.is_symlink() or not directory.is_dir():
+                    continue
+                session = self.load_session(directory.name)
+                modified = self.session_file(directory.name).stat(follow_symlinks=False).st_mtime
+                items.append((modified, session))
+            except (OSError, ValueError, DomainError):
                 continue
-        return items
+        return [session for _, session in sorted(items, key=lambda item: item[0], reverse=True)]
 
     def read_log_excerpt(self, path: Path, max_chars: int = 4000) -> str:
         try:
@@ -168,64 +248,156 @@ class SessionManager:
             return text
         return text[-max_chars:]
 
+    @staticmethod
+    def _read_active_marker(directory: session_transactions._Directory) -> str | None:
+        directory.check()
+        try:
+            fd = os.open(
+                "active_session",
+                os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=directory.fd,
+            )
+        except FileNotFoundError:
+            return None
+        with os.fdopen(fd, encoding="utf-8", newline="") as stream:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise DomainError(
+                    "io_error",
+                    "Active session marker is not a regular file.",
+                    phase="active_marker",
+                )
+            value = stream.read()
+        directory.check()
+        return value
+
+    @staticmethod
+    def _write_active_marker(
+        directory: session_transactions._Directory, session_id: str | None
+    ) -> None:
+        if session_id is not None:
+            directory.write_text("active_session", session_id)
+        else:
+            directory.check()
+            try:
+                os.unlink("active_session", dir_fd=directory.fd)
+            except FileNotFoundError:
+                return
+            os.fsync(directory.fd)
+            directory.check()
+
+    @contextmanager
+    def _active_marker(
+        self,
+        *,
+        startup: bool = False,
+        directory: session_transactions._Directory | None = None,
+    ) -> Iterator[session_transactions._Directory]:
+        close_directory = directory is None
+        if directory is None:
+            directory = session_transactions._Directory(self._managed_path(self.runtime_root))
+        try:
+            with directory.lock(".active_session.lock", blocking=True):
+                previous = self._read_active_marker(directory)
+                try:
+                    yield directory
+                except BaseException as exc:
+                    restoration: dict[str, Any] = {"previous_session": previous}
+                    try:
+                        self._write_active_marker(directory, previous)
+                        restoration["confirmed"] = True
+                    except (OSError, DomainError) as restore_error:
+                        restoration.update(confirmed=False, error=str(restore_error))
+                    if not isinstance(exc, Exception):
+                        exc.add_note(f"Active marker restoration: {restoration}")
+                        raise
+                    failure = (
+                        exc
+                        if isinstance(exc, DomainError)
+                        else DomainError(
+                            "startup_failed" if startup else "io_error",
+                            str(exc),
+                            phase="activation",
+                            execution_outcome="unknown",
+                        )
+                    )
+                    failure.context["active_marker_restore"] = restoration
+                    try:
+                        failure.context["active_session"] = self._read_active_marker(directory)
+                    except (OSError, DomainError, ValueError) as observation:
+                        failure.context["active_session_error"] = str(observation)
+                    if failure is exc:
+                        raise
+                    raise failure from exc
+        finally:
+            if close_directory:
+                directory.close()
+
     def set_active_session(self, session_id: str) -> None:
-        self.active_session_file.write_text(session_id)
+        self.session_dir(session_id)
+        with self._active_marker() as directory:
+            self._write_active_marker(directory, session_id)
 
     def get_active_session_id(self) -> str | None:
-        if not self.active_session_file.exists():
+        try:
+            directory = session_transactions._Directory(self._managed_path(self.runtime_root))
+        except FileNotFoundError:
             return None
-        value = self.active_session_file.read_text().strip()
-        return value or None
+        try:
+            value = self._read_active_marker(directory)
+        finally:
+            directory.close()
+        return self.validate_session_id(value) if value is not None else None
 
     def _refresh_active_session(self) -> None:
-        active = self.get_active_session_id()
-        if active:
-            active_path = self.session_file(active)
-            if active_path.exists():
+        if not self._managed_path(self.runtime_root).exists():
+            return
+        with self._active_marker() as directory:
+            active = self._read_active_marker(directory)
+            if active:
+                active_path = self.session_file(active)
+                if active_path.exists():
+                    try:
+                        active_session = self.load_session(active)
+                        active_state = (
+                            self._process_state(active_session)
+                            if active_session.get("startup", {}).get("state") != "failed"
+                            else "dead"
+                        )
+                    except Exception:
+                        active_state = None
+                    if active_state is not None and active_state != "dead":
+                        return
+
+            for candidate in self.iter_sessions():
                 try:
-                    active_session = json.loads(active_path.read_text())
-                    active_state = self._process_state(active_session)
+                    eligible = (
+                        candidate.get("ready") is not False
+                        and candidate.get("startup", {}).get("state") not in {"starting", "failed"}
+                        and self._process_state(candidate) != "dead"
+                    )
                 except Exception:
-                    active_state = None
-                if active_state is not None and active_state != "dead":
+                    continue
+                if eligible:
+                    self._write_active_marker(directory, candidate["id"])
                     return
-
-        for candidate in self.iter_sessions():
-            try:
-                if self._process_state(candidate) != "dead":
-                    self.set_active_session(candidate["id"])
-                    return
-            except Exception:
-                continue
-
-        if self.active_session_file.exists():
-            self.active_session_file.unlink()
+            self._write_active_marker(directory, None)
 
     def prune_dead_sessions(self) -> list[str]:
         removed: list[str] = []
-        if not self.sessions_dir.exists():
-            self._refresh_active_session()
-            return removed
-
-        self.archived_sessions_dir.mkdir(parents=True, exist_ok=True)
-        for candidate in self.sessions_dir.glob("*/session.json"):
-            try:
-                session = json.loads(candidate.read_text())
-                state = self._process_state(session)
-            except Exception:
+        for session in self.iter_sessions():
+            if self._process_state(session) != "dead":
                 continue
-
-            if state != "dead":
+            session_id = session["id"]
+            directory = self.session_dir(session_id)
+            if session.get("startup", {}).get("state") == "failed":
                 continue
-
-            session_id = str(session.get("id") or candidate.parent.name)
             try:
+                self._managed_path(self.archived_sessions_dir).mkdir(parents=True, exist_ok=True)
                 archived = self.archive_session_destination(session_id)
-                if session_transactions.archive_session(candidate.parent, archived):
+                if session_transactions.archive_session(directory, archived):
                     removed.append(session_id)
             except OSError:
                 continue
-
         self._refresh_active_session()
         return removed
 
@@ -244,8 +416,7 @@ class SessionManager:
     def require_session(
         self, session_id: str | None, *, require_alive: bool = True
     ) -> dict[str, Any]:
-        self.ensure_runtime_dirs()
-        if not session_id:
+        if session_id is None:
             raise DomainError(
                 "session_required",
                 "session is required.",
@@ -264,7 +435,7 @@ class SessionManager:
             )
 
         try:
-            session = json.loads(path.read_text())
+            session = self.load_session(session_id)
         except (OSError, ValueError) as exc:
             raise DomainError(
                 "session_state_corrupt",
@@ -293,7 +464,8 @@ class SessionManager:
         session: str | None = None,
         pid: int | None = None,
     ) -> dict[str, Any]:
-        self.ensure_runtime_dirs()
+        if session is not None:
+            self.session_dir(session)
         if pid is not None:
             for candidate in self.iter_sessions():
                 if int(candidate["pid"]) == pid:
@@ -316,11 +488,26 @@ class SessionManager:
             )
         return self.require_session(session, require_alive=True)
 
-    def write_command(self, command_path: Path, command: dict[str, Any]) -> None:
-        tmp_path = command_path.with_suffix(".tmp")
+    def write_command(
+        self,
+        command_path: Path,
+        command: dict[str, Any],
+        *,
+        _directory: session_transactions._Directory | None = None,
+    ) -> None:
+        expected = self._session_path(command_path.parent.name, "command.lua")
+        if command_path != expected:
+            raise DomainError(
+                "invalid_arguments",
+                "Bridge commands must use their managed session path.",
+                phase="validation",
+                execution_outcome="not_started",
+            )
         lua_doc = "return " + to_lua_value(command) + "\n"
-        tmp_path.write_text(lua_doc)
-        tmp_path.replace(command_path)
+        if _directory is None:
+            session_transactions.atomic_write_text(command_path, lua_doc)
+        else:
+            _directory.write_text(command_path.name, lua_doc)
 
     def send_command(
         self,
@@ -333,6 +520,7 @@ class SessionManager:
     ) -> dict[str, Any]:
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be a finite positive number")
+        self._validate_session_metadata(session, self.validate_session_id(session.get("id")))
         command_path = Path(session["command_path"])
         response_path = Path(session["response_path"])
         request_id = uuid.uuid4().hex
@@ -371,8 +559,11 @@ class SessionManager:
                         session_id=session.get("id"),
                         request_id=request_id,
                     )
-                response_path.unlink(missing_ok=True)
-                self.write_command(command_path, command)
+                try:
+                    os.unlink(response_path.name, dir_fd=operation._directory.fd)
+                except FileNotFoundError:
+                    pass
+                self.write_command(command_path, command, _directory=operation._directory)
 
             operation.publish(request_id, publish)
             deadline = time.monotonic() + timeout
@@ -425,40 +616,160 @@ class SessionManager:
             )
         return response.get("data")
 
+    @staticmethod
+    def _local_file(value: Any, label: str) -> Path:
+        if not isinstance(value, (str, os.PathLike)) or not str(value) or "\0" in str(value):
+            raise DomainError(
+                "invalid_arguments",
+                f"{label} must be a nonempty file path.",
+                phase="validation",
+                execution_outcome="not_started",
+            )
+        path = Path(value)
+        try:
+            path = path.resolve()
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise DomainError(
+                        "invalid_arguments",
+                        f"{label} is not a regular file: {path}",
+                        phase="validation",
+                        execution_outcome="not_started",
+                    )
+            finally:
+                os.close(fd)
+        except DomainError:
+            raise
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise DomainError(
+                "resource_not_found" if isinstance(exc, FileNotFoundError) else "io_error",
+                f"Cannot read {label}: {path}: {exc}",
+                phase="validation",
+                execution_outcome="not_started",
+            ) from exc
+        return path
+
     def resolve_startup_scripts(self, script_paths: list[str]) -> list[str]:
-        resolved: list[str] = []
-        for script in script_paths:
-            path = Path(script).resolve()
-            if not path.exists():
+        return [str(self._local_file(script, "startup script")) for script in script_paths]
+
+    def _validate_start_options(self, supplied: dict[str, Any]) -> dict[str, Any]:
+        options: dict[str, Any] = {
+            "savestate": None,
+            "fps_target": None,
+            "fast": False,
+            "mgba_path": None,
+            "session_id": None,
+            "script": None,
+            "log_level": 0,
+            "heartbeat_interval": 30,
+            "ready_timeout": 20.0,
+            "config": None,
+            "_activate": True,
+        }
+        unknown = supplied.keys() - options.keys() - {"rom"}
+        if unknown:
+            raise DomainError(
+                "invalid_arguments",
+                f"Unknown startup options: {', '.join(sorted(unknown))}",
+                phase="validation",
+                execution_outcome="not_started",
+            )
+        options.update(supplied)
+        session_id = options["session_id"]
+        if session_id is not None:
+            self.session_dir(session_id)
+        for name in ("fast", "_activate"):
+            if not isinstance(options[name], bool):
                 raise DomainError(
-                    "resource_not_found",
-                    f"Script not found: {path}",
+                    "invalid_arguments",
+                    f"{name} must be a boolean.",
                     phase="validation",
                     execution_outcome="not_started",
                 )
-            resolved.append(str(path))
-        return resolved
-
-    def prepare_bridge_script(self, session_scripts_dir: Path) -> Path:
-        if not self.bridge_script.exists():
+        if options["fps_target"] is None:
+            options["fps_target"] = 600.0 if options["fast"] else default_fps_target()
+        for name in ("fps_target", "ready_timeout", "heartbeat_interval", "log_level"):
+            value = options[name]
+            integer = name in {"heartbeat_interval", "log_level"}
+            try:
+                finite = math.isfinite(value)
+            except (TypeError, OverflowError):
+                finite = False
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int if integer else (int, float))
+                or not finite
+                or (value < 0 if name == "log_level" else value <= 0)
+            ):
+                raise DomainError(
+                    "invalid_arguments",
+                    f"{name} must be a finite "
+                    f"{'nonnegative' if name == 'log_level' else 'positive'} "
+                    f"{'integer' if integer else 'number'}.",
+                    phase="validation",
+                    execution_outcome="not_started",
+                )
+        for name in ("script", "config"):
+            values = options[name]
+            if values is not None and (
+                not isinstance(values, list)
+                or any(not isinstance(value, str) or not value or "\0" in value for value in values)
+            ):
+                raise DomainError(
+                    "invalid_arguments",
+                    f"{name} must be a list of nonempty strings without NUL bytes.",
+                    phase="validation",
+                    execution_outcome="not_started",
+                )
+            options[name] = (
+                self.resolve_startup_scripts(values or []) if name == "script" else values or []
+            )
+        options["rom"] = str(self._local_file(options.get("rom"), "ROM"))
+        if options["savestate"] is not None:
+            options["savestate"] = str(self._local_file(options["savestate"], "savestate"))
+        self._local_file(self.bridge_script, "bridge script")
+        executable = options["mgba_path"]
+        if executable is None:
+            executable = self.detect_mgba_binary()
+        if not isinstance(executable, str) or not executable or "\0" in executable:
+            raise DomainError(
+                "invalid_arguments",
+                "mgba_path must name an executable.",
+                phase="validation",
+                execution_outcome="not_started",
+            )
+        resolved = shutil.which(executable)
+        if resolved is None or not Path(resolved).is_file():
             raise DomainError(
                 "resource_not_found",
-                f"Bridge script missing: {self.bridge_script}",
-                phase="startup",
+                f"mGBA executable not found or not executable: {executable}",
+                phase="validation",
+                execution_outcome="not_started",
+            )
+        options["mgba_path"] = str(Path(resolved).resolve())
+        return options
+
+    def _validate_lua_source(self, file: str | None, code: str | None) -> str | None:
+        if bool(file) == bool(code):
+            raise DomainError(
+                "invalid_arguments",
+                "Exactly one of file or code is required.",
+                phase="validation",
+                execution_outcome="not_started",
+            )
+        if file:
+            return str(self._local_file(file, "Lua source"))
+        elif not isinstance(code, str):
+            raise DomainError(
+                "invalid_arguments",
+                "Lua code must be a string.",
+                phase="validation",
                 execution_outcome="not_started",
             )
 
-        session_bridge = session_scripts_dir / self.bridge_script.name
-        try:
-            shutil.copy2(self.bridge_script, session_bridge)
-        except OSError as exc:
-            raise DomainError(
-                "io_error",
-                f"Failed to stage bridge script in session dir: {session_bridge}",
-                phase="startup",
-                execution_outcome="not_started",
-            ) from exc
-        return session_bridge
+    def prepare_bridge_script(self, directory: session_transactions._Directory) -> Path:
+        return directory.copy_file(self.bridge_script, self.bridge_script.name)
 
     def build_start_command(
         self,
@@ -503,137 +814,276 @@ class SessionManager:
         heartbeat_interval: int = 30,
         ready_timeout: float = 20.0,
         config: list[str] | None = None,
+        _activate: bool = True,
     ) -> dict[str, Any]:
-        if not math.isfinite(ready_timeout) or ready_timeout <= 0:
-            raise ValueError("ready_timeout must be a finite positive number")
-        rom_path = Path(rom).resolve()
-        if not rom_path.exists():
-            raise DomainError(
-                "resource_not_found",
-                f"ROM not found: {rom_path}",
-                phase="validation",
-                execution_outcome="not_started",
-            )
-        resolved_mgba_path = mgba_path or self.detect_mgba_binary()
-        startup_scripts = self.resolve_startup_scripts(script or [])
+        options = self._validate_start_options(
+            {
+                "rom": rom,
+                "savestate": savestate,
+                "fps_target": fps_target,
+                "fast": fast,
+                "mgba_path": mgba_path,
+                "session_id": session_id,
+                "script": script,
+                "log_level": log_level,
+                "heartbeat_interval": heartbeat_interval,
+                "ready_timeout": ready_timeout,
+                "config": config,
+                "_activate": _activate,
+            }
+        )
+        resolved_session_id = session_id if session_id is not None else self._new_session_id()
         self.ensure_runtime_dirs()
-        self.prune_dead_sessions()
-        resolved_session_id = session_id or self._new_session_id()
         with (
             error_context("startup", session_id=resolved_session_id),
             self.transaction(resolved_session_id, create=True, composite=True) as operation,
         ):
-            sdir = self.session_dir(resolved_session_id)
-            (sdir / "screenshots").mkdir(exist_ok=True)
-            scripts_dir = sdir / "scripts"
-            scripts_dir.mkdir(exist_ok=True)
-            session_bridge_script = self.prepare_bridge_script(scripts_dir)
-            command_path = sdir / "command.lua"
-            response_path = sdir / "response.json"
-            heartbeat_path = sdir / "heartbeat.json"
-            stdout_log = sdir / "stdout.log"
-            stderr_log = sdir / "stderr.log"
-            resolved_fps_target = (
-                fps_target if fps_target is not None else (600.0 if fast else default_fps_target())
-            )
-            command = self.build_start_command(
-                mgba_path=resolved_mgba_path,
-                fps_target=resolved_fps_target,
-                config_overrides=list(config or []),
-                savestate=savestate,
-                startup_scripts=startup_scripts,
-                bridge_script=session_bridge_script,
-                log_level=log_level,
-                rom=rom_path,
-            )
-            env = os.environ.copy()
-            env["MGBA_LIVE_SESSION_DIR"] = str(sdir)
-            env["MGBA_LIVE_COMMAND"] = str(command_path)
-            env["MGBA_LIVE_RESPONSE"] = str(response_path)
-            env["MGBA_LIVE_HEARTBEAT"] = str(heartbeat_path)
-            env["MGBA_LIVE_HEARTBEAT_INTERVAL"] = str(heartbeat_interval)
-            with stdout_log.open("w") as stdout_f, stderr_log.open("w") as stderr_f:
-                proc = subprocess.Popen(
-                    command,
-                    cwd=str(sdir),
-                    env=env,
-                    stdout=stdout_f,
-                    stderr=stderr_f,
-                    start_new_session=True,
-                )
-            session: dict[str, Any] = {
-                "id": resolved_session_id,
-                "generation": operation.generation,
-                "pid": proc.pid,
-                "ready": False,
-                "rom": str(rom_path),
-                "fps_target": resolved_fps_target,
-                "mgba_path": resolved_mgba_path,
-                "startup_scripts": startup_scripts,
-                "created_at": now_utc(),
-                "session_dir": str(sdir),
-                "command_path": str(command_path),
-                "response_path": str(response_path),
-                "heartbeat_path": str(heartbeat_path),
-                "stdout_log": str(stdout_log),
-                "stderr_log": str(stderr_log),
-            }
-            self.write_session(session)
+            proc: subprocess.Popen[Any] | None = None
+            registered = False
+            release_reaper = None
+            phase = "staging"
             try:
-                session["process_identity"] = process_control.capture_identity(proc.pid)
-                self.write_session(session)
+                sdir = self.session_dir(resolved_session_id)
+                session: dict[str, Any] = {
+                    "id": resolved_session_id,
+                    "generation": operation.generation,
+                    "ready": False,
+                    "rom": options["rom"],
+                    "fps_target": options["fps_target"],
+                    "mgba_path": options["mgba_path"],
+                    "startup_scripts": options["script"],
+                    "startup": {"state": "starting"},
+                    "created_at": now_utc(),
+                    "session_dir": str(sdir),
+                    **{
+                        field: str(self._session_path(resolved_session_id, filename))
+                        for field, filename in (
+                            ("command_path", "command.lua"),
+                            ("response_path", "response.json"),
+                            ("heartbeat_path", "heartbeat.json"),
+                            ("stdout_log", "stdout.log"),
+                            ("stderr_log", "stderr.log"),
+                        )
+                    },
+                }
+                directory = operation._directory
+                directory.mkdir("screenshots")
+                with directory.child("scripts", create=True) as scripts_dir:
+                    session_bridge = self.prepare_bridge_script(scripts_dir)
+                    staged_scripts = [
+                        str(scripts_dir.copy_file(Path(source), f"startup-{index}.lua"))
+                        for index, source in enumerate(options["script"])
+                    ]
+                staged_savestate = options["savestate"]
+                if staged_savestate is not None:
+                    staged_savestate = str(
+                        directory.copy_file(Path(staged_savestate), "initial.ss")
+                    )
+                command = self.build_start_command(
+                    mgba_path=options["mgba_path"],
+                    fps_target=options["fps_target"],
+                    config_overrides=options["config"],
+                    savestate=staged_savestate,
+                    startup_scripts=staged_scripts,
+                    bridge_script=session_bridge,
+                    log_level=options["log_level"],
+                    rom=Path(options["rom"]),
+                )
+                env = os.environ.copy()
+                env["MGBA_LIVE_SESSION_DIR"] = str(sdir)
+                env["MGBA_LIVE_COMMAND"] = session["command_path"]
+                env["MGBA_LIVE_RESPONSE"] = session["response_path"]
+                env["MGBA_LIVE_HEARTBEAT"] = session["heartbeat_path"]
+                env["MGBA_LIVE_HEARTBEAT_INTERVAL"] = str(options["heartbeat_interval"])
+                phase = "spawn"
+                # Release the waiter after registration, never after readiness or diagnostics.
+                with (
+                    ExitStack() as child_cleanup,
+                    directory.create_file("stdout.log") as stdout_f,
+                    directory.create_file("stderr.log") as stderr_f,
+                    operation.startup_guard(),
+                ):
+                    proc = subprocess.Popen(
+                        command,
+                        cwd=str(sdir),
+                        env=env,
+                        stdout=stdout_f,
+                        stderr=stderr_f,
+                        start_new_session=True,
+                    )
+                    session["pid"] = proc.pid
+                    phase = "registration"
+                    session["process_identity"] = process_control.capture_identity(proc.pid)
+                    process_control.retain_child(proc, session["process_identity"])
+                    operation.write_metadata(session)
+                    release_reaper = process_control.watch_child(proc)
+                    child_cleanup.callback(release_reaper.set)
+                    registered = True
+                phase = "readiness"
                 self.handle_response(
                     self.send_command(
-                        session, "ping", timeout=ready_timeout, _startup_process=proc
+                        session,
+                        "ping",
+                        timeout=options["ready_timeout"],
+                        _startup_process=proc,
                     ),
                     session_id=resolved_session_id,
                 )
-                operation.check()
-                session["ready"] = True
-                self.write_session(session)
-            except Exception as exc:
-                returncode = proc.poll()
-                details = [
-                    (
-                        f"mGBA process exited early with {format_process_exit(returncode)}."
-                        if returncode is not None
-                        else f"Session '{resolved_session_id}' bridge startup failed: {exc}"
-                    ),
-                    f"Session dir: {sdir}",
-                ]
-                stderr_excerpt = self.read_log_excerpt(stderr_log)
-                stdout_excerpt = self.read_log_excerpt(stdout_log)
-                if stderr_excerpt:
-                    details.append(f"stderr:\n{stderr_excerpt}")
-                elif stdout_excerpt:
-                    details.append(f"stdout:\n{stdout_excerpt}")
+                with operation.startup_guard():
+                    session["ready"] = True
+                    session["startup"] = {"state": "ready"}
+                    operation.write_metadata(session)
+                if options["_activate"]:
+                    operation._startup_finalization = self._activate_startup(
+                        operation,
+                        resolved_session_id,
+                        lambda exc: self._postspawn_failure(
+                            exc, operation, session, proc, "activation", registered
+                        ),
+                    )
+            except BaseException as exc:
+                if proc is None:
+                    failure = self._prelaunch_failure(exc, operation, resolved_session_id, phase)
                 else:
-                    details.append("No stdout/stderr was captured before failure.")
-                if isinstance(exc, DomainError):
-                    exc.message = "\n".join(details)
-                    exc.context.update(session_id=resolved_session_id, pid=proc.pid)
-                    # Launch succeeded even if a readiness/identity check did not run.
-                    if exc.execution_outcome == "not_started":
-                        exc.execution_outcome = "partial"
-                    raise
-                raise DomainError(
-                    "startup_failed",
-                    "\n".join(details),
-                    phase="startup",
-                    session_id=resolved_session_id,
-                    pid=proc.pid,
-                ) from exc
-            self.set_active_session(resolved_session_id)
+                    failure = self._postspawn_failure(
+                        exc, operation, session, proc, phase, registered
+                    )
+                if isinstance(exc, Exception):
+                    raise failure from exc
+                exc.add_note(str(failure))
+                raise
+            finally:
+                if release_reaper is None and proc is not None:
+                    process_control.forget_child(proc)
             return {
                 "status": "started",
                 "session_id": resolved_session_id,
                 "pid": proc.pid,
-                "fps_target": resolved_fps_target,
+                "fps_target": options["fps_target"],
                 "session_dir": str(sdir),
             }
 
+    @contextmanager
+    def _activate_startup(
+        self,
+        operation: session_transactions.Transaction,
+        session_id: str,
+        on_failure: Callable[[BaseException], DomainError],
+    ) -> Iterator[None]:
+        try:
+            # Lock order is singleton marker first, then the short session state guard.
+            with self._active_marker(startup=True, directory=operation._grandparent) as directory:
+                with operation.startup_guard():
+                    self._write_active_marker(directory, session_id)
+                yield
+        except BaseException as exc:
+            failure = on_failure(exc)
+            if isinstance(exc, Exception):
+                if failure is exc:
+                    raise
+                raise failure from exc
+            exc.add_note(str(failure))
+            raise
+
+    @staticmethod
+    def _prelaunch_failure(
+        exc: BaseException,
+        operation: session_transactions.Transaction,
+        session_id: str,
+        phase: str,
+    ) -> DomainError:
+        failure = (
+            exc
+            if isinstance(exc, DomainError)
+            else DomainError(
+                "io_error" if isinstance(exc, OSError) else "startup_failed",
+                str(exc),
+                phase=phase,
+                execution_outcome="not_started",
+            )
+        )
+        failure.execution_outcome = "not_started"
+        failure.context["session_id"] = session_id
+        try:
+            operation.rollback()
+        except BaseException as cleanup:
+            failure.context["rollback_error"] = str(cleanup)
+        return failure
+
+    def _postspawn_failure(
+        self,
+        exc: BaseException,
+        operation: session_transactions.Transaction,
+        session: dict[str, Any],
+        proc: subprocess.Popen[Any],
+        phase: str,
+        registered: bool,
+    ) -> DomainError:
+        returncode = proc.poll()
+        details = [
+            (
+                f"mGBA process exited early with {format_process_exit(returncode)}."
+                if returncode is not None
+                else f"Session '{session['id']}' {phase} failed: {exc}"
+            ),
+            f"Session dir: {session['session_dir']}",
+        ]
+        for name in ("stderr_log", "stdout_log"):
+            try:
+                excerpt = self.read_log_excerpt(self._managed_path(Path(session[name])))
+                if excerpt:
+                    details.append(f"{name}:\n{excerpt}")
+                    break
+            except (OSError, DomainError):
+                continue
+        failure = (
+            exc
+            if isinstance(exc, DomainError)
+            else DomainError("startup_failed", str(exc), phase=phase)
+        )
+        failure.message = "\n".join(details)
+        if failure.execution_outcome == "not_started":
+            failure.execution_outcome = "partial"
+        failure.context.update(
+            session_id=session["id"],
+            generation=operation.generation,
+            pid=proc.pid,
+            session_dir=session["session_dir"],
+            stdout_log=session["stdout_log"],
+            stderr_log=session["stderr_log"],
+            exit_code=returncode,
+            process_identity=session.get("process_identity"),
+        )
+        if registered:
+            try:
+                operation._directory.check()
+            except (OSError, DomainError):
+                # An inaccessible registration cannot be recovered by session id.
+                registered = False
+        if not registered:
+            try:
+                outcome = process_control.terminate_owned_process(
+                    proc.pid, session.get("process_identity"), grace=1.0
+                )
+                failure.context["cleanup"] = {"confirmed": True, "outcome": outcome}
+            except BaseException as cleanup:
+                failure.context["cleanup"] = {
+                    "confirmed": False,
+                    "error": str(cleanup),
+                }
+        failure.context["process_state"] = self._process_state(session)
+        session["startup"] = {"state": "failed", "error": error_payload(failure)["error"]}
+        try:
+            operation.write_metadata(session)
+        except BaseException as publication:
+            failure.context["metadata_persisted"] = False
+            failure.context["metadata_error"] = str(publication)
+        else:
+            failure.context["metadata_persisted"] = True
+        return failure
+
     def _new_session_id(self) -> str:
-        return f"{datetime.now(UTC):%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:8]}"
+        return f"{datetime.now(UTC):%Y%m%d-%H%M%S}-{uuid.uuid4().hex}"
 
     def attach(
         self,
@@ -669,6 +1119,7 @@ class SessionManager:
             "process_state": state,
             "identity_verified": state == "alive",
             "transaction": session_transactions.transaction_status(self.session_dir(session["id"])),
+            "startup": session.get("startup"),
             "rom": session["rom"],
             "fps_target": session["fps_target"],
             "mgba_path": session.get("mgba_path"),
@@ -680,12 +1131,20 @@ class SessionManager:
     def status(
         self, *, session: str | None = None, all: bool = False
     ) -> dict[str, Any] | list[dict[str, Any]]:
-        self.ensure_runtime_dirs()
+        if session is not None:
+            self.session_dir(session)
+            if not all:
+                self.load_session(session)
+        elif not all:
+            self.require_session(None)
         self.prune_dead_sessions()
         if all:
             payloads: list[dict[str, Any]] = []
             for candidate in self.iter_sessions():
-                if self._process_state(candidate) == "dead":
+                if (
+                    self._process_state(candidate) == "dead"
+                    and candidate.get("startup", {}).get("state") != "failed"
+                ):
                     continue
                 payloads.append(self._status_payload(candidate))
             return payloads
@@ -694,6 +1153,8 @@ class SessionManager:
     def stop(self, *, session: str, grace: float = 1.0) -> dict[str, Any]:
         if not math.isfinite(grace) or grace < 0:
             raise ValueError("grace must be a finite non-negative number")
+        if self.session_file(session).exists():
+            self.load_session(session)
         with session_transactions.recovery(self.session_dir(session)) as recovery:
             target = self.require_session(session, require_alive=False)
             pid = int(target["pid"])
@@ -705,8 +1166,14 @@ class SessionManager:
                 exc.context.update(session_id=session, generation=recovery.generation)
                 raise
             recovery.finish()
-            views_dir = self.session_dir(session) / ".views"
+            views_dir = self._session_path(session, ".views")
             cleanup_errors = []
+            if target.get("startup", {}).get("state") == "failed":
+                target["startup"]["state"] = "stopped"
+                try:
+                    self.write_session(target)
+                except (OSError, DomainError) as exc:
+                    cleanup_errors.append(f"Failed to update startup diagnostics: {exc}")
             for pending_view in views_dir.glob("*.png"):
                 try:
                     pending_view.unlink(missing_ok=True)
@@ -842,7 +1309,7 @@ class SessionManager:
             raise ValueError("Use either out or no_save, not both.")
 
         if no_save:
-            views_dir = self.session_dir(session) / ".views"
+            views_dir = self._session_path(session, ".views")
             views_dir.mkdir(exist_ok=True)
             with tempfile.NamedTemporaryFile(dir=views_dir, suffix=".png", delete=False) as tmp:
                 out_path = Path(tmp.name).resolve()
@@ -892,7 +1359,7 @@ class SessionManager:
             out_path = Path(out).resolve()
         else:
             ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-            out_path = self.session_dir(target["id"]) / "screenshots" / f"screenshot-{ts}.png"
+            out_path = self._session_path(target["id"], f"screenshots/screenshot-{ts}.png")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         response = self.send_command(target, "screenshot", {"path": str(out_path)}, timeout=timeout)
         data = self.handle_response(response, session_id=target["id"])
@@ -1150,16 +1617,49 @@ class SessionManager:
     def _start_with_lua(
         self, *, timeout: float, include_view: bool, **kwargs: Any
     ) -> dict[str, Any]:
+        try:
+            valid_timeout = (
+                not isinstance(timeout, bool)
+                and isinstance(timeout, (int, float))
+                and math.isfinite(timeout)
+                and timeout > 0
+            )
+        except OverflowError:
+            valid_timeout = False
+        if not valid_timeout:
+            raise DomainError(
+                "invalid_arguments",
+                "timeout must be a finite positive number.",
+                phase="validation",
+                execution_outcome="not_started",
+            )
         file, code = kwargs.get("file"), kwargs.get("code")
-        if bool(file) == bool(code):
-            raise ValueError("Exactly one of file or code is required.")
+        file = self._validate_lua_source(file, code)
         start_kwargs = {key: value for key, value in kwargs.items() if key not in {"file", "code"}}
-        session = start_kwargs.get("session_id") or self._new_session_id()
-        start_kwargs["session_id"] = session
         start_kwargs.setdefault("ready_timeout", timeout)
+        start_kwargs = self._validate_start_options(start_kwargs)
+        session = start_kwargs["session_id"]
+        if session is None:
+            session = self._new_session_id()
+        start_kwargs["session_id"] = session
+        start_kwargs["_activate"] = False
         self.ensure_runtime_dirs()
         with self.transaction(session, create=True, composite=True) as operation:
-            started = self.start(**start_kwargs)
+            if file:
+                try:
+                    file = str(operation._directory.copy_file(Path(file), "startup-lua.lua"))
+                except BaseException as exc:
+                    failure = self._prelaunch_failure(exc, operation, session, "staging")
+                    if isinstance(exc, Exception):
+                        raise failure from exc
+                    exc.add_note(str(failure))
+                    raise
+            try:
+                started = self.start(**start_kwargs)
+            except DomainError as exc:
+                if exc.execution_outcome == "not_started":
+                    self._prelaunch_failure(exc, operation, session, exc.phase)
+                raise
             try:
                 result = self.run_lua(session=session, file=file, code=code, timeout=timeout)
                 if include_view:
@@ -1172,21 +1672,19 @@ class SessionManager:
                         view = self.get_view(session=session, timeout=timeout)
                     except Exception as exc:
                         raise self._composite_error(exc, "snapshot_failed", session) from exc
-            except Exception as exc:
-                if isinstance(exc, DomainError):
-                    exc.context.update(session_id=session, pid=started.get("pid"))
-                    if exc.execution_outcome == "not_started":
-                        exc.execution_outcome = "partial"
-                    raise
-                raise DomainError(
-                    "startup_failed",
-                    f"Session '{session}' post-start operation failed: {exc} "
-                    "Inspect status before retrying.",
-                    phase="post_start",
-                    execution_outcome="partial",
-                    session_id=session,
-                    pid=started.get("pid"),
-                ) from exc
+                operation._startup_finalization = self._activate_startup(
+                    operation,
+                    session,
+                    lambda exc: self._post_start_failure(
+                        exc, operation, session, started.get("pid")
+                    ),
+                )
+            except BaseException as exc:
+                failure = self._post_start_failure(exc, operation, session, started.get("pid"))
+                if isinstance(exc, Exception):
+                    raise failure from exc
+                exc.add_note(str(failure))
+                raise
             payload = {
                 "session_id": session,
                 "pid": started.get("pid"),
@@ -1196,3 +1694,40 @@ class SessionManager:
                 payload["screenshot"] = {"frame": view.get("frame")}
                 payload["png_base64"] = view.get("png_base64")
             return payload
+
+    def _post_start_failure(
+        self,
+        exc: BaseException,
+        operation: session_transactions.Transaction,
+        session: str,
+        pid: int | None,
+    ) -> DomainError:
+        failure = (
+            exc
+            if isinstance(exc, DomainError)
+            else DomainError(
+                "startup_failed",
+                f"Session '{session}' post-start operation failed: {exc} "
+                "Inspect status before retrying.",
+                phase="post_start",
+                execution_outcome="partial",
+            )
+        )
+        failure.context.update(session_id=session, pid=pid)
+        if failure.execution_outcome == "not_started":
+            failure.execution_outcome = "partial"
+        try:
+            target = self.load_session(session)
+            failure.context.update(
+                process_state=self._process_state(target),
+                session_dir=target["session_dir"],
+                stdout_log=target["stdout_log"],
+                stderr_log=target["stderr_log"],
+            )
+            target.setdefault("startup", {}).update(
+                state="failed", post_start_error=error_payload(failure)["error"]
+            )
+            operation.write_metadata(target)
+        except (OSError, DomainError, KeyError) as publication:
+            failure.context["metadata_error"] = str(publication)
+        return failure

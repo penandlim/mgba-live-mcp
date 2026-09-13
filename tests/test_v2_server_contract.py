@@ -8,6 +8,7 @@ import subprocess
 import sys
 from importlib.metadata import version
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 import pytest
@@ -110,23 +111,25 @@ def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SessionManager:
 
     monkeypatch.setattr("mgba_live_mcp.session_manager.subprocess.Popen", lambda *a, **k: Process())
     monkeypatch.setattr(process_control, "capture_identity", lambda pid: {"pid": pid})
+    monkeypatch.setattr(process_control, "retain_child", lambda *a: None)
+    monkeypatch.setattr(process_control, "watch_child", lambda *a: Event())
     monkeypatch.setattr(process_control, "process_state", lambda *a, **k: "alive")
     monkeypatch.setattr(process_control, "terminate_owned_process", lambda *a, **k: "stopped")
     monkeypatch.setattr(manager, "send_command", bridge)
-    manager.start(rom=str(ROM), session_id="s1", mgba_path="mgba-qt")
+    manager.start(rom=str(ROM), session_id="s1", mgba_path=sys.executable)
     monkeypatch.setattr(server, "_controller", LiveControllerClient(manager))
     return manager
 
 
 CASES = [
-    ("start", {"rom": str(ROM), "session_id": "new", "mgba_path": "mgba-qt"}),
+    ("start", {"rom": str(ROM), "session_id": "new", "mgba_path": sys.executable}),
     (
         "start_with_lua",
-        {"rom": str(ROM), "session_id": "new", "mgba_path": "mgba-qt", "code": "return true"},
+        {"rom": str(ROM), "session_id": "new", "mgba_path": sys.executable, "code": "return true"},
     ),
     (
         "start_with_lua_and_view",
-        {"rom": str(ROM), "session_id": "new", "mgba_path": "mgba-qt", "code": "return true"},
+        {"rom": str(ROM), "session_id": "new", "mgba_path": sys.executable, "code": "return true"},
     ),
     ("attach", {"session": "s1"}),
     ("status", {"session": "s1"}),
@@ -208,7 +211,7 @@ def test_lua_heterogeneity_survives_all_registered_composites(runtime, monkeypat
         startup = suffix.startswith("start")
         arguments = {"code": "return nil"}
         if startup:
-            arguments.update(rom=str(ROM), session_id=suffix, mgba_path="mgba-qt")
+            arguments.update(rom=str(ROM), session_id=suffix, mgba_path=sys.executable)
         else:
             arguments["session"] = "s1"
         result = invoke("mgba_live_" + suffix, arguments)

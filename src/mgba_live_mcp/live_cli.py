@@ -94,10 +94,6 @@ def resolve_startup_scripts(script_paths: list[str]) -> list[str]:
     return _manager().resolve_startup_scripts(script_paths)
 
 
-def prepare_bridge_script(session_scripts_dir: Path) -> Path:
-    return _manager().prepare_bridge_script(session_scripts_dir)
-
-
 def build_start_command(
     *,
     mgba_path: str,
@@ -433,7 +429,6 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     try:
-        ensure_runtime_dirs()
         args.func(args)
     except Exception as exc:
         failure = error_payload(

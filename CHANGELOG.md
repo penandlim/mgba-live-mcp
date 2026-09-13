@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Make startup transactional: preflight inputs before reservation, stage through
+  owned directory handles, roll back only pre-launch allocations, and retain
+  native identity/logs and failed-startup diagnostics after launch (#61).
+- Preserve the previous active session until the entire startup succeeds, and
+  preserve literal filesystem-valid session IDs across CLI/MCP, active markers,
+  initialization locks and archival without trimming or adding a size policy.
+- Reap registered children from dedicated parent-owned waiters so external CLI
+  stop can confirm MCP-owned process exit while the server stays alive. Share
+  the original `Popen` reader to preserve exit codes across registration/status
+  races. Release them after registration, before readiness I/O, so blocked startup
+  cannot prevent external recovery exit confirmation (#61).
+- Bind child admission and prelaunch rollback to the already-held parent
+  directory so namespace replacement cannot redirect coordination-file writes.
+  Keep literal session IDs in initialization-lock refusal diagnostics (#61).
+- Serialize final activation through marker publication, final guards and journal
+  retirement. Restore the exact prior marker on failure without overwriting later
+  activations; report unconfirmed restoration instead of claiming rollback (#61).
 - Add explicit pinned Qt5/Lua5.4 native provisioning and a separate native CI
   smoke (#59), exercising the real CLI/MCP bridge, observed input/callback
   completion, fully decoded PNG pixels and identity-confirmed process exit.

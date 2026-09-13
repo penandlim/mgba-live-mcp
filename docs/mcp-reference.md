@@ -79,7 +79,7 @@ unrestricted, and screenshot export may overwrite files.
 
 ## `mgba_live_start`
 
-Start a session; launches an executable and prunes dead sessions.
+Validate local inputs and transactionally start a session.
 
 - Required input fields: `rom`
 
@@ -594,6 +594,21 @@ Show metadata; archives dead sessions and refreshes the active marker.
         "session_id": {
           "title": "Session Id",
           "type": "string"
+        },
+        "startup": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Startup"
         },
         "transaction": {
           "anyOf": [

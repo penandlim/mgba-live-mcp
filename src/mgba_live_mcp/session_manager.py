@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from . import process_control, session_transactions
+from .errors import CommandTimeout, DomainError, error_context
 
 MODULE_PATH = Path(__file__).resolve()
 PACKAGE_DIR = MODULE_PATH.parent
@@ -233,25 +234,57 @@ class SessionManager:
             path = shutil.which(candidate)
             if path:
                 return path
-        raise RuntimeError("No mGBA binary found in PATH (expected mgba-qt/mgba/mGBA).")
+        raise DomainError(
+            "resource_not_found",
+            "No mGBA binary found in PATH (expected mgba-qt/mgba/mGBA).",
+            phase="startup",
+            execution_outcome="not_started",
+        )
 
     def require_session(
         self, session_id: str | None, *, require_alive: bool = True
     ) -> dict[str, Any]:
         self.ensure_runtime_dirs()
         if not session_id:
-            raise ValueError("session_required: session is required.")
+            raise DomainError(
+                "session_required",
+                "session is required.",
+                phase="validation",
+                execution_outcome="not_started",
+            )
 
         path = self.session_file(session_id)
         if not path.exists():
-            raise RuntimeError(f"session_not_found: Session not found: {session_id}")
+            raise DomainError(
+                "session_not_found",
+                f"Session not found: {session_id}",
+                phase="admission",
+                execution_outcome="not_started",
+                session_id=session_id,
+            )
 
-        session = json.loads(path.read_text())
+        try:
+            session = json.loads(path.read_text())
+        except (OSError, ValueError) as exc:
+            raise DomainError(
+                "session_state_corrupt",
+                f"Cannot read session metadata: {exc}",
+                phase="admission",
+                execution_outcome="not_started",
+                session_id=session_id,
+            ) from exc
         if require_alive:
             state = self._process_state(session)
             if state != "alive":
                 code = "session_dead" if state == "dead" else state
-                raise RuntimeError(f"{code}: session '{session_id}' process is {state}.")
+                raise DomainError(
+                    code,
+                    f"session '{session_id}' process is {state}.",
+                    phase="admission",
+                    execution_outcome="not_started",
+                    session_id=session_id,
+                    pid=session.get("pid"),
+                )
         return session
 
     def resolve_attach_target(
@@ -267,11 +300,20 @@ class SessionManager:
                     session = candidate["id"]
                     break
             if not session:
-                raise RuntimeError(
-                    "session_not_found: PID is not a managed live session started by mgba-live-mcp."
+                raise DomainError(
+                    "session_not_found",
+                    "PID is not a managed live session started by mgba-live-mcp.",
+                    phase="admission",
+                    execution_outcome="not_started",
+                    pid=pid,
                 )
         if not session:
-            raise ValueError("session_required: provide session or pid.")
+            raise DomainError(
+                "session_required",
+                "provide session or pid.",
+                phase="validation",
+                execution_outcome="not_started",
+            )
         return self.require_session(session, require_alive=True)
 
     def write_command(self, command_path: Path, command: dict[str, Any]) -> None:
@@ -293,22 +335,42 @@ class SessionManager:
             raise ValueError("timeout must be a finite positive number")
         command_path = Path(session["command_path"])
         response_path = Path(session["response_path"])
-        with session_transactions.transaction(command_path.parent) as operation:
+        request_id = uuid.uuid4().hex
+        with (
+            error_context("command", session_id=session.get("id"), request_id=request_id),
+            session_transactions.transaction(command_path.parent) as operation,
+        ):
             if session.get("generation", operation.generation) != operation.generation:
-                raise RuntimeError("session_generation_changed: session metadata is stale.")
+                raise DomainError(
+                    "session_generation_changed",
+                    "session metadata is stale.",
+                    phase="admission",
+                    execution_outcome="not_started",
+                    session_id=session.get("id"),
+                )
             if "pid" in session:
                 state = self._process_state(session)
                 if state in {"dead", "identity_mismatch"}:
-                    raise RuntimeError(
-                        f"session_{state}: session '{session.get('id')}' "
-                        f"process is {state} before publishing '{kind}'."
+                    raise DomainError(
+                        "session_dead" if state == "dead" else state,
+                        f"Process is {state} before publishing '{kind}'.",
+                        phase="admission",
+                        execution_outcome="not_started",
+                        session_id=session.get("id"),
+                        pid=session["pid"],
                     )
-            request_id = uuid.uuid4().hex
             command = {"id": request_id, "kind": kind, **(payload or {})}
 
             def publish() -> None:
                 if command_path.exists():
-                    raise RuntimeError("session_busy: an unclaimed bridge command still exists.")
+                    raise DomainError(
+                        "session_busy",
+                        "an unclaimed bridge command still exists.",
+                        phase="publish",
+                        execution_outcome="not_started",
+                        session_id=session.get("id"),
+                        request_id=request_id,
+                    )
                 response_path.unlink(missing_ok=True)
                 self.write_command(command_path, command)
 
@@ -317,7 +379,13 @@ class SessionManager:
             while time.monotonic() < deadline:
                 operation.check()
                 if _startup_process is not None and _startup_process.poll() is not None:
-                    raise RuntimeError("session_dead: process exited before bridge readiness.")
+                    raise DomainError(
+                        "session_dead",
+                        "process exited before bridge readiness.",
+                        phase="startup",
+                        session_id=session.get("id"),
+                        request_id=request_id,
+                    )
                 try:
                     response = json.loads(response_path.read_text())
                 except (FileNotFoundError, json.JSONDecodeError):
@@ -328,20 +396,33 @@ class SessionManager:
                 if "pid" in session:
                     state = self._process_state(session)
                     if state in {"dead", "identity_mismatch"}:
-                        raise RuntimeError(
-                            f"session_{state}: session '{session.get('id')}' "
-                            f"process became {state} during '{kind}'."
+                        raise DomainError(
+                            "session_dead" if state == "dead" else state,
+                            f"Session process became {state} during '{kind}'.",
+                            phase="command",
+                            session_id=session.get("id"),
+                            request_id=request_id,
                         )
                 time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
-            raise TimeoutError(
+            raise CommandTimeout(
+                "command_timeout",
                 f"Timed out waiting for response to command '{kind}' "
                 f"(request_id={request_id}; execution outcome unknown). "
-                "The session remains busy until the response arrives or recovery stop succeeds."
+                "The session remains busy until the response arrives or recovery stop succeeds.",
+                phase="command",
+                session_id=session.get("id"),
+                request_id=request_id,
             )
 
-    def handle_response(self, response: dict[str, Any]) -> Any:
+    def handle_response(self, response: dict[str, Any], *, session_id: str | None = None) -> Any:
         if not response.get("ok"):
-            raise RuntimeError(f"bridge_error: {response.get('error', 'unknown')}")
+            raise DomainError(
+                "bridge_error",
+                str(response.get("error", "unknown")),
+                phase="command",
+                request_id=response.get("id"),
+                session_id=session_id,
+            )
         return response.get("data")
 
     def resolve_startup_scripts(self, script_paths: list[str]) -> list[str]:
@@ -349,20 +430,33 @@ class SessionManager:
         for script in script_paths:
             path = Path(script).resolve()
             if not path.exists():
-                raise RuntimeError(f"Script not found: {path}")
+                raise DomainError(
+                    "resource_not_found",
+                    f"Script not found: {path}",
+                    phase="validation",
+                    execution_outcome="not_started",
+                )
             resolved.append(str(path))
         return resolved
 
     def prepare_bridge_script(self, session_scripts_dir: Path) -> Path:
         if not self.bridge_script.exists():
-            raise RuntimeError(f"Bridge script missing: {self.bridge_script}")
+            raise DomainError(
+                "resource_not_found",
+                f"Bridge script missing: {self.bridge_script}",
+                phase="startup",
+                execution_outcome="not_started",
+            )
 
         session_bridge = session_scripts_dir / self.bridge_script.name
         try:
             shutil.copy2(self.bridge_script, session_bridge)
         except OSError as exc:
-            raise RuntimeError(
-                f"Failed to stage bridge script in session dir: {session_bridge}"
+            raise DomainError(
+                "io_error",
+                f"Failed to stage bridge script in session dir: {session_bridge}",
+                phase="startup",
+                execution_outcome="not_started",
             ) from exc
         return session_bridge
 
@@ -414,13 +508,21 @@ class SessionManager:
             raise ValueError("ready_timeout must be a finite positive number")
         rom_path = Path(rom).resolve()
         if not rom_path.exists():
-            raise RuntimeError(f"ROM not found: {rom_path}")
+            raise DomainError(
+                "resource_not_found",
+                f"ROM not found: {rom_path}",
+                phase="validation",
+                execution_outcome="not_started",
+            )
         resolved_mgba_path = mgba_path or self.detect_mgba_binary()
         startup_scripts = self.resolve_startup_scripts(script or [])
         self.ensure_runtime_dirs()
         self.prune_dead_sessions()
         resolved_session_id = session_id or self._new_session_id()
-        with self.transaction(resolved_session_id, create=True, composite=True) as operation:
+        with (
+            error_context("startup", session_id=resolved_session_id),
+            self.transaction(resolved_session_id, create=True, composite=True) as operation,
+        ):
             sdir = self.session_dir(resolved_session_id)
             (sdir / "screenshots").mkdir(exist_ok=True)
             scripts_dir = sdir / "scripts"
@@ -481,7 +583,10 @@ class SessionManager:
                 session["process_identity"] = process_control.capture_identity(proc.pid)
                 self.write_session(session)
                 self.handle_response(
-                    self.send_command(session, "ping", timeout=ready_timeout, _startup_process=proc)
+                    self.send_command(
+                        session, "ping", timeout=ready_timeout, _startup_process=proc
+                    ),
+                    session_id=resolved_session_id,
                 )
                 operation.check()
                 session["ready"] = True
@@ -504,7 +609,20 @@ class SessionManager:
                     details.append(f"stdout:\n{stdout_excerpt}")
                 else:
                     details.append("No stdout/stderr was captured before failure.")
-                raise RuntimeError("\n".join(details)) from exc
+                if isinstance(exc, DomainError):
+                    exc.message = "\n".join(details)
+                    exc.context.update(session_id=resolved_session_id, pid=proc.pid)
+                    # Launch succeeded even if a readiness/identity check did not run.
+                    if exc.execution_outcome == "not_started":
+                        exc.execution_outcome = "partial"
+                    raise
+                raise DomainError(
+                    "startup_failed",
+                    "\n".join(details),
+                    phase="startup",
+                    session_id=resolved_session_id,
+                    pid=proc.pid,
+                ) from exc
             self.set_active_session(resolved_session_id)
             return {
                 "status": "started",
@@ -583,10 +701,9 @@ class SessionManager:
                 outcome = process_control.terminate_owned_process(
                     pid, target.get("process_identity"), grace=grace
                 )
-            except RuntimeError as exc:
-                raise RuntimeError(
-                    f"{exc}; session={session} generation={recovery.generation}"
-                ) from exc
+            except DomainError as exc:
+                exc.context.update(session_id=session, generation=recovery.generation)
+                raise
             recovery.finish()
             views_dir = self.session_dir(session) / ".views"
             cleanup_errors = []
@@ -623,7 +740,13 @@ class SessionManager:
         if file:
             script_path = Path(file).resolve()
             if not script_path.exists():
-                raise RuntimeError(f"Lua file not found: {script_path}")
+                raise DomainError(
+                    "resource_not_found",
+                    f"Lua file not found: {script_path}",
+                    phase="validation",
+                    execution_outcome="not_started",
+                    session_id=session,
+                )
             response = self.send_command(
                 target, "run_lua_file", {"path": str(script_path)}, timeout=timeout
             )
@@ -631,7 +754,7 @@ class SessionManager:
             response = self.send_command(
                 target, "run_lua_inline", {"code": str(code)}, timeout=timeout
             )
-        data = self.handle_response(response)
+        data = self.handle_response(response, session_id=target["id"])
         return {
             "session_id": target["id"],
             "frame": response.get("frame"),
@@ -653,7 +776,7 @@ class SessionManager:
             {"key": key, "duration": frames},
             timeout=timeout,
         )
-        data = self.handle_response(response)
+        data = self.handle_response(response, session_id=target["id"])
         return {
             "session_id": target["id"],
             "frame": response.get("frame"),
@@ -669,7 +792,7 @@ class SessionManager:
     ) -> dict[str, Any]:
         target = self.require_session(session, require_alive=True)
         response = self.send_command(target, "set_keys", {"keys": keys}, timeout=timeout)
-        data = self.handle_response(response)
+        data = self.handle_response(response, session_id=target["id"])
         return {
             "session_id": target["id"],
             "frame": response.get("frame"),
@@ -688,7 +811,7 @@ class SessionManager:
         if keys:
             payload["keys"] = keys
         response = self.send_command(target, "clear_keys", payload, timeout=timeout)
-        data = self.handle_response(response)
+        data = self.handle_response(response, session_id=target["id"])
         return {
             "session_id": target["id"],
             "frame": response.get("frame"),
@@ -730,14 +853,29 @@ class SessionManager:
                     target, "screenshot", {"path": str(out_path)}, timeout=timeout
                 )
                 completed = True
-                data = self.handle_response(response)
+                data = self.handle_response(response, session_id=target["id"])
                 if isinstance(data, dict) and isinstance(data.get("path"), str):
                     result_path = Path(data["path"])
                 if result_path != out_path:
-                    raise RuntimeError(
-                        "snapshot_failed: bridge returned an unexpected output path."
+                    raise DomainError(
+                        "snapshot_failed",
+                        "bridge returned an unexpected output path.",
+                        phase="snapshot",
+                        execution_outcome="partial",
+                        session_id=session,
+                        request_id=response.get("id"),
                     )
-                png_bytes = result_path.read_bytes()
+                try:
+                    png_bytes = result_path.read_bytes()
+                except OSError as exc:
+                    raise DomainError(
+                        "snapshot_failed",
+                        str(exc),
+                        phase="snapshot",
+                        execution_outcome="partial",
+                        session_id=session,
+                        request_id=response.get("id"),
+                    ) from exc
                 return {
                     "session_id": target["id"],
                     "frame": response.get("frame"),
@@ -757,7 +895,7 @@ class SessionManager:
             out_path = self.session_dir(target["id"]) / "screenshots" / f"screenshot-{ts}.png"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         response = self.send_command(target, "screenshot", {"path": str(out_path)}, timeout=timeout)
-        data = self.handle_response(response)
+        data = self.handle_response(response, session_id=target["id"])
         result_path = Path(data.get("path") if isinstance(data, dict) else str(out_path))
         return {
             "session_id": target["id"],
@@ -782,7 +920,7 @@ class SessionManager:
             {"addresses": [parse_int(address) for address in addresses]},
             timeout=timeout,
         )
-        data = self.handle_response(response)
+        data = self.handle_response(response, session_id=target["id"])
         return {
             "session_id": target["id"],
             "frame": response.get("frame"),
@@ -804,7 +942,7 @@ class SessionManager:
             {"start": parse_int(start), "length": length},
             timeout=timeout,
         )
-        data = self.handle_response(response)
+        data = self.handle_response(response, session_id=target["id"])
         return {
             "session_id": target["id"],
             "frame": response.get("frame"),
@@ -827,7 +965,7 @@ class SessionManager:
             {"start": parse_int(start), "count": count, "width": width},
             timeout=timeout,
         )
-        data = self.handle_response(response)
+        data = self.handle_response(response, session_id=target["id"])
         return {
             "session_id": target["id"],
             "frame": response.get("frame"),
@@ -843,7 +981,7 @@ class SessionManager:
     ) -> dict[str, Any]:
         target = self.require_session(session, require_alive=True)
         response = self.send_command(target, "dump_oam", {"count": count}, timeout=timeout)
-        data = self.handle_response(response)
+        data = self.handle_response(response, session_id=target["id"])
         return {
             "session_id": target["id"],
             "frame": response.get("frame"),
@@ -866,7 +1004,7 @@ class SessionManager:
             {"base": parse_int(base), "size": size, "count": count},
             timeout=timeout,
         )
-        data = self.handle_response(response)
+        data = self.handle_response(response, session_id=target["id"])
         return {
             "session_id": target["id"],
             "frame": response.get("frame"),
@@ -882,7 +1020,9 @@ class SessionManager:
     def _response_frame(payload: dict[str, Any]) -> int:
         frame = payload.get("frame")
         if isinstance(frame, bool) or not isinstance(frame, (int, float)):
-            raise RuntimeError("settle_failed: frame polling did not return a frame.")
+            raise DomainError(
+                "settle_failed", "frame polling did not return a frame.", phase="settle"
+            )
         return int(frame)
 
     def _wait_for_frame(self, session: str, target_frame: int, timeout: float) -> None:
@@ -890,7 +1030,12 @@ class SessionManager:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise RuntimeError(f"settle_failed: timed out waiting for frame >= {target_frame}.")
+                raise DomainError(
+                    "settle_failed",
+                    f"timed out waiting for frame >= {target_frame}.",
+                    phase="settle",
+                    session_id=session,
+                )
             result = self.run_lua(session=session, code="return true", timeout=min(remaining, 5.0))
             if self._response_frame(result) >= target_frame:
                 return
@@ -913,11 +1058,33 @@ class SessionManager:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise RuntimeError("settle_failed: Lua macro did not complete.")
+                raise DomainError(
+                    "settle_failed",
+                    "Lua macro did not complete.",
+                    phase="settle",
+                    session_id=session,
+                )
             result = self.run_lua(session=session, code=code, timeout=min(remaining, 5.0))
             if self._lua_result(result) is True:
                 return
             time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+
+    @staticmethod
+    def _composite_error(exc: Exception, code: str, session: str) -> DomainError:
+        # The original command has completed; never imply a safe retry of the composite.
+        context = dict(exc.context) if isinstance(exc, DomainError) else {}
+        context["session_id"] = session
+        if isinstance(exc, DomainError):
+            context["cause_code"] = exc.code
+            context["cause_phase"] = exc.phase
+            context["cause_execution_outcome"] = exc.execution_outcome
+        return DomainError(
+            code,
+            str(exc),
+            phase="settle" if code == "settle_failed" else "snapshot",
+            execution_outcome="partial",
+            **context,
+        )
 
     def run_lua_and_view(
         self, *, session: str, timeout: float = 20.0, **kwargs: Any
@@ -928,11 +1095,11 @@ class SessionManager:
                 self._settle_lua(session, result, timeout)
             except Exception as exc:
                 operation.mark_uncertain()
-                raise RuntimeError(f"settle_failed: session '{session}': {exc}") from exc
+                raise self._composite_error(exc, "settle_failed", session) from exc
             try:
                 view = self.get_view(session=session, timeout=timeout)
             except Exception as exc:
-                raise RuntimeError(f"snapshot_failed: session '{session}': {exc}") from exc
+                raise self._composite_error(exc, "snapshot_failed", session) from exc
             return {
                 **result,
                 "screenshot": {"frame": view.get("frame")},
@@ -963,11 +1130,11 @@ class SessionManager:
                 self._wait_for_frame(session, tap_frame + int(duration) + wait_frames, timeout)
             except Exception as exc:
                 operation.mark_uncertain()
-                raise RuntimeError(f"settle_failed: session '{session}': {exc}") from exc
+                raise self._composite_error(exc, "settle_failed", session) from exc
             try:
                 view = self.get_view(session=session, timeout=timeout)
             except Exception as exc:
-                raise RuntimeError(f"snapshot_failed: session '{session}': {exc}") from exc
+                raise self._composite_error(exc, "snapshot_failed", session) from exc
             return {
                 **result,
                 "screenshot": {"frame": view.get("frame")},
@@ -998,14 +1165,27 @@ class SessionManager:
                 if include_view:
                     try:
                         self._settle_lua(session, result, timeout)
-                    except Exception:
+                    except Exception as exc:
                         operation.mark_uncertain()
-                        raise
-                    view = self.get_view(session=session, timeout=timeout)
+                        raise self._composite_error(exc, "settle_failed", session) from exc
+                    try:
+                        view = self.get_view(session=session, timeout=timeout)
+                    except Exception as exc:
+                        raise self._composite_error(exc, "snapshot_failed", session) from exc
             except Exception as exc:
-                raise RuntimeError(
-                    f"Session '{session}' post-start operation failed: {exc}"
-                    " Inspect status before retrying."
+                if isinstance(exc, DomainError):
+                    exc.context.update(session_id=session, pid=started.get("pid"))
+                    if exc.execution_outcome == "not_started":
+                        exc.execution_outcome = "partial"
+                    raise
+                raise DomainError(
+                    "startup_failed",
+                    f"Session '{session}' post-start operation failed: {exc} "
+                    "Inspect status before retrying.",
+                    phase="post_start",
+                    execution_outcome="partial",
+                    session_id=session,
+                    pid=started.get("pid"),
                 ) from exc
             payload = {
                 "session_id": session,

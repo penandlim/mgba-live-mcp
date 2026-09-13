@@ -18,14 +18,9 @@ def _load_generate_mcp_reference() -> ModuleType:
     return module
 
 
-def test_reference_uses_server_runtime_argument_rules() -> None:
-    generate_mcp_reference = _load_generate_mcp_reference()
-    assert not hasattr(generate_mcp_reference, "RUNTIME_ARGUMENT_RULES")
-
+def test_generated_reference_is_current() -> None:
+    generator = _load_generate_mcp_reference()
     tools = asyncio.run(mcp_server.list_tools())
-    run_lua = next(tool for tool in tools if tool.name == "mgba_live_run_lua")
-
-    rendered = generate_mcp_reference._render_tool_section(run_lua)
-
-    runtime_rule = mcp_server.TOOL_RUNTIME_ARGUMENT_RULES[run_lua.name]
-    assert f"- Runtime argument rule: {runtime_rule}" in rendered
+    expected = generator._render_markdown(tools)
+    reference = Path(__file__).resolve().parents[1] / "docs" / "mcp-reference.md"
+    assert reference.read_text() == expected

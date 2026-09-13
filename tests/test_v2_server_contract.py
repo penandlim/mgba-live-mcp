@@ -1,367 +1,382 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import os
+import subprocess
+import sys
+from importlib.metadata import version
+from pathlib import Path
 from typing import Any
 
 import pytest
+from jsonschema import Draft202012Validator
+from mcp import ClientSession, StdioServerParameters, types
+from mcp.client.stdio import stdio_client
 
-from mgba_live_mcp import server as mcp_server
+from mgba_live_mcp import process_control, server, session_transactions
+from mgba_live_mcp.errors import ERROR_CODES, DomainError
+from mgba_live_mcp.live_controller import LiveControllerClient
+from mgba_live_mcp.session_manager import SessionManager
 
-
-def _first_payload(result: Any) -> dict[str, Any]:
-    assert result
-    first = result[0]
-    assert getattr(first, "type", None) == "text"
-    return json.loads(first.text)
-
-
-class _FakeController:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, dict[str, Any]]] = []
-
-    async def start(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("start", dict(kwargs)))
-        return {
-            "status": "started",
-            "session_id": kwargs.get("session_id") or "session-123",
-            "pid": 4321,
-            "fps_target": 120.0,
-            "session_dir": "/tmp/session-123",
-        }
-
-    async def start_with_lua(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("start_with_lua", dict(kwargs)))
-        return {
-            "session_id": kwargs.get("session_id") or "session-123",
-            "pid": 4321,
-            "lua": {"ok": True},
-        }
-
-    async def attach(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("attach", dict(kwargs)))
-        return {
-            "status": "attached",
-            "session_id": kwargs["session"],
-            "pid": 4321,
-            "rom": "/tmp/game.gba",
-            "fps_target": 120.0,
-        }
-
-    async def status(self, **kwargs: Any) -> dict[str, Any] | list[dict[str, Any]]:
-        self.calls.append(("status", dict(kwargs)))
-        if kwargs.get("all"):
-            return [
-                {
-                    "session_id": "session-a",
-                    "pid": 11,
-                    "alive": True,
-                    "rom": "/tmp/a.gba",
-                    "fps_target": 120.0,
-                    "mgba_path": "/opt/mgba",
-                    "heartbeat": {"frame": 1},
-                    "is_active": False,
-                    "session_dir": "/tmp/a",
-                },
-                {
-                    "session_id": "session-b",
-                    "pid": 22,
-                    "alive": True,
-                    "rom": "/tmp/b.gba",
-                    "fps_target": 120.0,
-                    "mgba_path": "/opt/mgba",
-                    "heartbeat": {"frame": 2},
-                    "is_active": True,
-                    "session_dir": "/tmp/b",
-                },
-            ]
-        return {
-            "session_id": kwargs["session"],
-            "pid": 4321,
-            "alive": True,
-            "rom": "/tmp/game.gba",
-            "fps_target": 120.0,
-            "mgba_path": "/opt/mgba",
-            "heartbeat": {"frame": 99},
-            "is_active": True,
-            "session_dir": "/tmp/session-123",
-        }
-
-    async def stop(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("stop", dict(kwargs)))
-        return {
-            "session_id": kwargs["session"],
-            "pid": 4321,
-            "alive_before": True,
-            "alive_after": False,
-            "stopped": True,
-        }
-
-    async def run_lua(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("run_lua", dict(kwargs)))
-        return {
-            "session_id": kwargs["session"],
-            "frame": 100,
-            "data": {"result": {"ok": True}},
-        }
-
-    async def input_tap(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("input_tap", dict(kwargs)))
-        return {
-            "session_id": kwargs["session"],
-            "frame": 100,
-            "data": {"key": 0, "duration": kwargs.get("frames", 1)},
-        }
-
-    async def input_set(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("input_set", dict(kwargs)))
-        return {"session_id": kwargs["session"], "frame": 100, "data": {"keys": [0]}}
-
-    async def input_clear(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("input_clear", dict(kwargs)))
-        return {"session_id": kwargs["session"], "frame": 101, "data": {"cleared": "all"}}
-
-    async def export_screenshot(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("export_screenshot", dict(kwargs)))
-        return {
-            "session_id": kwargs["session"],
-            "frame": 200,
-            "path": kwargs.get("out") or "/tmp/shot.png",
-            "png_base64": "AA==",
-        }
-
-    async def get_view(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("get_view", dict(kwargs)))
-        return {
-            "session_id": kwargs["session"],
-            "frame": 201,
-            "png_base64": "AA==",
-        }
-
-    async def run_lua_and_view(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("run_lua_and_view", dict(kwargs)))
-        return {
-            "session_id": kwargs["session"],
-            "frame": 100,
-            "data": {"result": {"ok": True}},
-            "screenshot": {"frame": 201},
-            "png_base64": "AA==",
-        }
-
-    async def input_tap_and_view(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("input_tap_and_view", dict(kwargs)))
-        return {
-            "session_id": kwargs["session"],
-            "frame": 101,
-            "data": {"duration": kwargs.get("frames", 1), "key": 0},
-            "screenshot": {"frame": 202},
-            "png_base64": "AA==",
-        }
-
-    async def start_with_lua_and_view(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("start_with_lua_and_view", dict(kwargs)))
-        session_id = kwargs.get("session_id") or "session-123"
-        return {
-            "session_id": session_id,
-            "pid": 4321,
-            "lua": {"ok": True},
-            "screenshot": {"frame": 203},
-            "png_base64": "AA==",
-        }
-
-    async def read_memory(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("read_memory", dict(kwargs)))
-        return {"session_id": kwargs["session"], "frame": 100, "memory": {"0x00000001": 255}}
-
-    async def read_range(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("read_range", dict(kwargs)))
-        return {
-            "session_id": kwargs["session"],
-            "frame": 100,
-            "range": {"start": kwargs["start"], "length": kwargs["length"], "data": [1, 2]},
-        }
-
-    async def dump_pointers(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("dump_pointers", dict(kwargs)))
-        return {"session_id": kwargs["session"], "frame": 100, "pointers": {"count": 1}}
-
-    async def dump_oam(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("dump_oam", dict(kwargs)))
-        return {"session_id": kwargs["session"], "frame": 100, "oam": {"count": 1}}
-
-    async def dump_entities(self, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("dump_entities", dict(kwargs)))
-        return {"session_id": kwargs["session"], "frame": 100, "entities": {"count": 1}}
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aDQAAAABJRU5ErkJggg=="
+)
+ROM = Path(__file__).parent / "fixtures" / "synthetic.gb"
 
 
-def test_list_tools_exposes_v2_visual_tools() -> None:
-    tools = asyncio.run(mcp_server.list_tools())
-    names = {tool.name for tool in tools}
+def invoke(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+    request = types.CallToolRequest(
+        method="tools/call", params=types.CallToolRequestParams(name=name, arguments=arguments)
+    )
 
-    assert "mgba_live_get_view" in names
-    assert "mgba_live_run_lua_and_view" in names
-    assert "mgba_live_input_tap_and_view" in names
-    assert "mgba_live_start_with_lua_and_view" in names
-    # Strict function-calling clients reject top-level JSON Schema combinators.
-    forbidden_top = ("oneOf", "anyOf", "allOf", "not", "enum")
-    for tool in tools:
-        schema = tool.inputSchema
-        assert isinstance(schema, dict), f"{tool.name}: inputSchema must be an object schema"
-        assert schema.get("type") == "object", f"{tool.name}: inputSchema type must be object"
-        bad = [k for k in forbidden_top if k in schema]
-        assert not bad, f"{tool.name}: inputSchema must not use top-level {bad}"
+    async def registered():
+        return await server.server.request_handlers[types.CallToolRequest](request)
 
-
-def test_status_requires_session_unless_all(monkeypatch: Any) -> None:
-    monkeypatch.setattr(mcp_server, "_controller", _FakeController())
-
-    with pytest.raises(ValueError, match="session_required"):
-        asyncio.run(mcp_server.call_tool("mgba_live_status", {}))
-    with pytest.raises(ValueError, match="all must be a boolean"):
-        asyncio.run(mcp_server.call_tool("mgba_live_status", {"all": "yes"}))
-
-    contents = asyncio.run(mcp_server.call_tool("mgba_live_status", {"all": True}))
-    assert len(contents) == 1
-    payload = _first_payload(contents)
-    assert isinstance(payload["value"], list)
-    assert "screenshot" not in payload
+    result = asyncio.run(registered()).root
+    assert isinstance(result, types.CallToolResult)
+    text = result.content[0]
+    assert isinstance(text, types.TextContent)
+    assert json.loads(text.text) == result.structuredContent
+    assert text.text == json.dumps(result.structuredContent, separators=(",", ":"))
+    return result
 
 
-def test_attach_requires_session_or_pid(monkeypatch: Any) -> None:
-    monkeypatch.setattr(mcp_server, "_controller", _FakeController())
+def structured(result: types.CallToolResult) -> dict[str, Any]:
+    assert result.structuredContent is not None
+    return result.structuredContent
 
-    with pytest.raises(ValueError, match="session_required"):
-        asyncio.run(mcp_server.call_tool("mgba_live_attach", {}))
+
+def first_text(result: types.CallToolResult) -> str:
+    block = result.content[0]
+    assert isinstance(block, types.TextContent)
+    return block.text
+
+
+@pytest.fixture
+def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SessionManager:
+    """Run the real manager/adapter; substitute only process and bridge boundaries."""
+    manager = SessionManager(runtime_root=tmp_path)
+    frame = 0
+
+    def bridge(target: dict[str, Any], kind: str, payload=None, **kwargs: Any):
+        nonlocal frame
+        frame += 10
+        payload = payload or {}
+        data: Any = {"result": {"ok": True}}
+        if kind == "screenshot":
+            Path(payload["path"]).write_bytes(PNG)
+            data = {"path": payload["path"]}
+        elif kind == "tap_key":
+            data = {"key": 0, "duration": payload["duration"]}
+        elif kind == "set_keys" or (kind == "clear_keys" and payload.get("keys")):
+            data = {"keys": [0] if payload.get("keys") else []}
+        elif kind == "clear_keys":
+            data = {"cleared": "all"}
+        elif kind == "read_memory":
+            data = {"0x00000001": 0} if payload["addresses"] else []
+        elif kind == "read_range":
+            data = {"start": payload["start"], "length": 2, "data": [0, 255]}
+        elif kind == "dump_pointers":
+            data = {
+                "start": payload["start"],
+                "count": 1,
+                "width": 4,
+                "pointers": [{"index": 0, "address": payload["start"], "value": 0}],
+            }
+        elif kind == "dump_oam":
+            data = {
+                "base": 0x07000000,
+                "count": 1,
+                "sprites": [
+                    {"index": 0, "address": 0x07000000, "attr0": 0, "attr1": 0, "attr2": 0}
+                ],
+            }
+        elif kind == "dump_entities":
+            data = {
+                "base": payload["base"],
+                "size": 2,
+                "count": 1,
+                "entities": [{"index": 0, "address": payload["base"], "bytes": [0, 255]}],
+            }
+        return {"id": f"request-{frame}", "ok": True, "frame": frame, "data": data}
+
+    class Process:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr("mgba_live_mcp.session_manager.subprocess.Popen", lambda *a, **k: Process())
+    monkeypatch.setattr(process_control, "capture_identity", lambda pid: {"pid": pid})
+    monkeypatch.setattr(process_control, "process_state", lambda *a, **k: "alive")
+    monkeypatch.setattr(process_control, "terminate_owned_process", lambda *a, **k: "stopped")
+    monkeypatch.setattr(manager, "send_command", bridge)
+    manager.start(rom=str(ROM), session_id="s1", mgba_path="mgba-qt")
+    monkeypatch.setattr(server, "_controller", LiveControllerClient(manager))
+    return manager
+
+
+CASES = [
+    ("start", {"rom": str(ROM), "session_id": "new", "mgba_path": "mgba-qt"}),
+    (
+        "start_with_lua",
+        {"rom": str(ROM), "session_id": "new", "mgba_path": "mgba-qt", "code": "return true"},
+    ),
+    (
+        "start_with_lua_and_view",
+        {"rom": str(ROM), "session_id": "new", "mgba_path": "mgba-qt", "code": "return true"},
+    ),
+    ("attach", {"session": "s1"}),
+    ("status", {"session": "s1"}),
+    ("status", {"all": True}),
+    ("get_view", {"session": "s1"}),
+    ("stop", {"session": "s1"}),
+    ("run_lua", {"session": "s1", "code": "return true"}),
+    ("run_lua_and_view", {"session": "s1", "code": "return true"}),
+    ("input_tap", {"session": "s1", "key": "A"}),
+    ("input_tap_and_view", {"session": "s1", "key": "A", "wait_frames": 0}),
+    ("input_set", {"session": "s1", "keys": []}),
+    ("input_clear", {"session": "s1"}),
+    ("input_clear", {"session": "s1", "keys": ["A"]}),
+    ("export_screenshot", {"session": "s1"}),
+    ("read_memory", {"session": "s1", "addresses": [1]}),
+    ("read_memory", {"session": "s1", "addresses": []}),
+    ("read_range", {"session": "s1", "start": 1, "length": 2}),
+    ("dump_pointers", {"session": "s1", "start": 0, "count": 1}),
+    ("dump_oam", {"session": "s1", "count": 1}),
+    ("dump_entities", {"session": "s1", "base": 0, "size": 2, "count": 1}),
+]
+
+
+@pytest.mark.parametrize(("suffix", "arguments"), CASES)
+def test_every_success_matches_catalog_and_compact_text(runtime, suffix, arguments):
+    name = "mgba_live_" + suffix
+    tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
+    result = invoke(name, arguments)
+    assert not result.isError, result.structuredContent
+    Draft202012Validator(tools[name].outputSchema).validate(result.structuredContent)
+    public = structured(result)
+    assert public is not None
+    assert "png_base64" not in public
+    images = [block for block in result.content if isinstance(block, types.ImageContent)]
+    visual = suffix.endswith("_and_view") or suffix in {"get_view", "export_screenshot"}
+    if visual:
+        assert len(images) == 1
+        assert base64.b64decode(images[0].data) == PNG
+        assert images[0].data not in first_text(result)
+        if "frame" in public and "screenshot" in public:
+            assert public["frame"] < public["screenshot"]["frame"]
+    else:
+        assert not images
+        assert "screenshot" not in public
+
+
+def test_catalog_coverage_and_effect_hints():
+    tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
+    assert set(tools) == {"mgba_live_" + suffix for suffix, _ in CASES}
+    for tool in tools.values():
+        assert tool.inputSchema["type"] == tool.outputSchema["type"] == "object"
+        Draft202012Validator.check_schema(tool.outputSchema)
+        assert tool.annotations is not None
+    for name, tool in tools.items():
+        hints = tool.annotations
+        if "lua" in name:
+            assert not hints.readOnlyHint and not hints.idempotentHint
+            assert hints.destructiveHint and hints.openWorldHint
+    assert not tools["mgba_live_status"].annotations.readOnlyHint
+    assert tools["mgba_live_status"].annotations.destructiveHint
+    assert tools["mgba_live_stop"].annotations.destructiveHint
+    assert tools["mgba_live_stop"].annotations.idempotentHint
+    assert tools["mgba_live_export_screenshot"].annotations.openWorldHint
+
+
+@pytest.mark.parametrize("value", [False, 0, "", None, [], {}, [1, False, None]])
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_lua_heterogeneity_survives_all_registered_composites(runtime, monkeypatch, value, wrapped):
+    original = runtime.send_command
+
+    def bridge(target, kind, payload=None, **kwargs):
+        result = original(target, kind, payload, **kwargs)
+        if kind.startswith("run_lua_"):
+            result["data"] = {"result": value} if wrapped else value
+        return result
+
+    monkeypatch.setattr(runtime, "send_command", bridge)
+    for suffix in ("run_lua", "run_lua_and_view", "start_with_lua", "start_with_lua_and_view"):
+        startup = suffix.startswith("start")
+        arguments = {"code": "return nil"}
+        if startup:
+            arguments.update(rom=str(ROM), session_id=suffix, mgba_path="mgba-qt")
+        else:
+            arguments["session"] = "s1"
+        result = invoke("mgba_live_" + suffix, arguments)
+        assert not result.isError, result.structuredContent
+        public = structured(result)
+        actual = public["lua"] if startup else public["data"]
+        expected = value if startup or not wrapped else {"result": value}
+        assert actual == expected and type(actual) is type(expected)
 
 
 @pytest.mark.parametrize(
-    ("tool_name", "base_args"),
+    ("suffix", "arguments", "code"),
     [
-        ("mgba_live_start_with_lua", {"rom": "/tmp/game.gba"}),
-        ("mgba_live_start_with_lua_and_view", {"rom": "/tmp/game.gba"}),
-        ("mgba_live_run_lua", {"session": "session-123"}),
-        ("mgba_live_run_lua_and_view", {"session": "session-123"}),
+        ("unknown", {"session": "s1"}, "unknown_tool"),
+        ("screenshot", {}, "unknown_tool"),
+        ("status", {}, "session_required"),
+        ("attach", {}, "session_required"),
+        ("run_lua", {"code": "return true"}, "invalid_arguments"),
+        ("input_tap", {"session": "s1", "key": "A", "frames": False}, "invalid_arguments"),
+        ("input_tap", {"session": "s1", "key": "A", "framse": 3}, "invalid_arguments"),
+        ("input_set", {"session": "s1", "keys": [1]}, "invalid_arguments"),
+        (
+            "input_tap_and_view",
+            {"session": "s1", "key": "A", "wait_frames": -1},
+            "invalid_arguments",
+        ),
+        ("run_lua", {"session": "s1", "code": "a", "file": "b"}, "invalid_arguments"),
+        ("get_view", {"session": "missing"}, "session_not_found"),
+        ("run_lua", {"session": "s1", "file": "/missing/lua/file"}, "resource_not_found"),
     ],
 )
-def test_lua_tools_require_exactly_one_source(
-    monkeypatch: Any, tool_name: str, base_args: dict[str, Any]
-) -> None:
-    monkeypatch.setattr(mcp_server, "_controller", _FakeController())
-
-    with pytest.raises(ValueError, match="Exactly one of file or code"):
-        asyncio.run(mcp_server.call_tool(tool_name, dict(base_args)))
-
-    with pytest.raises(ValueError, match="Exactly one of file or code"):
-        asyncio.run(
-            mcp_server.call_tool(
-                tool_name,
-                {**base_args, "file": "/tmp/script.lua", "code": "return true"},
-            )
-        )
+def test_registered_failures_never_look_successful(runtime, suffix, arguments, code):
+    result = invoke("mgba_live_" + suffix, arguments)
+    assert result.isError
+    error = structured(result)["error"]
+    assert error["code"] == code and code in ERROR_CODES
+    assert error["execution_outcome"] == "not_started"
+    if "session" in arguments:
+        assert error["session_id"] == arguments["session"]
 
 
-def test_single_session_tools_require_session(monkeypatch: Any) -> None:
-    monkeypatch.setattr(mcp_server, "_controller", _FakeController())
-
-    with pytest.raises(ValueError, match="session_required"):
-        asyncio.run(mcp_server.call_tool("mgba_live_run_lua", {"code": "return true"}))
-    with pytest.raises(ValueError, match="session_required"):
-        asyncio.run(mcp_server.call_tool("mgba_live_input_tap", {"key": "A"}))
-    with pytest.raises(ValueError, match="session_required"):
-        asyncio.run(mcp_server.call_tool("mgba_live_export_screenshot", {}))
-    with pytest.raises(ValueError, match="session_required"):
-        asyncio.run(mcp_server.call_tool("mgba_live_read_memory", {"addresses": [1]}))
-
-
-def test_server_rejects_invalid_optional_arguments(monkeypatch: Any) -> None:
-    monkeypatch.setattr(mcp_server, "_controller", _FakeController())
-
-    with pytest.raises(ValueError, match="pid must be an integer"):
-        asyncio.run(mcp_server.call_tool("mgba_live_attach", {"pid": True}))
-    with pytest.raises(ValueError, match="grace must be a number"):
-        asyncio.run(mcp_server.call_tool("mgba_live_stop", {"session": "s1", "grace": False}))
-    with pytest.raises(ValueError, match="keys is required"):
-        asyncio.run(mcp_server.call_tool("mgba_live_input_set", {"session": "s1"}))
-
-
-def test_metadata_tools_return_session_id_without_images(monkeypatch: Any) -> None:
-    fake = _FakeController()
-    monkeypatch.setattr(mcp_server, "_controller", fake)
-
-    contents = asyncio.run(
-        mcp_server.call_tool(
-            "mgba_live_run_lua",
-            {"session": "session-123", "code": "return true", "timeout": 9.0},
-        )
+def test_domain_bridge_error_keeps_request_and_execution_context(runtime, monkeypatch):
+    monkeypatch.setattr(
+        runtime,
+        "send_command",
+        lambda *a, **k: {"id": "failed-request", "ok": False, "error": "Lua failed after mutation"},
     )
-    assert len(contents) == 1
-    payload = _first_payload(contents)
-    assert payload["session_id"] == "session-123"
-    assert payload["data"] == {"result": {"ok": True}}
-    assert "screenshot" not in payload
+    result = invoke("mgba_live_run_lua", {"session": "s1", "code": "error('failed')"})
+    error = structured(result)["error"]
+    assert result.isError and error["code"] == "bridge_error"
+    assert error["request_id"] == "failed-request" and error["session_id"] == "s1"
+    assert error["phase"] == "command" and error["execution_outcome"] == "unknown"
 
-    contents = asyncio.run(
-        mcp_server.call_tool(
-            "mgba_live_start_with_lua",
-            {"rom": "/tmp/game.gba", "code": "return true", "session_id": "boot-1"},
+
+def test_dead_session_is_domain_failure(runtime, monkeypatch):
+    monkeypatch.setattr(process_control, "process_state", lambda *a, **k: "dead")
+    result = invoke("mgba_live_run_lua", {"session": "s1", "code": "return 1"})
+    assert result.isError
+    assert structured(result)["error"]["code"] == "session_dead"
+
+
+def test_busy_session_retains_pending_request(runtime):
+    with session_transactions.transaction(runtime.session_dir("s1")) as operation:
+        operation.publish("pending-request", lambda: None)
+    result = invoke("mgba_live_get_view", {"session": "s1"})
+    error = structured(result)["error"]
+    assert result.isError and error["code"] == "session_busy"
+    assert error["pending_request_id"] == "pending-request"
+    assert "request_id" not in error
+    assert error["phase"] == "reconcile" and error["execution_outcome"] == "not_started"
+
+
+def test_real_transport_timeout_remains_ambiguous(runtime, monkeypatch):
+    monkeypatch.setattr(runtime, "send_command", SessionManager.send_command.__get__(runtime))
+    result = invoke("mgba_live_run_lua", {"session": "s1", "code": "return 1", "timeout": 0.01})
+    error = structured(result)["error"]
+    assert result.isError and error["code"] == "command_timeout"
+    assert error["execution_outcome"] == "unknown" and error["phase"] == "command"
+    journal = session_transactions.transaction_status(runtime.session_dir("s1"))
+    assert journal is not None
+    assert error["request_id"] == journal["operation"]["pending_request"]
+
+
+@pytest.mark.parametrize("encoded", [None, "", "***"])
+def test_missing_visual_content_is_error_not_metadata_success(runtime, monkeypatch, encoded):
+    monkeypatch.setattr(
+        runtime, "get_view", lambda **k: {"session_id": "s1", "frame": 40, "png_base64": encoded}
+    )
+    result = invoke("mgba_live_run_lua_and_view", {"session": "s1", "code": "return false"})
+    error = structured(result)["error"]
+    assert result.isError and error["code"] == "snapshot_failed"
+    assert error["phase"] == "snapshot" and error["execution_outcome"] == "partial"
+    assert not any(isinstance(block, types.ImageContent) for block in result.content)
+
+
+def test_composite_domain_failure_does_not_erase_cause(runtime, monkeypatch):
+    def fail(**kwargs):
+        raise DomainError("command_timeout", "timed out", phase="command", request_id="capture-id")
+
+    monkeypatch.setattr(runtime, "get_view", fail)
+    result = invoke("mgba_live_run_lua_and_view", {"session": "s1", "code": "return 0"})
+    error = structured(result)["error"]
+    assert result.isError and error["code"] == "snapshot_failed"
+    assert error["cause_code"] == "command_timeout" and error["cause_phase"] == "command"
+    assert error["request_id"] == "capture-id" and error["execution_outcome"] == "partial"
+
+
+def test_real_stdio_initialize_and_metadata_requests(tmp_path):
+    async def exchange():
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "mgba_live_mcp.server"],
+            env={**os.environ, "HOME": str(tmp_path)},
         )
+        async with stdio_client(params) as (reader, writer):
+            async with ClientSession(reader, writer) as client:
+                initialized = await client.initialize()
+                assert initialized.serverInfo.version == version("mgba-live-mcp")
+                assert initialized.capabilities.resources is None
+                assert initialized.capabilities.prompts is None
+                catalog = await client.list_tools()
+                assert {tool.name for tool in catalog.tools} == {
+                    "mgba_live_" + suffix for suffix, _ in CASES
+                }
+                listed = await client.call_tool("mgba_live_status", {"all": True})
+                assert not listed.isError and listed.structuredContent == {"value": []}
+                for name, args, code in (
+                    ("missing_tool", {}, "unknown_tool"),
+                    ("mgba_live_attach", {"session": "missing"}, "session_not_found"),
+                    ("mgba_live_status", {"all": "yes"}, "invalid_arguments"),
+                ):
+                    result = await client.call_tool(name, args)
+                    assert result.isError and structured(result)["error"]["code"] == code
+                    assert "mcp_request_id" in structured(result)["error"]
+                    assert json.loads(first_text(result)) == result.structuredContent
+
+    asyncio.run(exchange())
+
+
+@pytest.mark.parametrize(
+    ("arguments", "code", "exit_code"),
+    [
+        (["run-lua", "--session", "missing", "--code", "return 1"], "session_not_found", 1),
+        (
+            ["read-range", "--session", "missing", "--start", "0", "--length", "bad"],
+            "invalid_arguments",
+            2,
+        ),
+    ],
+)
+def test_cli_uses_domain_error_envelope(tmp_path, arguments, code, exit_code):
+    result = subprocess.run(
+        [sys.executable, "-m", "mgba_live_mcp.live_cli", *arguments],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(tmp_path)},
+        check=False,
+        timeout=10,
     )
-    assert len(contents) == 1
-    payload = _first_payload(contents)
-    assert payload["session_id"] == "boot-1"
-    assert "screenshot" not in payload
+    assert result.returncode == exit_code and result.stdout == ""
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == code and error["execution_outcome"] == "not_started"
+    if code == "session_not_found":
+        assert error["session_id"] == "missing" and error["phase"] == "admission"
 
 
-def test_visual_tools_return_image_and_session_id(monkeypatch: Any) -> None:
-    fake = _FakeController()
-    monkeypatch.setattr(mcp_server, "_controller", fake)
-
-    run_contents = asyncio.run(
-        mcp_server.call_tool(
-            "mgba_live_run_lua_and_view",
-            {"session": "session-123", "code": "return true"},
-        )
-    )
-    run_payload = _first_payload(run_contents)
-    assert run_payload["session_id"] == "session-123"
-    assert run_payload["screenshot"] == {"frame": 201}
-    assert len(run_contents) == 2
-
-    tap_contents = asyncio.run(
-        mcp_server.call_tool(
-            "mgba_live_input_tap_and_view",
-            {"session": "session-123", "key": "A", "wait_frames": 3},
-        )
-    )
-    tap_payload = _first_payload(tap_contents)
-    assert tap_payload["session_id"] == "session-123"
-    assert tap_payload["screenshot"] == {"frame": 202}
-    assert len(tap_contents) == 2
-
-    view_contents = asyncio.run(
-        mcp_server.call_tool("mgba_live_get_view", {"session": "session-123"})
-    )
-    view_payload = _first_payload(view_contents)
-    assert view_payload["session_id"] == "session-123"
-    assert view_payload["screenshot"] == {"frame": 201}
-    assert len(view_contents) == 2
-
-
-def test_export_screenshot_returns_session_id_path_and_image(monkeypatch: Any) -> None:
-    fake = _FakeController()
-    monkeypatch.setattr(mcp_server, "_controller", fake)
-
-    contents = asyncio.run(
-        mcp_server.call_tool(
-            "mgba_live_export_screenshot",
-            {"session": "session-123", "out": "/tmp/capture.png"},
-        )
-    )
-    payload = _first_payload(contents)
-
-    assert payload == {
-        "session_id": "session-123",
-        "frame": 200,
-        "path": "/tmp/capture.png",
-    }
-    assert len(contents) == 2
+def test_invalid_success_payload_becomes_error(runtime, monkeypatch):
+    monkeypatch.setattr(runtime, "read_memory", lambda **k: {"session_id": "s1", "frame": 3})
+    result = invoke("mgba_live_read_memory", {"session": "s1", "addresses": []})
+    assert result.isError
+    assert structured(result)["error"]["code"] == "invalid_result"

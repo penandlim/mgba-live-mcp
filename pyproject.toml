@@ -5,7 +5,9 @@ description = "MCP server for persistent live mGBA control with script bridge, s
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp>=1.0.0",
+    "mcp>=1.26.0,<2",
+    "pydantic>=2.11.0",
+    "jsonschema>=4.20.0",
 ]
 
 [project.scripts]

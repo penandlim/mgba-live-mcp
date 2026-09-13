@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from mgba_live_mcp import process_control, session_transactions
+from mgba_live_mcp.errors import DomainError
 from mgba_live_mcp.session_manager import SessionManager
 
 
@@ -159,8 +160,12 @@ def test_dead_or_replaced_process_is_refused_before_command_publication(
     _write_session(manager, "replaced", 1234)
     target = manager.load_session("replaced")
     monkeypatch.setattr(manager, "_process_state", lambda session: state)
-    with pytest.raises(RuntimeError, match=f"session_{state}"):
+    with pytest.raises(DomainError) as error:
         manager.send_command(target, "ping", timeout=1)
+    assert error.value.code == ("session_dead" if state == "dead" else "identity_mismatch")
+    assert error.value.phase == "admission"
+    assert error.value.execution_outcome == "not_started"
+    assert error.value.context["session_id"] == "replaced"
     assert not Path(target["command_path"]).exists()
     journal = session_transactions.transaction_status(manager.session_dir("replaced"))
     assert journal is not None and journal["operation"] is None
@@ -325,11 +330,10 @@ def test_screenshot_supports_no_save_and_output_path(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"png-bytes")
         sent.append((kind, payload, timeout))
-        return {"frame": 44}
+        return {"ok": True, "frame": 44, "data": {"path": str(path)}}
 
     monkeypatch.setattr(manager, "require_session", lambda session, require_alive=True: target)
     monkeypatch.setattr(manager, "send_command", fake_send_command)
-    monkeypatch.setattr(manager, "handle_response", lambda response: {"path": sent[-1][1]["path"]})
 
     in_memory = manager.screenshot(session="session-1", no_save=True, timeout=6.0)
     out_path = tmp_path / "shot.png"

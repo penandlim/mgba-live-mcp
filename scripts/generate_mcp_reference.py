@@ -12,6 +12,7 @@ from typing import Any
 from mcp.types import Tool
 
 from mgba_live_mcp import server as mcp_server
+from mgba_live_mcp.errors import ERROR_CODES
 
 DEFAULT_OUTPUT = Path("docs/mcp-reference.md")
 
@@ -46,6 +47,7 @@ def _render_tool_section(tool: Tool) -> str:
     input_schema = data.get("inputSchema")
     output_schema = data.get("outputSchema")
     runtime_rule = mcp_server.TOOL_RUNTIME_ARGUMENT_RULES.get(name)
+    annotations = data.get("annotations")
     runtime_rule_lines = []
     if runtime_rule is not None:
         runtime_rule_lines = [f"- Runtime argument rule: {runtime_rule}"]
@@ -67,6 +69,10 @@ def _render_tool_section(tool: Tool) -> str:
             "",
             _format_schema(output_schema),
             "",
+            "### Behavior Annotations",
+            "",
+            _format_schema(annotations),
+            "",
         ]
     )
 
@@ -75,6 +81,7 @@ def _render_markdown(tools: list[Tool]) -> str:
     sections = [_render_tool_section(tool) for tool in tools]
     tool_names = ", ".join(f"`{tool.name}`" for tool in tools)
 
+    error_rows = [f"| `{code}` | {meaning} |" for code, meaning in ERROR_CODES.items()]
     return (
         "\n".join(
             [
@@ -89,6 +96,50 @@ def _render_markdown(tools: list[Tool]) -> str:
                 "",
                 f"- Tool count: {len(tools)}",
                 f"- Tools: {tool_names}",
+                "",
+                "## Result and error contracts",
+                "",
+                "Success `structuredContent` matches the tool's output schema; the first text",
+                "block is the same object encoded as compact JSON. Images appear only in",
+                "image blocks, never in that JSON. Existing heterogeneous fields are retained:",
+                "`status(all=true)` uses `value`, Lua uses `data`/`lua`, and command `frame`",
+                "is distinct from `screenshot.frame`. A nullable frame reports absence of a",
+                "bridge counter, not an inferred or substituted screenshot frame.",
+                "Lua `return nil` is explicitly encoded as `data.result: null` (or startup",
+                "`lua: null`); `return {}` retains the bridge's existing empty-array encoding.",
+                "",
+                "Failures have `isError=true` and matching JSON text/structured content:",
+                "`{error: {code, message, phase, execution_outcome, ...context}}`.",
+                "Context includes `tool` (MCP) or `command` (CLI), `session_id`, `pid`,",
+                "bridge `request_id`, and `mcp_request_id` when known. A blocking prior",
+                "request is identified separately by `pending_request_id`, not confused",
+                "with a refused request's execution outcome. CLI failures print this",
+                "envelope to stderr and exit nonzero. Error envelopes are not successes",
+                "and are not validated against the success output schema.",
+                "Tool argument objects reject unknown fields with `invalid_arguments`.",
+                "Malformed MCP request envelopes, such as argument arrays, are rejected",
+                "by the SDK with JSON-RPC `-32602` before tool dispatch.",
+                "",
+                "`execution_outcome` is domain-owned: `not_started` means no requested",
+                "execution began, `partial` means an operation performed work before",
+                "failure, and `unknown` means execution",
+                "cannot be established. A snapshot/settle failure can include `cause_code`,",
+                "`cause_phase`, and `cause_execution_outcome`; do not blindly retry a",
+                "mutation after `partial` or `unknown`. Phases identify the actual failing",
+                "domain stage (validation/admission/publication/command/settle/snapshot or",
+                "native inspection/TERM/KILL), not an adapter's guess from error wording.",
+                "",
+                "Annotations are hints, not security enforcement. Read-only/idempotent",
+                "hints describe requested domain effects, excluding bridge bookkeeping;",
+                "live emulation continues, so repeated reads need not return identical data.",
+                "Status performs maintenance, attach changes the active marker, Lua is",
+                "unrestricted, and screenshot export may overwrite files.",
+                "",
+                "### Stable error codes",
+                "",
+                "| Code | Meaning |",
+                "| --- | --- |",
+                *error_rows,
                 "",
                 *sections,
             ]

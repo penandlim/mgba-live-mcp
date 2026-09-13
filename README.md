@@ -238,6 +238,39 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
 - Visual tools fail hard on settle or snapshot failure instead of returning a
   warning alongside a screenshot.
 
+### Machine-readable protocol contracts
+
+- Initialization reports the installed `mgba-live-mcp` package version, not the
+  MCP SDK version. Every tool declares a success `outputSchema` and behavior hints.
+  The runtime requires `mcp>=1.26.0,<2` because the server uses the SDK's 1.x
+  low-level API; MCP 2.x is not supported.
+  Initialize/catalog/error smoke is verified with locked SDK 1.26.0 and a fresh
+  wheel install resolving SDK 1.30.0, not an exhaustive compatibility matrix.
+- Success `structuredContent` is identical to the first compact JSON text block.
+  Existing fields are preserved, including `value` for all-session status and
+  heterogeneous Lua `data`/`lua` values (`false`, `0`, `""`, arrays, objects, null).
+  Command `frame` and `screenshot.frame` are distinct counters.
+  Lua `return nil` now yields explicit JSON `null` (`data.result` or startup `lua`)
+  instead of the accidental empty array; `return {}` remains an empty array.
+- Screenshot bytes occur only in MCP image blocks, never duplicated as base64 in
+  the text/structured JSON. Metadata-only tools still return no images.
+- **Intentional error-format change:** all tool failures, including unknown names,
+  invalid arguments and missing visual content, return `isError=true` with
+  matching `{ "error": { "code", "message", "phase", "execution_outcome", ... } }`
+  JSON text/structured content. Known session, bridge request and MCP request
+  context is retained; error objects do not match the success output schemas.
+  CLI failures use the same domain codes/context as JSON on stderr and exit nonzero.
+- Tool argument objects reject unknown fields with `invalid_arguments` rather than
+  silently ignoring typos. Malformed MCP request envelopes (such as argument arrays)
+  are rejected by the SDK with JSON-RPC `-32602` before tool dispatch.
+- `not_started`, `partial` and `unknown` execution outcomes are not interchangeable:
+  do not blindly retry a mutation after a partial composite or ambiguous timeout.
+  See the generated [error inventory and schemas](docs/mcp-reference.md).
+- Annotations are hints, not security controls. Status can archive dead sessions;
+  attach updates the active marker; export can overwrite a file; Lua is unrestricted
+  and is neither read-only nor safely retryable. Read/idempotence hints exclude
+  bridge bookkeeping and do not imply that a running game's state is frozen.
+
 ### Transaction ownership and recovery
 
 - CLI processes and MCP clients share filesystem-backed, per-session ownership.
@@ -488,10 +521,13 @@ make typecheck
 make test
 make check
 ```
+- The packaged bridge contract tests use a system Lua interpreter (`lua`, `lua5.4`
+  or `luajit`). CI installs Lua 5.4; without one, only these interpreter tests skip.
 
 ## Release Checklist
 
-1. Confirm version is `0.5.0` in `pyproject.toml` and `src/mgba_live_mcp/__init__.py`.
+1. Set the release version in `pyproject.toml`; `__version__` and MCP initialization
+   read the installed distribution metadata rather than a second release string.
 2. Add release notes in `CHANGELOG.md`.
 3. Run local checks:
 `uv sync --group dev && make check && uv build`

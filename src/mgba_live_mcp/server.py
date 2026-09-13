@@ -6,16 +6,25 @@ import asyncio
 import base64
 import binascii
 import json
+import math
+from functools import cache
 from pathlib import Path
 from typing import Any
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
+from jsonschema.protocols import Validator
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import ImageContent, TextContent, Tool
+from mcp.types import CallToolResult, ContentBlock, ImageContent, TextContent, Tool, ToolAnnotations
+from pydantic import JsonValue, TypeAdapter
 
+from . import __version__
+from . import result_types as results
+from .errors import DomainError, error_payload
 from .live_controller import LiveControllerClient
 
-server = Server("mgba-live-mcp")
+server = Server("mgba-live-mcp", version=__version__)
 _controller = LiveControllerClient()
 
 _LUA_SOURCE_FILE_ARG = "file"
@@ -58,21 +67,6 @@ def _lua_source_properties() -> dict[str, dict[str, str]]:
     }
 
 
-def _text_payload(content: TextContent | ImageContent) -> dict[str, Any]:
-    if getattr(content, "type", None) != "text":
-        raise RuntimeError("Expected text payload in tool response.")
-    text_value = getattr(content, "text", None)
-    if not isinstance(text_value, str):
-        raise RuntimeError("Text payload is missing JSON content.")
-    try:
-        payload = json.loads(text_value)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("Failed to parse JSON tool payload.") from exc
-    if not isinstance(payload, dict):
-        raise RuntimeError("Tool payload JSON must be an object.")
-    return payload
-
-
 def _image_bytes_from_screenshot(result: dict[str, Any]) -> tuple[str, bytes] | None:
     encoded = result.get("png_base64")
     if isinstance(encoded, str) and encoded:
@@ -103,7 +97,12 @@ def _image_content(result: dict[str, Any]) -> ImageContent | None:
 def _require_session(arguments: dict[str, Any]) -> str:
     session = arguments.get("session")
     if not isinstance(session, str) or not session:
-        raise ValueError("session_required: session is required.")
+        raise DomainError(
+            "session_required",
+            "session is required.",
+            phase="validation",
+            execution_outcome="not_started",
+        )
     return session
 
 
@@ -221,29 +220,36 @@ def _build_start_kwargs(arguments: dict[str, Any]) -> dict[str, Any]:
     return kwargs
 
 
-def _public_visual_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    public = dict(payload)
-    public.pop("png_base64", None)
-    return public
+def _tool(
+    result_type: Any,
+    *,
+    read_only: bool = False,
+    destructive: bool = True,
+    idempotent: bool = False,
+    open_world: bool = False,
+    **definition: Any,
+) -> Tool:
+    definition["inputSchema"]["additionalProperties"] = False
+    return Tool(
+        **definition,
+        outputSchema={"type": "object", **TypeAdapter(result_type).json_schema()},
+        annotations=ToolAnnotations(
+            readOnlyHint=read_only,
+            destructiveHint=destructive,
+            idempotentHint=idempotent,
+            openWorldHint=open_world,
+        ),
+    )
 
 
-def _contents_from_payload(
-    payload: dict[str, Any], *, include_image: bool
-) -> list[TextContent | ImageContent]:
-    contents: list[TextContent | ImageContent] = [_text_content(_public_visual_payload(payload))]
-    if include_image:
-        image = _image_content(payload)
-        if image is not None:
-            contents.append(image)
-    return contents
-
-
-@server.list_tools()
-async def list_tools() -> list[Tool]:
-    return [
-        Tool(
+@cache
+def _tools() -> dict[str, Tool]:
+    catalog = [
+        _tool(
+            results.Started,
+            open_world=True,
             name="mgba_live_start",
-            description="Start a persistent live mGBA session.",
+            description="Start a session; launches an executable and prunes dead sessions.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -261,9 +267,11 @@ async def list_tools() -> list[Tool]:
                 "required": ["rom"],
             },
         ),
-        Tool(
+        _tool(
+            results.StartupLua,
+            open_world=True,
             name="mgba_live_start_with_lua",
-            description="Start a live session and run Lua immediately. Metadata only.",
+            description="Start and run unrestricted Lua. Metadata only; not safely retryable.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -282,9 +290,11 @@ async def list_tools() -> list[Tool]:
                 "required": ["rom"],
             },
         ),
-        Tool(
+        _tool(
+            results.StartupView,
+            open_world=True,
             name="mgba_live_start_with_lua_and_view",
-            description="Start a live session, run Lua, settle, and return one screenshot.",
+            description="Start, run unrestricted Lua, settle, capture. Not safely retryable.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -303,9 +313,12 @@ async def list_tools() -> list[Tool]:
                 "required": ["rom"],
             },
         ),
-        Tool(
+        _tool(
+            results.Attached,
+            destructive=False,
+            idempotent=True,
             name="mgba_live_attach",
-            description="Attach to an existing managed live session.",
+            description="Attach to a managed session; updates the CLI active-session marker.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -322,9 +335,11 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
-        Tool(
+        _tool(
+            results.Status | results.StatusList,
+            idempotent=True,
             name="mgba_live_status",
-            description="Show metadata for one session or all managed sessions.",
+            description="Show metadata; archives dead sessions and refreshes the active marker.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -341,9 +356,13 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
-        Tool(
+        _tool(
+            results.View,
+            read_only=True,
+            destructive=False,
+            idempotent=True,
             name="mgba_live_get_view",
-            description="Capture one in-memory screenshot from a live session.",
+            description="Capture a screenshot using a temporary file; no emulator mutation.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -353,9 +372,11 @@ async def list_tools() -> list[Tool]:
                 "required": ["session"],
             },
         ),
-        Tool(
+        _tool(
+            results.Stopped,
+            idempotent=True,
             name="mgba_live_stop",
-            description="Stop one managed session.",
+            description="Stop a managed group; retire its generation. Repeated stop confirms exit.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -366,9 +387,11 @@ async def list_tools() -> list[Tool]:
                 "required": ["session"],
             },
         ),
-        Tool(
+        _tool(
+            results.Command[JsonValue],
+            open_world=True,
             name="mgba_live_run_lua",
-            description="Execute Lua in a running live session. Metadata only.",
+            description="Unrestricted Lua; may change emulator/files/processes. No safe retry.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -379,9 +402,11 @@ async def list_tools() -> list[Tool]:
                 "required": ["session"],
             },
         ),
-        Tool(
+        _tool(
+            results.CommandView[JsonValue],
+            open_world=True,
             name="mgba_live_run_lua_and_view",
-            description="Execute Lua, settle, and return one screenshot.",
+            description="Unrestricted Lua, settle, capture; changes may persist. No safe retry.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -392,7 +417,8 @@ async def list_tools() -> list[Tool]:
                 "required": ["session"],
             },
         ),
-        Tool(
+        _tool(
+            results.Command[results.Tap],
             name="mgba_live_input_tap",
             description="Tap a key for N frames. Metadata only.",
             inputSchema={
@@ -409,7 +435,8 @@ async def list_tools() -> list[Tool]:
                 "required": ["session", "key"],
             },
         ),
-        Tool(
+        _tool(
+            results.CommandView[results.Tap],
             name="mgba_live_input_tap_and_view",
             description="Tap a key, optionally wait additional frames, then return one screenshot.",
             inputSchema={
@@ -427,9 +454,11 @@ async def list_tools() -> list[Tool]:
                 "required": ["session", "key"],
             },
         ),
-        Tool(
+        _tool(
+            results.Command[results.Keys],
+            idempotent=True,
             name="mgba_live_input_set",
-            description="Set currently held keys for a live session.",
+            description="Replace held keys and cancel scheduled releases; the game keeps running.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -440,7 +469,9 @@ async def list_tools() -> list[Tool]:
                 "required": ["session", "keys"],
             },
         ),
-        Tool(
+        _tool(
+            results.Command[results.Keys | results.Cleared],
+            idempotent=True,
             name="mgba_live_input_clear",
             description="Clear held keys from a live session.",
             inputSchema={
@@ -453,9 +484,11 @@ async def list_tools() -> list[Tool]:
                 "required": ["session"],
             },
         ),
-        Tool(
+        _tool(
+            results.Exported,
+            open_world=True,
             name="mgba_live_export_screenshot",
-            description="Persist and return a screenshot from a live session.",
+            description="Save a screenshot; may overwrite the requested file.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -466,7 +499,11 @@ async def list_tools() -> list[Tool]:
                 "required": ["session"],
             },
         ),
-        Tool(
+        _tool(
+            results.Memory,
+            read_only=True,
+            destructive=False,
+            idempotent=True,
             name="mgba_live_read_memory",
             description="Read memory addresses from a live session.",
             inputSchema={
@@ -479,7 +516,11 @@ async def list_tools() -> list[Tool]:
                 "required": ["session", "addresses"],
             },
         ),
-        Tool(
+        _tool(
+            results.MemoryRange,
+            read_only=True,
+            destructive=False,
+            idempotent=True,
             name="mgba_live_read_range",
             description="Read a contiguous memory range from a live session.",
             inputSchema={
@@ -493,7 +534,11 @@ async def list_tools() -> list[Tool]:
                 "required": ["session", "start", "length"],
             },
         ),
-        Tool(
+        _tool(
+            results.Pointers,
+            read_only=True,
+            destructive=False,
+            idempotent=True,
             name="mgba_live_dump_pointers",
             description="Dump pointer table entries from a live session.",
             inputSchema={
@@ -508,7 +553,11 @@ async def list_tools() -> list[Tool]:
                 "required": ["session", "start", "count"],
             },
         ),
-        Tool(
+        _tool(
+            results.Oam,
+            read_only=True,
+            destructive=False,
+            idempotent=True,
             name="mgba_live_dump_oam",
             description="Dump OAM entries from a live session.",
             inputSchema={
@@ -521,7 +570,11 @@ async def list_tools() -> list[Tool]:
                 "required": ["session"],
             },
         ),
-        Tool(
+        _tool(
+            results.Entities,
+            read_only=True,
+            destructive=False,
+            idempotent=True,
             name="mgba_live_dump_entities",
             description="Dump structured entity bytes from a live session.",
             inputSchema={
@@ -537,21 +590,94 @@ async def list_tools() -> list[Tool]:
             },
         ),
     ]
+    return {tool.name: tool for tool in catalog}
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | ImageContent]:
+@server.list_tools()
+async def list_tools() -> list[Tool]:
+    return list(_tools().values())
+
+
+@cache
+def _validators(name: str) -> tuple[Validator, Validator]:
+    tool = _tools()[name]
+    return Draft202012Validator(tool.inputSchema), Draft202012Validator(tool.outputSchema)
+
+
+@server.call_tool(validate_input=False)
+async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
+    args = arguments
+    context: dict[str, Any] = {"tool": name}
+    if isinstance(args, dict):
+        context["session_id"] = args.get("session") or args.get("session_id")
+        context["pid"] = args.get("pid")
+    try:
+        context["mcp_request_id"] = server.request_context.request_id
+    except LookupError:
+        pass
+    try:
+        tool = _tools().get(name)
+        if tool is None:
+            raise DomainError(
+                "unknown_tool",
+                f"Unknown tool: {name}",
+                phase="dispatch",
+                execution_outcome="not_started",
+            )
+        input_validator, output_validator = _validators(name)
+        try:
+            input_validator.validate(args)
+        except ValidationError as exc:
+            raise DomainError(
+                "invalid_arguments",
+                exc.message,
+                phase="validation",
+                execution_outcome="not_started",
+            ) from exc
+        timeout = args.get("timeout", 20.0)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be a finite positive number")
+        payload = await _dispatch_tool(name, args)
+        if not isinstance(payload, dict):
+            raise DomainError("invalid_result", "Expected an object result.", phase="result")
+        visual = name.endswith("_and_view") or name in {
+            "mgba_live_get_view",
+            "mgba_live_export_screenshot",
+        }
+        image = _image_content(payload) if visual else None
+        if visual and (image is None or not image.data):
+            raise DomainError(
+                "snapshot_failed",
+                "Required screenshot content is unavailable.",
+                phase="snapshot",
+                execution_outcome="partial",
+                session_id=payload.get("session_id"),
+            )
+        public = {key: value for key, value in payload.items() if key != "png_base64"}
+        try:
+            output_validator.validate(public)
+        except ValidationError as exc:
+            raise DomainError("invalid_result", exc.message, phase="result") from exc
+        content: list[ContentBlock] = [_text_content(public)]
+        if image is not None:
+            content.append(image)
+        return CallToolResult(content=content, structuredContent=public)
+    except Exception as exc:
+        failure = error_payload(exc, **context)
+        return CallToolResult(
+            content=[_text_content(failure)], structuredContent=failure, isError=True
+        )
+
+
+async def _dispatch_tool(
+    name: str, arguments: dict[str, Any]
+) -> dict[str, Any] | list[dict[str, Any]]:
     args = arguments or {}
     timeout = float(args.get("timeout", 20.0))
 
     if name == "mgba_live_start":
-        if args.get("script") is not None:
-            raise ValueError(
-                "mgba_live_start no longer accepts script. "
-                "Use mgba_live_start_with_lua with file or code."
-            )
         payload = await _controller.start(timeout=timeout, **_build_start_kwargs(args))
-        return [_text_content(payload)]
+        return payload
 
     if name == "mgba_live_start_with_lua":
         payload = await _controller.start_with_lua(
@@ -559,7 +685,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             **_build_start_kwargs(args),
             **_lua_source_kwargs(args),
         )
-        return [_text_content(payload)]
+        return payload
 
     if name == "mgba_live_start_with_lua_and_view":
         payload = await _controller.start_with_lua_and_view(
@@ -567,22 +693,27 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             **_build_start_kwargs(args),
             **_lua_source_kwargs(args),
         )
-        return _contents_from_payload(payload, include_image=True)
+        return payload
 
     if name == "mgba_live_attach":
         session = _maybe_session(args)
         pid = _parse_optional_pid(args)
         if session is None and pid is None:
-            raise ValueError("session_required: provide session or pid.")
+            raise DomainError(
+                "session_required",
+                "provide session or pid.",
+                phase="validation",
+                execution_outcome="not_started",
+            )
         payload = await _controller.attach(session=session, pid=pid)
-        return [_text_content(payload)]
+        return payload
 
     if name == "mgba_live_status":
         if _all_sessions_requested(args):
             payload = await _controller.status(all=True)
-            return [_text_content({"value": payload})]
+            return {"value": payload}
         payload = await _controller.status(session=_require_session(args))
-        return [_text_content(payload)]
+        return payload
 
     if name == "mgba_live_get_view":
         payload = await _controller.get_view(session=_require_session(args), timeout=timeout)
@@ -591,14 +722,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             "screenshot": {"frame": payload.get("frame")},
             "png_base64": payload.get("png_base64"),
         }
-        return _contents_from_payload(public_payload, include_image=True)
+        return public_payload
 
     if name == "mgba_live_stop":
         payload = await _controller.stop(
             session=_require_session(args),
             grace=_parse_grace(args),
         )
-        return [_text_content(payload)]
+        return payload
 
     if name == "mgba_live_run_lua":
         payload = await _controller.run_lua(
@@ -606,7 +737,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             timeout=timeout,
             **_lua_source_kwargs(args),
         )
-        return [_text_content(payload)]
+        return payload
 
     if name == "mgba_live_run_lua_and_view":
         payload = await _controller.run_lua_and_view(
@@ -614,7 +745,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             timeout=timeout,
             **_lua_source_kwargs(args),
         )
-        return _contents_from_payload(payload, include_image=True)
+        return payload
 
     if name == "mgba_live_input_tap":
         if "key" not in args:
@@ -625,7 +756,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             frames=int(args.get("frames", 1)),
             timeout=timeout,
         )
-        return [_text_content(payload)]
+        return payload
 
     if name == "mgba_live_input_tap_and_view":
         if "key" not in args:
@@ -637,7 +768,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             wait_frames=_parse_wait_frames(args),
             timeout=timeout,
         )
-        return _contents_from_payload(payload, include_image=True)
+        return payload
 
     if name == "mgba_live_input_set":
         payload = await _controller.input_set(
@@ -645,7 +776,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             keys=_parse_required_keys(args),
             timeout=timeout,
         )
-        return [_text_content(payload)]
+        return payload
 
     if name == "mgba_live_input_clear":
         keys = None
@@ -656,7 +787,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             keys=keys,
             timeout=timeout,
         )
-        return [_text_content(payload)]
+        return payload
 
     if name == "mgba_live_export_screenshot":
         payload = await _controller.export_screenshot(
@@ -664,7 +795,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             out=str(args["out"]) if args.get("out") else None,
             timeout=timeout,
         )
-        return _contents_from_payload(payload, include_image=True)
+        return payload
 
     if name == "mgba_live_read_memory":
         payload = await _controller.read_memory(
@@ -672,7 +803,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             addresses=list(args.get("addresses", [])),
             timeout=timeout,
         )
-        return [_text_content(payload)]
+        return payload
 
     if name == "mgba_live_read_range":
         payload = await _controller.read_range(
@@ -681,7 +812,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             length=int(args["length"]),
             timeout=timeout,
         )
-        return [_text_content(payload)]
+        return payload
 
     if name == "mgba_live_dump_pointers":
         payload = await _controller.dump_pointers(
@@ -691,7 +822,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             width=int(args.get("width", 4)),
             timeout=timeout,
         )
-        return [_text_content(payload)]
+        return payload
 
     if name == "mgba_live_dump_oam":
         payload = await _controller.dump_oam(
@@ -699,7 +830,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             count=int(args.get("count", 40)),
             timeout=timeout,
         )
-        return [_text_content(payload)]
+        return payload
 
     if name == "mgba_live_dump_entities":
         payload = await _controller.dump_entities(
@@ -709,9 +840,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent | 
             count=int(args.get("count", 10)),
             timeout=timeout,
         )
-        return [_text_content(payload)]
+        return payload
 
-    return [TextContent(type="text", text=f"Unknown tool: {name}")]
+    raise DomainError(
+        "unknown_tool",
+        f"Unknown tool: {name}",
+        phase="dispatch",
+        execution_outcome="not_started",
+    )
 
 
 def main() -> None:

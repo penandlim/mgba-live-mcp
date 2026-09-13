@@ -1,3 +1,5 @@
 """mGBA live MCP package."""
 
-__version__ = "0.5.0"
+from importlib.metadata import version
+
+__version__ = version("mgba-live-mcp")

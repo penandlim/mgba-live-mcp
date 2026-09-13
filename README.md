@@ -124,6 +124,11 @@ Important runtime notes:
 - If auto-discovery fails, pass `mgba_path` in `mgba_live_start` or
   `mgba_live_start_with_lua`.
 - Runtime state is stored at `~/.mgba-live-mcp/runtime` (sessions, logs, command/response files).
+- Session IDs are literal, nonempty directory components: no `/`, `\`, NUL,
+  `.` or `..`. Whitespace, newlines and Unicode are preserved exactly through
+  CLI/MCP arguments and the active marker. There is no additional character or
+  length policy; the filesystem must accept the literal component. Only derived
+  initialization-lock names are hashed, never the session directory itself.
 - Confirmed-dead session directories are moved to
   `~/.mgba-live-mcp/runtime/archived_sessions/` when no command or recovery worker
   still owns them. Missing process metadata alone never authorizes archival.
@@ -271,6 +276,22 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
   and is neither read-only nor safely retryable. Read/idempotence hints exclude
   bridge bookkeeping and do not imply that a running game's state is frozen.
 
+### Transactional startup
+
+- ROM, executable, bridge, startup Lua, initial savestate and numeric options
+  are checked before reserving a session or changing the active marker. An
+  existing explicit session ID is rejected rather than reused.
+- Startup inputs and logs are staged through the reserved directory's open
+  handles. A pre-launch failure rolls back only that creator's directory
+  generation; replaced directories and symlink targets are never cleanup targets.
+- Once mGBA starts, its native identity and logs remain discoverable if readiness
+  or startup Lua fails. Status exposes `startup.state: failed` and the error.
+  Failed startup records are retained until explicit recovery stop; the previous
+  active session remains unchanged. If registration cannot be committed, startup
+  instead attempts identity-verified cleanup and reports its outcome.
+- Successful startup activates the new session only after readiness; a startup
+  composite waits until its Lua, settling and requested visual result complete.
+
 ### Transaction ownership and recovery
 
 - CLI processes and MCP clients share filesystem-backed, per-session ownership.
@@ -332,6 +353,11 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
   A missing `ready` field means readiness is unknown, not complete. Use recovery
   stop to reap and retire such a session after native ownership is verified;
   do not add readiness metadata or reap a PID merely to force pruning.
+- After startup finishes, the parent automatically reaps each registered child
+  on exit, including while an MCP server is idle. External CLI stop can confirm
+  exit without waiting for another MCP operation or server shutdown. Dedicated
+  waiters hold no transaction lease, send no signals, and share the original
+  `Popen` exit-status reader with permitted native inspection.
 
 ## Native Qt/Lua Smoke
 

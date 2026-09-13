@@ -23,6 +23,7 @@ from . import __version__
 from . import result_types as results
 from .errors import DomainError, error_payload
 from .live_controller import LiveControllerClient
+from .session_manager import SessionManager
 
 server = Server("mgba-live-mcp", version=__version__)
 _controller = LiveControllerClient()
@@ -96,21 +97,19 @@ def _image_content(result: dict[str, Any]) -> ImageContent | None:
 
 def _require_session(arguments: dict[str, Any]) -> str:
     session = arguments.get("session")
-    if not isinstance(session, str) or not session:
+    if session is None:
         raise DomainError(
             "session_required",
             "session is required.",
             phase="validation",
             execution_outcome="not_started",
         )
-    return session
+    return SessionManager.validate_session_id(session)
 
 
 def _maybe_session(arguments: dict[str, Any]) -> str | None:
     session = arguments.get("session")
-    if isinstance(session, str) and session:
-        return session
-    return None
+    return None if session is None else SessionManager.validate_session_id(session)
 
 
 def _all_sessions_requested(arguments: dict[str, Any]) -> bool:
@@ -209,9 +208,7 @@ def _build_start_kwargs(arguments: dict[str, Any]) -> dict[str, Any]:
             kwargs["fast"] = True
     session_id = arguments.get("session_id")
     if session_id is not None:
-        if not isinstance(session_id, str) or not session_id:
-            raise ValueError("session_id must be a non-empty string")
-        kwargs["session_id"] = session_id
+        kwargs["session_id"] = SessionManager.validate_session_id(session_id)
     mgba_path = arguments.get("mgba_path")
     if mgba_path is not None:
         if not isinstance(mgba_path, str) or not mgba_path:
@@ -249,7 +246,7 @@ def _tools() -> dict[str, Tool]:
             results.Started,
             open_world=True,
             name="mgba_live_start",
-            description="Start a session; launches an executable and prunes dead sessions.",
+            description="Validate local inputs and transactionally start a session.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -710,7 +707,7 @@ async def _dispatch_tool(
 
     if name == "mgba_live_status":
         if _all_sessions_requested(args):
-            payload = await _controller.status(all=True)
+            payload = await _controller.status(session=_maybe_session(args), all=True)
             return {"value": payload}
         payload = await _controller.status(session=_require_session(args))
         return payload

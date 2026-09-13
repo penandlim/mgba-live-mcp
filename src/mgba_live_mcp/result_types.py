@@ -37,6 +37,7 @@ class Status(Result):
     process_state: str
     identity_verified: bool
     transaction: dict[str, JsonValue] | None
+    startup: dict[str, JsonValue] | None = None
     rom: str
     fps_target: float
     mgba_path: str | None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +46,13 @@ async def test_startup_lua_failure_keeps_session_context_and_running_session(
     client = LiveControllerClient(manager=manager)
     operation = client.start_with_lua_and_view if with_view else client.start_with_lua
     with pytest.raises(RuntimeError, match="session-123") as error:
-        await operation(rom="/tmp/game.gba", code="return 1", timeout=5, session_id="session-123")
+        await operation(
+            rom=str(Path(__file__).parent / "fixtures" / "synthetic.gb"),
+            mgba_path=sys.executable,
+            code="return 1",
+            timeout=5,
+            session_id="session-123",
+        )
     assert isinstance(error.value.__cause__, RuntimeError)
     assert "lua exploded" in str(error.value.__cause__)
     assert (manager.session_dir("session-123") / "running").exists()

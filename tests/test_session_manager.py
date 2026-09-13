@@ -85,6 +85,7 @@ def test_send_command_does_not_overwrite_an_unclaimed_command(tmp_path: Path) ->
     with pytest.raises(RuntimeError, match="session_busy"):
         manager.send_command(
             {
+                "id": "session-busy",
                 "command_path": str(command_path),
                 "response_path": str(session_dir / "response.json"),
             },
@@ -102,7 +103,11 @@ def test_timeout_keeps_unresolved_work_fenced_until_its_response(
     session_dir.mkdir()
     command_path = session_dir / "command.lua"
     response_path = session_dir / "response.json"
-    target = {"command_path": str(command_path), "response_path": str(response_path)}
+    target = {
+        "id": "session-timeout",
+        "command_path": str(command_path),
+        "response_path": str(response_path),
+    }
     clock = iter([0.0, 0.2])
     with monkeypatch.context() as timing:
         timing.setattr(
@@ -119,7 +124,7 @@ def test_timeout_keeps_unresolved_work_fenced_until_its_response(
     command_path.unlink()
     response_path.write_text(json.dumps({"id": request_id, "ok": True}))
 
-    def completed_command(path: Path, command: dict[str, Any]) -> None:
+    def completed_command(path: Path, command: dict[str, Any], **kwargs: Any) -> None:
         response_path.write_text(json.dumps({"id": command["id"], "ok": True, "frame": 7}))
 
     monkeypatch.setattr(manager, "write_command", completed_command)

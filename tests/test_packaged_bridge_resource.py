@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from importlib.resources import as_file, files
 from pathlib import Path
 
@@ -66,8 +67,8 @@ def test_packaged_lua_results_reach_mcp(tmp_path, monkeypatch, source, code, exp
 
     with as_file(bridge) as bridge_path:
 
-        def publish(path: Path, command):
-            original_write(path, command)
+        def publish(path: Path, command, **kwargs):
+            original_write(path, command, **kwargs)
             subprocess.run(
                 [lua, str(host), str(bridge_path)],
                 cwd=path.parent,
@@ -95,7 +96,11 @@ def test_packaged_lua_results_reach_mcp(tmp_path, monkeypatch, source, code, exp
         for startup in (False, True):
             arguments = {source: str(script) if source == "file" else code}
             if startup:
-                arguments.update(rom="host-substitute.gb", session_id="boot")
+                arguments.update(
+                    rom=str(Path(__file__).parent / "fixtures" / "synthetic.gb"),
+                    mgba_path=sys.executable,
+                    session_id="boot",
+                )
             else:
                 arguments["session"] = "running"
             name = "mgba_live_start_with_lua" if startup else "mgba_live_run_lua"

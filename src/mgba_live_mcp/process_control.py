@@ -12,7 +12,9 @@ import errno
 import math
 import os
 import signal
+import subprocess
 import sys
+import threading
 import time
 from functools import cache
 from pathlib import Path
@@ -26,6 +28,9 @@ from .errors import DomainError, ExecutionOutcome
 _PROC_PIDTBSDINFO = 3
 _PROC_FLAG_SLEADER = 0x20
 _SZOMB = 5
+
+_children: dict[int, tuple[subprocess.Popen[Any], dict[str, Any]]] = {}
+_children_lock = threading.Lock()
 
 
 class _ProcBsdInfo(ctypes.Structure):
@@ -259,6 +264,49 @@ def capture_identity(pid: int) -> dict[str, Any]:
     return identity
 
 
+def retain_child(proc: subprocess.Popen[Any], identity: dict[str, Any]) -> None:
+    """Preserve an owned child's exit-status reader before metadata publication."""
+    with _children_lock:
+        _children[proc.pid] = (proc, identity)
+
+
+def forget_child(proc: subprocess.Popen[Any]) -> None:
+    with _children_lock:
+        entry = _children.get(proc.pid)
+        if entry is not None and entry[0] is proc:
+            del _children[proc.pid]
+
+
+def watch_child(proc: subprocess.Popen[Any]) -> threading.Event:
+    """Reap a registered local child after its startup owner releases the event."""
+    startup_finished = threading.Event()
+
+    def wait() -> None:
+        try:
+            # Startup retains its exit-status reader until diagnosis is complete.
+            startup_finished.wait()
+            proc.wait()
+        finally:
+            forget_child(proc)
+
+    try:
+        threading.Thread(target=wait, name=f"mgba-reap-{proc.pid}", daemon=True).start()
+    except BaseException:
+        startup_finished.set()
+        raise
+    return startup_finished
+
+
+def _reap_child(pid: int, identity: dict[str, Any] | None) -> None:
+    with _children_lock:
+        entry = _children.get(pid)
+    if entry is None:
+        os.waitpid(pid, os.WNOHANG)
+    elif entry[1] == identity:
+        # Popen serializes its readers and preserves the actual exit status.
+        entry[0].poll()
+
+
 def _group_absence(pgid: int) -> str:
     try:
         os.killpg(pgid, 0)
@@ -319,7 +367,7 @@ def process_state(pid: int, identity: dict[str, Any] | None, *, reap: bool = Fal
                     return "identity_mismatch"
                 if not exited_at:
                     return "identity_unverified"
-                os.waitpid(pid, os.WNOHANG)
+                _reap_child(pid, identity)
             except ChildProcessError:
                 pass
             except (OSError, ValueError) as native_error:
@@ -338,7 +386,7 @@ def process_state(pid: int, identity: dict[str, Any] | None, *, reap: bool = Fal
     if not reap:
         return _group_absence(pid)
     try:
-        os.waitpid(pid, os.WNOHANG)
+        _reap_child(pid, identity)
     except ChildProcessError:
         pass
     except PermissionError:

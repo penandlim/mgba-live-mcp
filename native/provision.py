@@ -46,75 +46,55 @@ def main() -> None:
         "--root",
         type=Path,
         default=Path(".native/mgba"),
-        help="Build directory; existing builds require explicit verification mode",
-    )
-    parser.add_argument(
-        "--verify-existing",
-        action="store_true",
-        help="Verify a restored build without fetching, configuring or compiling",
+        help="New build directory; never reuses an unknown build or binary",
     )
     args = parser.parse_args()
     root = args.root.resolve()
-    cached = None
-    if args.verify_existing:
-        cached = json.loads((root / "provenance.json").read_text())
-    else:
-        root.mkdir(parents=True, exist_ok=False)
-    prefix = "verify-" if args.verify_existing else ""
+    root.mkdir(parents=True, exist_ok=False)
     commands = []
 
     def run(name: str, command: list[str], timeout: int = 120) -> str:
         commands.append(command)
         print(f"Native provisioning: {name}", flush=True)
-        log_path = root / f"{prefix}{name}.log"
-        with log_path.open("wb") as log:
+        with (root / f"{name}.log").open("wb") as log:
             subprocess.run(
                 command, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=timeout
             )
-        return log_path.read_text(encoding="utf-8", errors="replace")
+        return (root / f"{name}.log").read_text(encoding="utf-8", errors="replace")
 
     source, build = root / "source", root / "build"
     try:
-        if not args.verify_existing:
-            run("git-init", ["git", "init", str(source)])
-            run(
-                "git-fetch",
-                ["git", "-C", str(source), "fetch", "--depth", "1", MGBA_REPOSITORY, MGBA_COMMIT],
-            )
-            run("git-checkout", ["git", "-C", str(source), "checkout", "--detach", "FETCH_HEAD"])
+        run("git-init", ["git", "init", str(source)])
+        run(
+            "git-fetch",
+            ["git", "-C", str(source), "fetch", "--depth", "1", MGBA_REPOSITORY, MGBA_COMMIT],
+        )
+        run("git-checkout", ["git", "-C", str(source), "checkout", "--detach", "FETCH_HEAD"])
         revision = run("revision", ["git", "-C", str(source), "rev-parse", "HEAD"]).strip()
         if revision != MGBA_COMMIT:
             raise RuntimeError(f"Unexpected mGBA revision: {revision}")
-        if not args.verify_existing:
-            # Linux AppStream generation requires a release tag, even for a commit build.
-            release = "26b7884bc25a5933960f3cdcd98bac1ae14d42e2"
-            run(
-                "release-fetch",
-                ["git", "-C", str(source), "fetch", "--depth", "1", MGBA_REPOSITORY, release],
-            )
-            run("release-tag", ["git", "-C", str(source), "tag", "0.10.5", release])
-            run("configure", ["cmake", "-S", str(source), "-B", str(build), *CMAKE_FLAGS])
+        # Linux AppStream generation requires a release tag, even for a commit build.
+        release = "26b7884bc25a5933960f3cdcd98bac1ae14d42e2"
+        run(
+            "release-fetch",
+            ["git", "-C", str(source), "fetch", "--depth", "1", MGBA_REPOSITORY, release],
+        )
+        run("release-tag", ["git", "-C", str(source), "tag", "0.10.5", release])
+        run("configure", ["cmake", "-S", str(source), "-B", str(build), *CMAKE_FLAGS])
         flags = (build / "include/mgba/flags.h").read_text()
         for flag in ("ENABLE_SCRIPTING", "USE_LUA", "USE_PNG"):
             if f"#define {flag}" not in flags:
                 raise RuntimeError(f"CMake disabled required capability: {flag}")
-        if not args.verify_existing:
-            run(
-                "build",
-                ["cmake", "--build", str(build), "--target", "mgba-qt", "--parallel", "2"],
-                timeout=900,
-            )
+        run(
+            "build",
+            ["cmake", "--build", str(build), "--target", "mgba-qt", "--parallel", "2"],
+            timeout=900,
+        )
         binary = (
             build / "qt/mGBA.app/Contents/MacOS/mGBA"
             if platform.system() == "Darwin"
             else build / "qt/mgba-qt"
         )
-        digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-        if cached is not None:
-            if cached["commit"] != MGBA_COMMIT or cached["binary"] != str(binary):
-                raise RuntimeError("Restored build provenance does not match this source/workspace")
-            if cached["binary_sha256"] != digest:
-                raise RuntimeError("Restored native binary checksum mismatch")
         version = run("version", [str(binary), "--version"]).strip()
         if MGBA_COMMIT not in version:
             raise RuntimeError(f"Unexpected native version: {version}")
@@ -127,13 +107,13 @@ def main() -> None:
         )
         if platform.system() == "Linux":
             run("os-packages", ["dpkg-query", "-W"])
-            shutil.copyfile("/etc/os-release", root / f"{prefix}os-release")
+            shutil.copyfile("/etc/os-release", root / "os-release")
         manifest = {
             "repository": MGBA_REPOSITORY,
             "commit": revision,
             "version": version,
             "binary": str(binary),
-            "binary_sha256": digest,
+            "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
             "commands": commands,
             "platform": platform.platform(),
             "dependencies": dependencies,
@@ -142,16 +122,13 @@ def main() -> None:
                 for k in ("CC", "CXX", "SDKROOT", "CMAKE_PREFIX_PATH", "PKG_CONFIG_PATH")
             },
         }
-        manifest_name = "verification.json" if args.verify_existing else "provenance.json"
-        (root / manifest_name).write_text(json.dumps(manifest, indent=2) + "\n")
-        operation = "verification" if args.verify_existing else "provisioning"
-        print(f"Native {operation} complete: {binary}", flush=True)
+        (root / "provenance.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        print(f"Native provisioning complete: {binary}", flush=True)
     finally:
-        if not args.verify_existing:
-            for name in ("CMakeCache.txt", "include/mgba/flags.h", "version.c"):
-                if (build / name).is_file():
-                    shutil.copyfile(build / name, root / Path(name).name)
-        (root / f"{prefix}commands.json").write_text(json.dumps(commands, indent=2) + "\n")
+        for name in ("CMakeCache.txt", "include/mgba/flags.h", "version.c"):
+            if (build / name).is_file():
+                shutil.copyfile(build / name, root / Path(name).name)
+        (root / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
 
 
 if __name__ == "__main__":

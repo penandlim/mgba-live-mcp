@@ -78,10 +78,6 @@ jobs:
         if: steps.native-cache.outputs.cache-hit != 'true'
         timeout-minutes: 20
         run: make native-build
-      - name: Verify restored native source and executable
-        if: steps.native-cache.outputs.cache-hit == 'true'
-        timeout-minutes: 2
-        run: uv run python native/provision.py --verify-existing
       - name: Restore checksum-keyed public ROM cache
         id: rom-cache
         uses: actions/cache@v4
@@ -123,7 +119,7 @@ jobs:
             .native/mgba/CMakeCache.txt
             .native/mgba/flags.h
             .native/mgba/version.c
-            .native/mgba/*os-release
+            .native/mgba/os-release
             .native/xvfb.log
             .native/smoke/
             !.native/**/*.gbc

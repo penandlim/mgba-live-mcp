@@ -62,8 +62,9 @@ args = ["--from", "git+https://github.com/penandlim/mgba-live-mcp", "mgba-live-m
 uv sync
 ```
 
-2. Default checks are offline unit checks. They do not download a ROM or
-   require mGBA:
+2. With dependencies already installed, default checks are offline with
+   respect to ROM downloads and mGBA; dependency installation itself may use
+   the network:
 
 ```bash
 make test

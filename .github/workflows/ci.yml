@@ -19,8 +19,8 @@ jobs:
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@v4
-      # Unit checks are intentionally offline; native ROM provisioning is
-      # reserved for the separate native-smoke work tracked in issue #59.
+      # With dependencies installed, unit checks are offline with respect to
+      # ROM/mGBA provisioning; native smoke work is tracked separately in #59.
       - name: Install dev dependencies
         run: uv sync --group dev
       - name: Run checks

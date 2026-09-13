@@ -8,7 +8,10 @@ import selectors
 import signal
 import subprocess
 import sys
+import threading
+import time
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +20,7 @@ from typing import Any
 import pytest
 
 from mgba_live_mcp import process_control as pc
+from mgba_live_mcp.session_manager import SessionManager
 
 _PID = 424242
 _DARWIN_BIRTH = {
@@ -572,3 +576,157 @@ def test_native_owned_group_returns_only_after_confirmed_exit(ignore_term: bool)
         assert pc.process_state(proc.pid, identity) == "dead"
         with pytest.raises(ProcessLookupError):
             os.killpg(proc.pid, 0)
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX identity support")
+@pytest.mark.parametrize("ready", [False, True, None], ids=["startup", "ready", "unknown"])
+def test_status_prunes_ready_children_but_preserves_startup_exit_status(
+    tmp_path: Path, ready: bool | None
+) -> None:
+    manager = SessionManager(runtime_root=tmp_path)
+    manager.ensure_runtime_dirs()
+    with _owned_child(False) as proc:
+        record = {
+            "id": "owned-child",
+            "pid": proc.pid,
+            "process_identity": pc.capture_identity(proc.pid),
+        }
+        if ready is not None:
+            record["ready"] = ready
+        with manager.transaction("owned-child", create=True):
+            manager.write_session(record)
+        manager.set_active_session("owned-child")
+        os.killpg(proc.pid, signal.SIGTERM)
+        deadline = time.monotonic() + 5
+        while manager._process_state(record) == "alive":
+            assert time.monotonic() < deadline, "Owned child did not exit"
+            time.sleep(0.01)
+        if ready:
+            removed = manager.prune_dead_sessions()
+            while not removed:
+                assert time.monotonic() < deadline, "Exited child was never archived"
+                time.sleep(0.01)
+                removed = manager.prune_dead_sessions()
+            assert removed == ["owned-child"]
+            assert manager.get_active_session_id() is None
+        else:
+            assert manager.prune_dead_sessions() == []
+            assert manager.get_active_session_id() == "owned-child"
+            if ready is None:
+                result = manager.stop(session="owned-child")
+                assert result["outcome"] == "already_exited"
+            else:
+                assert proc.wait(timeout=5) == -signal.SIGTERM
+            assert manager.prune_dead_sessions() == ["owned-child"]
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX identity support")
+@pytest.mark.parametrize("ownership", ["reused-birth", "legacy", "current-group"])
+def test_attach_status_commands_and_stop_share_native_ownership_conclusions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ownership: str
+) -> None:
+    manager = SessionManager(runtime_root=tmp_path)
+    manager.ensure_runtime_dirs()
+    with _owned_child(False) as proc:
+        identity = pc.capture_identity(proc.pid)
+        if ownership == "reused-birth":
+            key = "start_ticks" if sys.platform == "linux" else "start_abstime"
+            identity["birth"][key] += 1
+        elif ownership == "current-group":
+            identity["pgid"] = os.getpgrp()
+        state = "identity_unverified" if ownership == "legacy" else "identity_mismatch"
+        directory = manager.session_dir("unverified")
+        record = {
+            "id": "unverified",
+            "pid": proc.pid,
+            "process_identity": None if ownership == "legacy" else identity,
+            "ready": True,
+            "rom": "fixture",
+            "fps_target": 120,
+            "heartbeat_path": str(directory / "heartbeat.json"),
+            "command_path": str(directory / "command.lua"),
+            "response_path": str(directory / "response.json"),
+            "session_dir": str(directory),
+        }
+        with manager.transaction("unverified", create=True):
+            manager.write_session(record)
+        manager.set_active_session("unverified")
+        signals = []
+        killpg = os.killpg
+
+        def record_signal(pgid: int, signum: int) -> None:
+            if signum:
+                signals.append((pgid, signum))
+            killpg(pgid, signum)
+
+        monkeypatch.setattr(pc.os, "killpg", record_signal)
+        for operation in (
+            lambda: manager.attach(pid=proc.pid),
+            lambda: manager.run_lua(session="unverified", code="return true"),
+            lambda: manager.stop(session="unverified", grace=0),
+        ):
+            with pytest.raises(RuntimeError, match=f"^{state}:"):
+                operation()
+        assert signals == []
+        assert not (directory / "command.lua").exists()
+        assert manager.prune_dead_sessions() == []
+        assert manager.get_active_session_id() == "unverified"
+        status = manager.status(session="unverified")
+        assert isinstance(status, dict)
+        assert status["process_state"] == state
+        assert status["alive"] is True
+        assert status["identity_verified"] is False
+        assert status["transaction"]["state"] == "stopping"
+
+
+@pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="POSIX identity support")
+def test_startup_status_does_not_consume_failed_process_exit_code(tmp_path: Path) -> None:
+    at_bridge = threading.Event()
+    inspect_finished = threading.Event()
+    exit_file = tmp_path / "exit"
+    command = [
+        sys.executable,
+        "-c",
+        "import pathlib,sys,time; marker=pathlib.Path(sys.argv[1]); "
+        "exec('while not marker.exists(): time.sleep(0.01)'); sys.exit(7)",
+        str(exit_file),
+    ]
+
+    class StartupManager(SessionManager):
+        def build_start_command(self, **kwargs: Any) -> list[str]:
+            return command
+
+        def send_command(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            at_bridge.set()
+            if not inspect_finished.wait(5):
+                raise TimeoutError("Startup inspection was not released")
+            return super().send_command(*args, **kwargs)
+
+    manager = StartupManager(runtime_root=tmp_path / "runtime")
+    rom = tmp_path / "fixture.gb"
+    rom.write_bytes(b"fixture")
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        started = executor.submit(
+            manager.start,
+            rom=str(rom),
+            mgba_path=sys.executable,
+            session_id="failed-start",
+            ready_timeout=1,
+        )
+        try:
+            assert at_bridge.wait(5)
+            record = manager.load_session("failed-start")
+            exit_file.touch()
+            deadline = time.monotonic() + 5
+            while manager._process_state(record) == "alive":
+                assert time.monotonic() < deadline, "Startup process did not exit"
+                time.sleep(0.01)
+            assert manager.prune_dead_sessions() == []
+            status = manager.status(session="failed-start")
+            assert isinstance(status, dict)
+            assert status["alive"] is True
+        finally:
+            exit_file.touch()
+            inspect_finished.set()
+        with pytest.raises(RuntimeError, match="exited early with exit code 7"):
+            started.result(timeout=5)

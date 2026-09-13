@@ -113,6 +113,7 @@ class SessionManager:
         return process_control.process_state(
             int(session["pid"]),
             session.get("process_identity"),
+            reap=session.get("ready") is True,
         )
 
     def ensure_runtime_dirs(self) -> None:
@@ -156,17 +157,6 @@ class SessionManager:
             except Exception:
                 continue
         return items
-
-    def pid_alive(self, pid: int) -> bool:
-        if pid <= 0:
-            return False
-        try:
-            os.kill(pid, 0)
-            return True
-        except PermissionError:
-            return True
-        except OSError:
-            return False
 
     def read_log_excerpt(self, path: Path, max_chars: int = 4000) -> str:
         try:
@@ -257,10 +247,11 @@ class SessionManager:
             raise RuntimeError(f"session_not_found: Session not found: {session_id}")
 
         session = json.loads(path.read_text())
-        if require_alive and not self.pid_alive(int(session["pid"])):
-            raise RuntimeError(
-                f"session_dead: Session exists but process is not alive: {session_id}"
-            )
+        if require_alive:
+            state = self._process_state(session)
+            if state != "alive":
+                code = "session_dead" if state == "dead" else state
+                raise RuntimeError(f"{code}: session '{session_id}' process is {state}.")
         return session
 
     def resolve_attach_target(
@@ -472,6 +463,7 @@ class SessionManager:
                 "id": resolved_session_id,
                 "generation": operation.generation,
                 "pid": proc.pid,
+                "ready": False,
                 "rom": str(rom_path),
                 "fps_target": resolved_fps_target,
                 "mgba_path": resolved_mgba_path,
@@ -492,6 +484,8 @@ class SessionManager:
                     self.send_command(session, "ping", timeout=ready_timeout, _startup_process=proc)
                 )
                 operation.check()
+                session["ready"] = True
+                self.write_session(session)
             except Exception as exc:
                 returncode = proc.poll()
                 details = [
@@ -553,8 +547,9 @@ class SessionManager:
         return {
             "session_id": session["id"],
             "pid": session["pid"],
-            "alive": state != "dead",
+            "alive": 0 < int(session["pid"]) <= 0x7FFFFFFF and state != "dead",
             "process_state": state,
+            "identity_verified": state == "alive",
             "transaction": session_transactions.transaction_status(self.session_dir(session["id"])),
             "rom": session["rom"],
             "fps_target": session["fps_target"],

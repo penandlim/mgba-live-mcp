@@ -54,10 +54,6 @@ def iter_sessions() -> list[dict[str, Any]]:
     return _manager().iter_sessions()
 
 
-def pid_alive(pid: int) -> bool:
-    return _manager().pid_alive(pid)
-
-
 def read_log_excerpt(path: Path, max_chars: int = 4000) -> str:
     return _manager().read_log_excerpt(path, max_chars=max_chars)
 

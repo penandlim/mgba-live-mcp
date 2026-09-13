@@ -53,14 +53,15 @@ def main() -> None:
     root.mkdir(parents=True, exist_ok=False)
     commands = []
 
-    def run(name: str, command: list[str], timeout: int = 120) -> str:
+    def run(name: str, command: list[str], timeout: int = 120) -> Path:
         commands.append(command)
         print(f"Native provisioning: {name}", flush=True)
-        with (root / f"{name}.log").open("wb") as log:
+        log_path = root / f"{name}.log"
+        with log_path.open("wb") as log:
             subprocess.run(
                 command, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=timeout
             )
-        return (root / f"{name}.log").read_text(encoding="utf-8", errors="replace")
+        return log_path
 
     source, build = root / "source", root / "build"
     try:
@@ -70,7 +71,11 @@ def main() -> None:
             ["git", "-C", str(source), "fetch", "--depth", "1", MGBA_REPOSITORY, MGBA_COMMIT],
         )
         run("git-checkout", ["git", "-C", str(source), "checkout", "--detach", "FETCH_HEAD"])
-        revision = run("revision", ["git", "-C", str(source), "rev-parse", "HEAD"]).strip()
+        revision = (
+            run("revision", ["git", "-C", str(source), "rev-parse", "HEAD"])
+            .read_text(encoding="utf-8", errors="replace")
+            .strip()
+        )
         if revision != MGBA_COMMIT:
             raise RuntimeError(f"Unexpected mGBA revision: {revision}")
         # Linux AppStream generation requires a release tag, even for a commit build.
@@ -95,16 +100,22 @@ def main() -> None:
             if platform.system() == "Darwin"
             else build / "qt/mgba-qt"
         )
-        version = run("version", [str(binary), "--version"]).strip()
+        version = (
+            run("version", [str(binary), "--version"])
+            .read_text(encoding="utf-8", errors="replace")
+            .strip()
+        )
         if MGBA_COMMIT not in version:
             raise RuntimeError(f"Unexpected native version: {version}")
-        help_text = run("help", [str(binary), "--help"])
+        help_text = run("help", [str(binary), "--help"]).read_text(
+            encoding="utf-8", errors="replace"
+        )
         if "--script" not in help_text:
             raise RuntimeError("Built Qt frontend does not expose --script")
         dependencies = run(
             "dependencies",
             ["otool", "-L", str(binary)] if platform.system() == "Darwin" else ["ldd", str(binary)],
-        )
+        ).read_text(encoding="utf-8", errors="replace")
         if platform.system() == "Linux":
             run("os-packages", ["dpkg-query", "-W"])
             shutil.copyfile("/etc/os-release", root / "os-release")

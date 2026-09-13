@@ -10,6 +10,10 @@
 - Atomically publish native bridge JSON after checked write/close, preserving
   the previous snapshot on failure. Add a real-Lua publication-boundary
   regression for the zero-byte heartbeat race found by native CI (#59).
+- Cache the complete pinned native build using exact recipe/toolchain inputs
+  and enable uv caching; retain all real native checks on hits. Verified
+  same-head cold/warm jobs took 176/55 seconds, with compilation skipped only
+  after an exact cache hit (#59).
 - Document clean-machine setup, verified/unverified native combinations and
   µCity ROM/media attribution and redistribution requirements.
 - Apply native birth/group identity consistently to attach and command admission,

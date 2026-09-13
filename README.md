@@ -400,6 +400,31 @@ callback counters are not assumed equivalent. Capability metadata also records
 the loaded platform and state-method/flag availability; it does not prove
 save/load-state or OAM semantics.
 
+### Native CI build cache
+
+The native job caches the complete `.native/mgba/` tree, including the Qt
+executable, shared libraries, build/runtime assets, source checkout and original
+provenance/logs. It uses an exact key: Ubuntu 22.04 and architecture, upstream
+commit, build recipe/Makefile/workflow hashes, workspace, compiler/build inputs
+and a sorted installed-package version inventory. This intentionally favors
+conservative invalidation over reusing a potentially incompatible native build.
+There are no broad restore keys; apt progress logs do not enter the fingerprint.
+
+Only `make native-build` is skipped on an exact hit. Every job still runs the
+unchanged native smoke, checking the executable version's source pin, recorded
+build commit and executable SHA-256 before both real CLI/MCP scenarios, PNG
+decoding, the atomic-publication regression and confirmed process cleanup.
+The uv dependency cache is enabled using `uv.lock`; the separate checksum-keyed
+ROM cache remains unchanged. `cache-inputs.txt` and `cache-status.log` are retained
+with the native diagnostics.
+
+Observed on the same `f52926b` head in
+[run 34775213953](https://github.com/penandlim/mgba-live-mcp/actions/runs/34775213953):
+attempt 1 built and saved the cache in **176 seconds** (128 seconds building);
+attempt 2 restored the exact key in **1 second**, skipped building, and completed
+in **55 seconds**. Both full native scenarios passed on both attempts. This
+observed pair saved 121 seconds (about 69%); hosted-runner timings vary.
+
 ### Tested native matrix
 
 | OS / architecture | Native build | Display | Evidence / status |

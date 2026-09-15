@@ -27,7 +27,7 @@ ERROR_CODES = {
     "termination_unconfirmed": "Process/group exit could not be confirmed.",
     "bridge_error": "The bridge reported a command error; side effects may have occurred.",
     "serialization_failed": (
-        "Lua response is not supported JSON; inspect command_completed before retrying."
+        "Lua response could not be serialized as JSON; inspect command_completed before retrying."
     ),
     "command_timeout": "No correlated bridge response arrived; execution remains unknown.",
     "settle_failed": "The command ran, but settling could not be confirmed.",

@@ -547,7 +547,12 @@ class SessionManager:
                         session_id=session.get("id"),
                         pid=session["pid"],
                     )
-            command = {"id": request_id, "kind": kind, **(payload or {})}
+            command = {
+                "id": request_id,
+                "kind": kind,
+                **(payload or {}),
+                "session_id": session["id"],
+            }
 
             def publish() -> None:
                 if command_path.exists():
@@ -607,6 +612,25 @@ class SessionManager:
 
     def handle_response(self, response: dict[str, Any], *, session_id: str | None = None) -> Any:
         if not response.get("ok"):
+            if response.get("code") == "serialization_failed":
+                completed = response.get("command_completed") is True
+                raise DomainError(
+                    "serialization_failed",
+                    str(response.get("error", "Lua response cannot be represented as JSON.")),
+                    phase="serialization",
+                    execution_outcome=(
+                        "partial"
+                        if completed
+                        else "not_started"
+                        if response.get("execution_outcome") == "not_started"
+                        else "unknown"
+                    ),
+                    request_id=response.get("id"),
+                    session_id=session_id,
+                    frame=response.get("frame"),
+                    command_completed=completed,
+                    serialization_reason=response.get("serialization_reason"),
+                )
             raise DomainError(
                 "bridge_error",
                 str(response.get("error", "unknown")),
@@ -1425,6 +1449,14 @@ class SessionManager:
         width: int = 4,
         timeout: float = 10.0,
     ) -> dict[str, Any]:
+        if type(width) is not int or not 1 <= width <= 6:
+            raise DomainError(
+                "invalid_arguments",
+                "Pointer width must be an integer from 1 to 6 bytes.",
+                phase="validation",
+                execution_outcome="not_started",
+                session_id=session,
+            )
         target = self.require_session(session, require_alive=True)
         response = self.send_command(
             target,

@@ -399,8 +399,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_dump_pointers.add_argument(
         "--width",
         type=int,
+        choices=range(1, 7),
         default=4,
-        help="Pointer width in bytes (default: 4).",
+        help="Pointer width in bytes (1-6; default: 4).",
     )
     add_timeout_arg(p_dump_pointers)
     p_dump_pointers.set_defaults(func=cmd_dump_pointers)

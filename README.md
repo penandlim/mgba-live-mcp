@@ -276,6 +276,43 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
   and is neither read-only nor safely retryable. Read/idempotence hints exclude
   bridge bookkeeping and do not imply that a running game's state is frozen.
 
+### Lua JSON returns and pointer precision
+
+- Lua results may contain `nil` (JSON null), booleans, finite numbers, valid UTF-8
+  strings, consecutive `1..N` array tables, and string-keyed object tables.
+  Empty tables remain arrays. Shared acyclic tables are allowed; recursive tables,
+  sparse/mixed numeric keys, functions, userdata, threads, and non-finite numbers
+  are rejected instead of stringified, rounded, or replaced with null.
+- Text controls are JSON-escaped and Unicode is preserved. Arbitrary binary bytes
+  must be represented explicitly, for example `return {0, 255}` or
+  `return "00ff"`; binary Lua strings are not a JSON text representation.
+  Unicode surrogate code points are rejected independently of the native `utf8`
+  library's validation behavior.
+- The **complete bridge response**, including its envelope, is limited to
+  **1,048,576 encoded UTF-8 bytes**, **32 nested tables** (the response root is
+  depth 1), and **10,000 visited table entries**. Repeated shared subtrees count
+  on every traversal. String escape expansion is checked before allocation.
+  These are serialization limits, not limits on arbitrary Lua execution.
+- Unsupported results and non-text Lua error objects produce correlated
+  `serialization_failed` errors with `phase: serialization`, the request/session
+  identifiers, bridge counter, and a bounded `serialization_reason`. If Lua
+  returned successfully before serialization failed, the error retains
+  `command_completed: true` and `execution_outcome: partial`. The mutation
+  already happened; do not replay it merely to recover its result.
+  An error during Lua execution keeps an unknown outcome.
+- Serialization rejection permits the next request. Response publication failure
+  instead emits a bounded JSON diagnostic on emulator stderr and leaves the
+  transaction unresolved; use the existing reconciliation/recovery-stop flow.
+  The fallback error never serializes the rejected result or invokes its
+  `tostring` metamethod.
+- Pointer dumps accept only integer widths **1–6 bytes**, defaulting to 4.
+  Little-endian values remain JSON integers, exactly represented up to
+  **281474976710655 (`2^48 - 1`)**. Widths 7/8, booleans, fractions, and out-of-range
+  widths are rejected before memory reads, never clamped. To inspect wider raw
+  storage, use a byte-range read and decode it explicitly in the client.
+  Bytes are read in ascending address order, preserving the existing MMIO
+  read sequence.
+
 ### Transactional startup
 
 - ROM, executable, bridge, startup Lua, initial savestate and numeric options

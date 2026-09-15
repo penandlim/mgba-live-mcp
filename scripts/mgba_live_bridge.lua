@@ -26,80 +26,153 @@ local key_map = {
 
 local release_at = {}
 
-local function json_escape(str)
-  local repl = {
-    ['"'] = '\\"',
-    ['\\'] = '\\\\',
-    ['\b'] = '\\b',
-    ['\f'] = '\\f',
-    ['\n'] = '\\n',
-    ['\r'] = '\\r',
-    ['\t'] = '\\t',
-  }
-  return str:gsub('[%z\1-\31\\"]', function(c)
-    if repl[c] then
-      return repl[c]
-    end
-    return string.format("\\u%04x", c:byte())
-  end)
-end
+-- Limits include the complete response envelope, not just the user's result.
+local json_max_depth = 32
+local json_max_entries = 10000
+local json_max_bytes = 1048576
+local serialization_messages = {
+  cycle = "Lua response contains a recursive table.",
+  depth_limit = "Lua response exceeds the JSON nesting limit.",
+  entry_limit = "Lua response exceeds the JSON entry limit.",
+  byte_limit = "Lua response exceeds the encoded JSON byte limit.",
+  invalid_utf8 = "Lua response contains invalid UTF-8; return bytes as integers or hex text.",
+  unsupported_type = "Lua response contains an unsupported value type.",
+  unsupported_key = "Lua objects require string keys; arrays require consecutive integer keys.",
+  non_finite = "Lua response contains a non-finite number.",
+  unsupported_error = "Lua raised a non-text error object.",
+}
+local json_escapes = {
+  ['"'] = '\\"', ['\\'] = '\\\\', ['\b'] = '\\b', ['\f'] = '\\f',
+  ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t',
+}
 
-local function is_array(tbl)
-  local n = 0
-  local max = 0
-  for k, _ in pairs(tbl) do
-    if type(k) ~= "number" or k < 1 or math.floor(k) ~= k then
+local function valid_utf8(str)
+  -- Lua 5.3's utf8.len accepts surrogates; require scalar values on every runtime.
+  local i = 1
+  while true do
+    i = str:find("[\128-\255]", i)
+    if not i then return true end
+    local a, b, c, d = str:byte(i, i + 3)
+    if not b or b < 128 or b > 191 then return false end
+    if a >= 194 and a <= 223 then
+      i = i + 2
+    elseif a >= 224 and a <= 239 and c and c >= 128 and c <= 191
+        and (a ~= 224 or b >= 160) and (a ~= 237 or b < 160) then
+      i = i + 3
+    elseif a >= 240 and a <= 244 and c and c >= 128 and c <= 191
+        and d and d >= 128 and d <= 191
+        and (a ~= 240 or b >= 144) and (a ~= 244 or b < 144) then
+      i = i + 4
+    else
       return false
     end
-    n = n + 1
-    if k > max then
-      max = k
-    end
   end
-  return n == max
 end
 
 local function json_encode(value)
-  local t = type(value)
-  if t == "nil" or rawequal(value, json_null) then
-    return "null"
-  end
-  if t == "boolean" then
-    return value and "true" or "false"
-  end
-  if t == "number" then
-    if value ~= value or value == math.huge or value == -math.huge then
-      return "null"
+  local parts, active = {}, {}
+  local bytes, entries = 0, 0
+  local function append(text)
+    if #text > json_max_bytes - bytes then
+      error("byte_limit", 0)
     end
-    return tostring(value)
+    bytes = bytes + #text
+    parts[#parts + 1] = text
   end
-  if t == "string" then
-    return '"' .. json_escape(value) .. '"'
-  end
-  if t == "table" then
-    if is_array(value) then
-      local parts = {}
-      for i = 1, #value do
-        parts[#parts + 1] = json_encode(value[i])
+  local function encode_string(str)
+    local size = #str + 2
+    if size > json_max_bytes - bytes then
+      error("byte_limit", 0)
+    end
+    if not valid_utf8(str) then
+      error("invalid_utf8", 0)
+    end
+    -- Count expansion before gsub allocates an escaped copy.
+    for c in str:gmatch('[%z\1-\31\\"]') do
+      size = size + (json_escapes[c] and #json_escapes[c] or 6) - 1
+      if size > json_max_bytes - bytes then
+        error("byte_limit", 0)
       end
-      return "[" .. table.concat(parts, ",") .. "]"
     end
-    local keys = {}
-    for k, _ in pairs(value) do
-      keys[#keys + 1] = tostring(k)
-    end
-    table.sort(keys)
-    local parts = {}
-    for _, sk in ipairs(keys) do
-      local v = value[sk]
-      if v == nil then
-        v = value[tonumber(sk)]
-      end
-      parts[#parts + 1] = '"' .. json_escape(sk) .. '":' .. json_encode(v)
-    end
-    return "{" .. table.concat(parts, ",") .. "}"
+    append('"')
+    append(str:gsub('[%z\1-\31\\"]', function(c)
+      return json_escapes[c] or string.format("\\u%04x", c:byte())
+    end))
+    append('"')
   end
-  return '"' .. json_escape(tostring(value)) .. '"'
+  local encode
+  encode = function(item, depth)
+    local kind = type(item)
+    if kind == "nil" or rawequal(item, json_null) then
+      append("null")
+    elseif kind == "boolean" then
+      append(item and "true" or "false")
+    elseif kind == "number" then
+      if item ~= item or item == math.huge or item == -math.huge then
+        error("non_finite", 0)
+      end
+      if math.type and math.type(item) == "integer" then
+        append(tostring(item))
+      else
+        append((string.format("%.17g", item):gsub(",", ".")))
+      end
+    elseif kind == "string" then
+      encode_string(item)
+    elseif kind == "table" then
+      if active[item] then
+        error("cycle", 0)
+      end
+      if depth > json_max_depth then
+        error("depth_limit", 0)
+      end
+      active[item] = true
+      local keys, maximum, numeric = {}, 0, 0
+      -- Raw traversal avoids executing __pairs, __index or __len callbacks.
+      local key_bytes = 0
+      for key in next, item do
+        entries = entries + 1
+        if entries > json_max_entries then
+          error("entry_limit", 0)
+        end
+        if type(key) == "number" and key >= 1 and key < math.huge
+            and math.floor(key) == key then
+          numeric = numeric + 1
+          maximum = math.max(maximum, key)
+        elseif type(key) ~= "string" then
+          error("unsupported_key", 0)
+        else
+          key_bytes = key_bytes + #key + 3
+          if key_bytes > json_max_bytes - bytes then
+            error("byte_limit", 0)
+          end
+        end
+        keys[#keys + 1] = key
+      end
+      local array = numeric == #keys and maximum == #keys
+      if not array and numeric > 0 then
+        error("unsupported_key", 0)
+      end
+      append(array and "[" or "{")
+      if not array then
+        table.sort(keys)
+      end
+      for i = 1, #keys do
+        if i > 1 then append(",") end
+        local key = array and i or keys[i]
+        if not array then
+          encode_string(key)
+          append(":")
+        end
+        encode(rawget(item, key), depth + 1)
+      end
+      append(array and "]" or "}")
+      active[item] = nil
+    else
+      error("unsupported_type", 0)
+    end
+  end
+  encode(value, 1)
+  return table.concat(parts)
 end
 
 local function write_text(path, text)
@@ -124,7 +197,11 @@ local function write_text(path, text)
 end
 
 local function write_json(path, value)
-  return write_text(path, json_encode(value))
+  local ok, text = pcall(json_encode, value)
+  if not ok then
+    return false, text
+  end
+  return write_text(path, text)
 end
 
 local function resolve_key(k)
@@ -171,12 +248,12 @@ local function parse_command_file()
   local loader, lerr = loadfile(command_path)
   os.remove(command_path)
   if not loader then
-    return { id = "unknown", kind = "__invalid__", _error = tostring(lerr) }
+    return { id = "unknown", kind = "__invalid__", _error = lerr }
   end
 
   local ok, command = pcall(loader)
   if not ok then
-    return { id = "unknown", kind = "__invalid__", _error = tostring(command) }
+    return { id = "unknown", kind = "__invalid__", _error = command }
   end
   if type(command) ~= "table" then
     return { id = "unknown", kind = "__invalid__", _error = "command.lua must return a table" }
@@ -215,9 +292,10 @@ local function read_range(start_addr, length)
 end
 
 local function read_pointer(addr, width)
-  local val = 0
+  local val, scale = 0, 1
   for i = 0, width - 1 do
-    val = val + emu:read8(addr + i) * (256 ^ i)
+    val = val + emu:read8(addr + i) * scale
+    scale = scale * 256
   end
   return val
 end
@@ -303,7 +381,7 @@ end
 
 local function run_lua_file(path)
   if type(path) ~= "string" or #path == 0 then
-    return nil, "missing script path"
+    error("missing script path", 0)
   end
   local resolved = path
   if string.sub(path, 1, 1) ~= "/" then
@@ -311,29 +389,21 @@ local function run_lua_file(path)
   end
   local loader, err = loadfile(resolved)
   if not loader then
-    return nil, err
+    error(err, 0)
   end
-  local ok, result = pcall(loader)
-  if not ok then
-    return nil, result
-  end
-  return result, nil
+  return loader()
 end
 
 local function run_lua_inline(code)
   if type(code) ~= "string" or #code == 0 then
-    return nil, "missing inline code"
+    error("missing inline code", 0)
   end
   local load_fn = loadstring or load
   local loader, err = load_fn(code, "mgba_live_inline")
   if not loader then
-    return nil, err
+    error(err, 0)
   end
-  local ok, result = pcall(loader)
-  if not ok then
-    return nil, result
-  end
-  return result, nil
+  return loader()
 end
 
 local function handle_command(cmd)
@@ -402,15 +472,12 @@ local function handle_command(cmd)
   if kind == "dump_pointers" then
     local start_addr = tonumber(cmd.start)
     local count = tonumber(cmd.count)
-    local width = tonumber(cmd.width or 4) or 4
+    local width = cmd.width == nil and 4 or cmd.width
     if not start_addr or not count then
       error("dump_pointers requires start and count")
     end
-    if width < 1 then
-      width = 1
-    end
-    if width > 8 then
-      width = 8
+    if type(width) ~= "number" or width ~= math.floor(width) or width < 1 or width > 6 then
+      error("pointer width must be an integer from 1 to 6 bytes", 0)
     end
     if count < 1 then
       count = 1
@@ -427,18 +494,12 @@ local function handle_command(cmd)
   end
 
   if kind == "run_lua_file" then
-    local result, err = run_lua_file(cmd.path)
-    if err then
-      error(err)
-    end
+    local result = run_lua_file(cmd.path)
     return { result = result == nil and json_null or result }
   end
 
   if kind == "run_lua_inline" then
-    local result, err = run_lua_inline(cmd.code)
-    if err then
-      error(err)
-    end
+    local result = run_lua_inline(cmd.code)
     return { result = result == nil and json_null or result }
   end
 
@@ -446,34 +507,56 @@ local function handle_command(cmd)
 end
 
 local function process_command(cmd)
-  local command_id = tostring(cmd.id or "unknown")
-  if cmd.kind == "__invalid__" then
-    write_json(response_path, {
-      id = command_id,
+  local invalid = cmd.kind == "__invalid__"
+  local ok, data
+  if invalid then
+    ok, data = false, cmd._error
+  else
+    ok, data = pcall(handle_command, cmd)
+  end
+  local response = {
+    id = cmd.id or "unknown",
+    session_id = cmd.session_id or session_dir:match("([^/]+)/*$"),
+    ok = ok,
+    frame = frame,
+  }
+  if ok then
+    response.data = data
+  else
+    response.error = (data == nil or data == false)
+        and "Lua command raised a non-text error." or data
+  end
+  local encoded, text
+  if not ok and data ~= nil and data ~= false and type(data) ~= "string" then
+    encoded, text = false, "unsupported_error"
+  else
+    encoded, text = pcall(json_encode, response)
+  end
+  if not encoded then
+    local reason = type(text) == "string" and serialization_messages[text] and text or "unsupported_type"
+    -- Only trusted request metadata and fixed text reach this independent fallback.
+    -- Never include or tostring the offending Lua result/error object.
+    encoded, text = pcall(json_encode, {
+      id = response.id,
+      session_id = response.session_id,
       ok = false,
       frame = frame,
-      error = cmd._error or "invalid command",
+      code = "serialization_failed",
+      phase = "serialization",
+      error = serialization_messages[reason],
+      serialization_reason = reason,
+      execution_outcome = ok and "partial" or (invalid and "not_started" or "unknown"),
+      command_completed = ok,
     })
+  end
+  if not encoded then
+    io.stderr:write('{"code":"response_encoding_failed","phase":"serialization","execution_outcome":"unknown"}\n')
     return
   end
-
-  local ok, data = pcall(handle_command, cmd)
-  if ok then
-    write_json(response_path, {
-      id = command_id,
-      ok = true,
-      frame = frame,
-      data = data,
-    })
-    return
+  local written = write_text(response_path, text)
+  if not written then
+    io.stderr:write('{"code":"response_write_failed","phase":"publish","execution_outcome":"unknown"}\n')
   end
-
-  write_json(response_path, {
-    id = command_id,
-    ok = false,
-    frame = frame,
-    error = tostring(data),
-  })
 end
 
 local function write_heartbeat()

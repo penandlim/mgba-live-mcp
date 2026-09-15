@@ -154,6 +154,7 @@ def _parse_grace(arguments: dict[str, Any]) -> float:
 
 
 def _parse_wait_frames(arguments: dict[str, Any]) -> int:
+
     wait_frames_raw = arguments.get("wait_frames", 0)
     if wait_frames_raw is None:
         return 0
@@ -544,7 +545,7 @@ def _tools() -> dict[str, Tool]:
                     "session": {"type": "string"},
                     "start": {"type": "integer"},
                     "count": {"type": "integer"},
-                    "width": {"type": "integer", "default": 4},
+                    "width": {"type": "integer", "minimum": 1, "maximum": 6, "default": 4},
                     "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session", "start", "count"],
@@ -816,7 +817,7 @@ async def _dispatch_tool(
             session=_require_session(args),
             start=args["start"],
             count=int(args["count"]),
-            width=int(args.get("width", 4)),
+            width=args.get("width", 4),
             timeout=timeout,
         )
         return payload

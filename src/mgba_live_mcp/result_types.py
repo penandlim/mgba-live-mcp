@@ -129,14 +129,14 @@ class Pointer(BaseModel):
     model_config = ConfigDict(extra="forbid")
     index: int
     address: int
-    value: int
+    value: int = Field(ge=0, le=2**48 - 1, strict=True)
 
 
 class PointerData(BaseModel):
     model_config = ConfigDict(extra="forbid")
     start: int
     count: int
-    width: int
+    width: int = Field(ge=1, le=6, strict=True)
     pointers: list[Pointer]
 
 

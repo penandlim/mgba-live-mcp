@@ -26,6 +26,9 @@ ERROR_CODES = {
     "permission_denied": "OS permissions prevent the requested operation or inspection.",
     "termination_unconfirmed": "Process/group exit could not be confirmed.",
     "bridge_error": "The bridge reported a command error; side effects may have occurred.",
+    "serialization_failed": (
+        "Lua response is not supported JSON; inspect command_completed before retrying."
+    ),
     "command_timeout": "No correlated bridge response arrived; execution remains unknown.",
     "settle_failed": "The command ran, but settling could not be confirmed.",
     "snapshot_failed": "Required visual content is unavailable after the requested operation.",

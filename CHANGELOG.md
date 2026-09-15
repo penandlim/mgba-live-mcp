@@ -8,6 +8,8 @@
   with correlated `serialization_failed` errors instead of losing responses (#53).
 - Preserve completed-mutation evidence when result serialization fails, retain
   false/nil Lua execution errors, and keep failed response publication unresolved.
+- Preserve fallback response correlation for commands without session metadata on
+  both forward- and backslash-delimited session paths (#53).
 - Return exact little-endian pointer integers for widths 1–6 bytes in ascending
   memory-read order; reject wider
   or non-integer widths before memory reads. Align CLI/MCP input and result

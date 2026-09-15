@@ -58,7 +58,7 @@ def packaged_bridge(tmp_path):
 
     with as_file(bridge) as bridge_path:
 
-        def execute(*commands, session="running", **kwargs):
+        def execute(*commands, session="running", env=None, **kwargs):
             directory = manager.session_dir(session)
             directory.mkdir(parents=True, exist_ok=True)
             command_path = directory / "command.lua"
@@ -71,7 +71,7 @@ def packaged_bridge(tmp_path):
             process = subprocess.run(
                 [lua, str(host), str(bridge_path), str(len(commands))],
                 cwd=directory,
-                env={**os.environ, "MGBA_LIVE_SESSION_DIR": str(directory)},
+                env={**os.environ, "MGBA_LIVE_SESSION_DIR": str(directory), **(env or {})},
                 check=True,
                 capture_output=True,
                 text=True,
@@ -165,6 +165,28 @@ def _recovered(raw, *, frame, result):
     assert response["ok"] is True
     assert response["frame"] == frame
     assert response["data"]["result"] == result
+
+
+@pytest.mark.parametrize(
+    "session_dir", ["/runtime/sessions/running/", "C:\\runtime\\sessions\\running\\"]
+)
+def test_legacy_session_correlation_uses_directory_name(packaged_bridge, session_dir):
+    manager, execute = packaged_bridge
+    directory = manager.session_dir("running")
+    command = _command(code="local value={}; value.self=value; return value")
+    del command["session_id"]
+    responses, _ = execute(
+        command,
+        _command(request_id="recovered", code="return true"),
+        env={
+            "MGBA_LIVE_SESSION_DIR": session_dir,
+            "MGBA_LIVE_COMMAND": str(directory / "command.lua"),
+            "MGBA_LIVE_RESPONSE": str(directory / "response.json"),
+            "MGBA_LIVE_HEARTBEAT": str(directory / "heartbeat.json"),
+        },
+    )
+    _serialization_failure(responses[0])
+    _recovered(responses[1], frame=2, result=True)
 
 
 @pytest.mark.parametrize("source", ["code", "file"])

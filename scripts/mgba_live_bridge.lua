@@ -516,7 +516,7 @@ local function process_command(cmd)
   end
   local response = {
     id = cmd.id or "unknown",
-    session_id = cmd.session_id or session_dir:match("([^/]+)/*$"),
+    session_id = cmd.session_id or session_dir:match("([^/\\]+)[/\\]*$"),
     ok = ok,
     frame = frame,
   }

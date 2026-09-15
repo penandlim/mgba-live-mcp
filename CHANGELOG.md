@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Bound Lua response serialization to 1 MiB, 32 table levels, and 10,000 entries;
+  reject cycles, invalid UTF-8 (including surrogate code points), unsupported
+  values/keys, and non-finite numbers
+  with correlated `serialization_failed` errors instead of losing responses (#53).
+- Preserve completed-mutation evidence when result serialization fails, retain
+  false/nil Lua execution errors, and keep failed response publication unresolved.
+- Preserve fallback response correlation for commands without session metadata on
+  both forward- and backslash-delimited session paths (#53).
+- Return exact little-endian pointer integers for widths 1–6 bytes in ascending
+  memory-read order; reject wider
+  or non-integer widths before memory reads. Align CLI/MCP input and result
+  schemas, keeping the default width and existing result fields (#53).
 - Make startup transactional: preflight inputs before reservation, stage through
   owned directory handles, roll back only pre-launch allocations, and retain
   native identity/logs and failed-startup diagnostics after launch (#61).

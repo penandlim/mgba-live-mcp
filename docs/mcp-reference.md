@@ -68,6 +68,7 @@ unrestricted, and screenshot export may overwrite files.
 | `permission_denied` | OS permissions prevent the requested operation or inspection. |
 | `termination_unconfirmed` | Process/group exit could not be confirmed. |
 | `bridge_error` | The bridge reported a command error; side effects may have occurred. |
+| `serialization_failed` | Lua response could not be serialized as JSON; inspect command_completed before retrying. |
 | `command_timeout` | No correlated bridge response arrived; execution remains unknown. |
 | `settle_failed` | The command ran, but settling could not be confirmed. |
 | `snapshot_failed` | Required visual content is unavailable after the requested operation. |
@@ -1834,6 +1835,8 @@ Dump pointer table entries from a live session.
     },
     "width": {
       "default": 4,
+      "maximum": 6,
+      "minimum": 1,
       "type": "integer"
     }
   },
@@ -1863,6 +1866,8 @@ Dump pointer table entries from a live session.
           "type": "integer"
         },
         "value": {
+          "maximum": 281474976710655,
+          "minimum": 0,
           "title": "Value",
           "type": "integer"
         }
@@ -1894,6 +1899,8 @@ Dump pointer table entries from a live session.
           "type": "integer"
         },
         "width": {
+          "maximum": 6,
+          "minimum": 1,
           "title": "Width",
           "type": "integer"
         }

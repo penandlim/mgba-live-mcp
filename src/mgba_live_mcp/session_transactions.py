@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, BinaryIO, TextIO
@@ -343,6 +343,89 @@ def _new_state(directory: _Directory, status: str) -> dict[str, Any]:
     }
 
 
+def _valid_screenshot_artifact(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("path"), str)
+        and "\0" not in value["path"]
+        and Path(value["path"]).is_absolute()
+        and Path(value["path"]).name.startswith(".mgba-screenshot-")
+        and Path(value["path"]).suffix == ".png"
+        and all(
+            isinstance(value.get(key), list)
+            and len(value[key]) == 2
+            and all(type(part) is int and part >= 0 for part in value[key])
+            for key in ("directory", "file")
+        )
+        and "request_id" in value
+        and (value.get("request_id") is None or isinstance(value["request_id"], str))
+    )
+
+
+@contextmanager
+def _screenshot_directory(artifact: dict[str, Any]) -> Iterator[_Directory]:
+    path = Path(artifact["path"])
+    directory = _Directory(path.parent)
+    try:
+        if directory.identity != artifact["directory"]:
+            raise OSError(errno.ESTALE, "Screenshot directory was replaced", str(path.parent))
+        directory.check()
+        yield directory
+    finally:
+        directory.close()
+
+
+def _check_screenshot_file(directory: _Directory, artifact: dict[str, Any]) -> None:
+    path = Path(artifact["path"])
+    info = os.stat(path.name, dir_fd=directory.fd, follow_symlinks=False)
+    if not stat.S_ISREG(info.st_mode) or [info.st_dev, info.st_ino] != artifact["file"]:
+        raise OSError(errno.ESTALE, "Owned screenshot staging file was replaced", str(path))
+
+
+def _cleanup_screenshots(directory: _Directory, state: dict[str, Any]) -> None:
+    operation = state["operation"]
+    if operation is None or not operation.get("artifacts"):
+        return
+    retained = []
+    errors = []
+    for artifact in operation["artifacts"]:
+        try:
+            with _screenshot_directory(artifact) as parent:
+                try:
+                    _check_screenshot_file(parent, artifact)
+                    os.unlink(Path(artifact["path"]).name, dir_fd=parent.fd)
+                except FileNotFoundError:
+                    pass
+        except (OSError, DomainError) as exc:
+            retained.append(artifact)
+            errors.append(str(exc))
+    operation["artifacts"] = retained
+    if errors:
+        journal_error = None
+        try:
+            directory.write_json(_JOURNAL, state)
+        except (OSError, DomainError) as exc:
+            journal_error = str(exc)
+        raise DomainError(
+            "snapshot_failed",
+            "Owned screenshot staging files could not be removed.",
+            phase="snapshot",
+            stage="cleanup",
+            execution_outcome=(
+                "unknown"
+                if operation["pending_request"]
+                else "partial"
+                if operation["started"]
+                else "not_started"
+            ),
+            session_id=directory.path.name,
+            request_id=retained[0].get("request_id"),
+            retained_artifacts=[item["path"] for item in retained],
+            cleanup_errors=errors,
+            journal_error=journal_error,
+        )
+
+
 def _read_state(directory: _Directory, *, initialize: bool = False) -> dict[str, Any] | None:
     directory.check()
     try:
@@ -380,6 +463,8 @@ def _read_state(directory: _Directory, *, initialize: bool = False) -> dict[str,
             and type(operation.get("started")) is bool
             and type(operation.get("uncertain")) is bool
             and "pending_request" in operation
+            and isinstance(operation.get("artifacts", []), list)
+            and all(_valid_screenshot_artifact(item) for item in operation.get("artifacts", []))
             and (
                 operation["pending_request"] is None
                 or (
@@ -553,6 +638,136 @@ class Transaction:
         assert state is not None
         return state
 
+    def stage_screenshot(self, directory: Path) -> Path:
+        """Reserve and journal an owned file before the native writer sees its path."""
+        with self._directory.lock(_STATE_LOCK, blocking=True):
+            state = self._owned_state()
+            operation = state["operation"]
+            if operation["pending_request"] is not None or operation["uncertain"]:
+                raise _error("session_busy", self._directory.path, "snapshot", "work is unresolved")
+            parent = _Directory(directory)
+            artifact: dict[str, Any] | None = None
+            try:
+                parent.check()
+                while True:
+                    path = directory / f".mgba-screenshot-{uuid.uuid4().hex}.png"
+                    try:
+                        fd = os.open(
+                            path.name,
+                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                            0o600,
+                            dir_fd=parent.fd,
+                        )
+                        break
+                    except FileExistsError:
+                        continue
+                with os.fdopen(fd, "wb") as stream:
+                    info = os.fstat(stream.fileno())
+                    artifact = {
+                        "path": str(path),
+                        "directory": parent.identity,
+                        "file": [info.st_dev, info.st_ino],
+                        "request_id": None,
+                    }
+                parent.check()
+                operation.setdefault("artifacts", []).append(artifact)
+                self._directory.write_json(_JOURNAL, state)
+                return path
+            except BaseException as exc:
+                # No command can reference this file until this method returns.
+                if artifact is not None:
+                    try:
+                        _check_screenshot_file(parent, artifact)
+                        os.unlink(Path(artifact["path"]).name, dir_fd=parent.fd)
+                    except OSError as cleanup_error:
+                        artifacts = operation.setdefault("artifacts", [])
+                        if artifact not in artifacts:
+                            artifacts.append(artifact)
+                        journal_error = None
+                        try:
+                            self._directory.write_json(_JOURNAL, state)
+                        except (OSError, DomainError) as retention_error:
+                            journal_error = str(retention_error)
+                        raise DomainError(
+                            "snapshot_failed",
+                            str(exc),
+                            phase="snapshot",
+                            stage="capture",
+                            execution_outcome="partial" if operation["started"] else "not_started",
+                            session_id=self._directory.path.name,
+                            staging_path=artifact["path"],
+                            retained_artifacts=[artifact["path"]],
+                            cleanup_errors=[str(cleanup_error)],
+                            journal_error=journal_error,
+                        ) from exc
+                raise
+            finally:
+                parent.close()
+
+    def _screenshot_artifact(self, state: dict[str, Any], path: Path) -> dict[str, Any]:
+        operation = state["operation"]
+        if operation["pending_request"] is not None or operation["uncertain"]:
+            raise _error(
+                "session_busy", self._directory.path, "snapshot", "native writer is unresolved"
+            )
+        for artifact in operation.get("artifacts", []):
+            if artifact["path"] == str(path):
+                return artifact
+        raise _error(
+            "session_generation_changed",
+            self._directory.path,
+            "snapshot",
+            "staging file is not owned",
+        )
+
+    def read_screenshot(self, path: Path) -> bytes:
+        with ExitStack() as resources:
+            with self._directory.lock(_STATE_LOCK, blocking=True):
+                artifact = self._screenshot_artifact(self._owned_state(), path)
+                parent = resources.enter_context(_screenshot_directory(artifact))
+                fd = os.open(
+                    path.name,
+                    os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=parent.fd,
+                )
+                stream = resources.enter_context(os.fdopen(fd, "rb"))
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or [info.st_dev, info.st_ino] != artifact["file"]:
+                    raise OSError(
+                        errno.ESTALE, "Owned screenshot staging file was replaced", str(path)
+                    )
+                parent.check()
+            return stream.read()
+
+    def publish_screenshot(self, path: Path, destination: Path | None) -> Path:
+        """Fence the short filesystem commit against recovery; never replace implicit names."""
+        with self._directory.lock(_STATE_LOCK, blocking=True):
+            artifact = self._screenshot_artifact(self._owned_state(), path)
+            with _screenshot_directory(artifact) as parent:
+                _check_screenshot_file(parent, artifact)
+                if destination is not None:
+                    if destination.parent != path.parent:
+                        raise ValueError(
+                            "Screenshot publication must stay on the staging filesystem."
+                        )
+                    os.replace(
+                        path.name, destination.name, src_dir_fd=parent.fd, dst_dir_fd=parent.fd
+                    )
+                    return destination
+                while True:
+                    destination = path.parent / f"screenshot-{uuid.uuid4().hex}.png"
+                    try:
+                        os.link(
+                            path.name,
+                            destination.name,
+                            src_dir_fd=parent.fd,
+                            dst_dir_fd=parent.fd,
+                            follow_symlinks=False,
+                        )
+                        return destination
+                    except FileExistsError:
+                        continue
+
     def check(self) -> None:
         with self._directory.lock(_STATE_LOCK, blocking=True):
             self._owned_state()
@@ -618,6 +833,9 @@ class Transaction:
                 )
             operation["started"] = True
             operation["pending_request"] = request_id
+            for artifact in operation.get("artifacts", []):
+                if artifact["request_id"] is None:
+                    artifact["request_id"] = request_id
             self._directory.write_json(_JOURNAL, state)
             # Persist before the side effect, under the same guard that fences recovery stop.
             # Callback failure is ambiguous: publication may have happened before it raised.
@@ -665,9 +883,15 @@ class Transaction:
         with self._directory.lock(_STATE_LOCK, blocking=True):
             state = self._owned_state()
             operation = state["operation"]
+            complete = operation["pending_request"] is None and not operation["uncertain"]
+            staged = bool(operation.get("artifacts"))
+            if complete:
+                _cleanup_screenshots(self._directory, state)
             if failed and operation["composite"] and operation["started"]:
+                if complete and staged:
+                    self._directory.write_json(_JOURNAL, state)
                 return
-            if operation["pending_request"] is None and not operation["uncertain"]:
+            if complete:
                 state["operation"] = None
                 try:
                     self._directory.write_json(_JOURNAL, state)
@@ -732,6 +956,8 @@ def transaction(
                         pending_request_id=abandoned["pending_request"],
                         generation=state["generation"],
                     )
+                if abandoned is not None:
+                    _cleanup_screenshots(owned, state)
                 state["operation"] = {
                     "id": operation_id,
                     "pid": os.getpid(),
@@ -799,6 +1025,7 @@ class Recovery:
                     "recovery",
                     "generation changed",
                 )
+            _cleanup_screenshots(self._directory, state)
             state["state"] = "stopped"
             state["operation"] = None
             self._directory.write_json(_JOURNAL, state)

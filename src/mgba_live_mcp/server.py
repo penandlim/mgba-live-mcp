@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import binascii
 import json
 import math
 from functools import cache
@@ -23,6 +22,7 @@ from . import __version__
 from . import result_types as results
 from .errors import DomainError, error_payload
 from .live_controller import LiveControllerClient
+from .screenshots import ScreenshotResult, validate_png
 from .session_manager import SessionManager
 
 server = Server("mgba-live-mcp", version=__version__)
@@ -68,29 +68,43 @@ def _lua_source_properties() -> dict[str, dict[str, str]]:
     }
 
 
-def _image_bytes_from_screenshot(result: dict[str, Any]) -> tuple[str, bytes] | None:
-    encoded = result.get("png_base64")
-    if isinstance(encoded, str) and encoded:
-        try:
-            return "png", base64.b64decode(encoded, validate=True)
-        except (ValueError, binascii.Error):
-            return None
+def _image_bytes_from_screenshot(result: dict[str, Any]) -> bytes:
+    if isinstance(result, ScreenshotResult):
+        return result.png
 
-    path = result.get("path")
-    if isinstance(path, str) and path:
-        try:
-            return "png", Path(path).read_bytes()
-        except OSError:
-            return None
-    return None
+    stage = "validation"
+    try:
+        if "png_base64" in result:
+            encoded = result["png_base64"]
+            if not isinstance(encoded, str) or not encoded:
+                raise ValueError("Required screenshot content is unavailable.")
+            raw = base64.b64decode(encoded, validate=True)
+        else:
+            stage = "capture"
+            path = result.get("path")
+            if not isinstance(path, str) or not path:
+                raise ValueError("Required screenshot path is unavailable.")
+            raw = Path(path).read_bytes()
+        stage = "validation"
+        validate_png(raw)
+        return raw
+    except (ValueError, OSError) as exc:
+        raise DomainError(
+            "snapshot_failed",
+            str(exc),
+            phase="snapshot",
+            execution_outcome="partial",
+            stage=stage,
+            **{
+                key: result[key]
+                for key in ("session_id", "request_id", "frame", "path")
+                if key in result
+            },
+        ) from exc
 
 
-def _image_content(result: dict[str, Any]) -> ImageContent | None:
-    parsed = _image_bytes_from_screenshot(result)
-    if parsed is None:
-        return None
-
-    _, raw = parsed
+def _image_content(result: dict[str, Any]) -> ImageContent:
+    raw = _image_bytes_from_screenshot(result)
     encoded = base64.b64encode(raw).decode()
     return ImageContent(type="image", data=encoded, mimeType="image/png")
 
@@ -643,14 +657,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
             "mgba_live_export_screenshot",
         }
         image = _image_content(payload) if visual else None
-        if visual and (image is None or not image.data):
-            raise DomainError(
-                "snapshot_failed",
-                "Required screenshot content is unavailable.",
-                phase="snapshot",
-                execution_outcome="partial",
-                session_id=payload.get("session_id"),
-            )
         public = {key: value for key, value in payload.items() if key != "png_base64"}
         try:
             output_validator.validate(public)
@@ -720,6 +726,8 @@ async def _dispatch_tool(
             "screenshot": {"frame": payload.get("frame")},
             "png_base64": payload.get("png_base64"),
         }
+        if isinstance(payload, ScreenshotResult):
+            return ScreenshotResult(public_payload, payload.png)
         return public_payload
 
     if name == "mgba_live_stop":

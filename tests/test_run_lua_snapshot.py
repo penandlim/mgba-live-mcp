@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import threading
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import pytest
+from PIL import Image
 
 from mgba_live_mcp.live_controller import LiveControllerClient
+from mgba_live_mcp.screenshots import ScreenshotResult
 from mgba_live_mcp.session_manager import SessionManager
 
 
@@ -50,11 +53,20 @@ class _MacroManager(SessionManager):
         self._pause(phase)
         return result
 
-    def get_view(self, *, session: str, **kwargs: Any) -> dict[str, Any]:
+    def get_view(self, *, session: str, **kwargs: Any) -> ScreenshotResult:
         with self.transaction(session):
             self.captured_value = self.value
-            image = base64.b64encode(str(self.value).encode()).decode()
-            result = {"session_id": session, "frame": self.frame, "png_base64": image}
+            image = BytesIO()
+            Image.new("L", (1, 1), self.value).save(image, format="PNG")
+            png = image.getvalue()
+            result = ScreenshotResult(
+                {
+                    "session_id": session,
+                    "frame": self.frame,
+                    "png_base64": base64.b64encode(png).decode(),
+                },
+                png,
+            )
         self._pause("capture")
         return result
 
@@ -90,9 +102,14 @@ class _TapManager(_MacroManager):
 
 
 class _BrokenViewManager(_MacroManager):
-    def get_view(self, *, session: str, **kwargs: Any) -> dict[str, Any]:
+    def get_view(self, *, session: str, **kwargs: Any) -> ScreenshotResult:
         with self.transaction(session):
             raise RuntimeError("disk exploded")
+
+
+def _captured_pixel(result: dict[str, Any]) -> Any:
+    with Image.open(BytesIO(base64.b64decode(result["png_base64"]))) as image:
+        return image.getpixel((0, 0))
 
 
 @pytest.mark.anyio
@@ -100,7 +117,7 @@ async def test_run_lua_and_view_captures_completed_macro_state(tmp_path: Path) -
     manager = _MacroManager(tmp_path)
     client = LiveControllerClient(manager=manager)
     result = await client.run_lua_and_view(session="session-123", code="return 11", timeout=5)
-    assert base64.b64decode(result["png_base64"]) == b"42"
+    assert _captured_pixel(result) == 42
 
 
 @pytest.mark.anyio
@@ -110,7 +127,7 @@ async def test_input_tap_and_view_waits_for_release_and_extra_frames(tmp_path: P
     result = await client.input_tap_and_view(
         session="session-123", key="A", frames=3, wait_frames=2, timeout=5
     )
-    assert base64.b64decode(result["png_base64"]) == b"42"
+    assert _captured_pixel(result) == 42
     assert result["screenshot"]["frame"] >= manager.release_frame + 2
 
 
@@ -144,7 +161,7 @@ async def test_cancelled_composite_keeps_ownership_through_every_phase(
         manager.release.set()
         assert await asyncio.to_thread(manager.finished.wait, 2)
         view = await client.get_view(session="session-123")
-        assert base64.b64decode(view["png_base64"]) == b"42"
+        assert _captured_pixel(view) == 42
     finally:
         manager.release.set()
         await asyncio.gather(first, return_exceptions=True)

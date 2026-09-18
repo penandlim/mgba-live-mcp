@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Require complete, decodable PNGs for all promised images, reuse validated bytes
+  in MCP image blocks, and keep image data out of structured/text metadata (#55).
+  Enforce PNG pixel limits without changing process-wide warning policies during
+  concurrent captures.
+- Publish screenshots from operation-owned staging files: implicit exports use
+  exclusive filenames; explicit resolved destinations are atomically replaced
+  only after validation, with last-successful-publication semantics (#55).
+- Reconcile retained screenshot staging files after correlated writer completion
+  or verified recovery. Preserve unrelated files and report failed stages,
+  retained artifacts, and partial composite outcomes instead of false success (#55).
+  Preserve retained-file diagnostics even if staging journaling and rollback
+  both fail; retry ownership recording when possible.
+  Keep the same diagnostic context when reconciliation cleanup cannot update its
+  journal.
 - Bound Lua response serialization to 1 MiB, 32 table levels, and 10,000 entries;
   reject cycles, invalid UTF-8 (including surrogate code points), unsupported
   values/keys, and non-finite numbers

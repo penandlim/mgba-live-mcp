@@ -8,6 +8,7 @@ dependencies = [
     "mcp>=1.26.0,<2",
     "pydantic>=2.11.0",
     "jsonschema>=4.20.0",
+    "Pillow>=11.3.0",
 ]
 
 [project.scripts]

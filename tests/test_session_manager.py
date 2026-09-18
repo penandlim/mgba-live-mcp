@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -314,46 +313,3 @@ def test_unconfirmed_stop_preserves_session_and_blocks_new_commands(
     with pytest.raises(RuntimeError, match="session_stopping"):
         with manager.transaction("session-1"):
             pytest.fail("unconfirmed stop admitted another operation")
-
-
-def test_screenshot_supports_no_save_and_output_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    manager = _manager(tmp_path)
-    manager.session_dir("session-1").mkdir()
-    target = {"id": "session-1"}
-    sent: list[tuple[str, dict[str, Any], float]] = []
-
-    def fake_send_command(
-        session: dict[str, Any],
-        kind: str,
-        payload: dict[str, Any] | None = None,
-        timeout: float = 10.0,
-    ) -> dict[str, Any]:
-        assert payload is not None
-        path = Path(payload["path"])
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"png-bytes")
-        sent.append((kind, payload, timeout))
-        return {"ok": True, "frame": 44, "data": {"path": str(path)}}
-
-    monkeypatch.setattr(manager, "require_session", lambda session, require_alive=True: target)
-    monkeypatch.setattr(manager, "send_command", fake_send_command)
-
-    in_memory = manager.screenshot(session="session-1", no_save=True, timeout=6.0)
-    out_path = tmp_path / "shot.png"
-    persisted = manager.screenshot(session="session-1", out=str(out_path), timeout=7.0)
-
-    assert in_memory == {
-        "session_id": "session-1",
-        "frame": 44,
-        "png_base64": base64.b64encode(b"png-bytes").decode(),
-    }
-    assert persisted == {
-        "session_id": "session-1",
-        "frame": 44,
-        "path": str(out_path.resolve()),
-    }
-    assert sent[0][0] == "screenshot"
-    assert sent[0][2] == 6.0
-    assert sent[1] == ("screenshot", {"path": str(out_path.resolve())}, 7.0)

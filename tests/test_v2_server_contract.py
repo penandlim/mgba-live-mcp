@@ -22,7 +22,8 @@ from mgba_live_mcp.live_controller import LiveControllerClient
 from mgba_live_mcp.session_manager import SessionManager
 
 PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aDQAAAABJRU5ErkJggg=="
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91Jpz"
+    "AAAAEElEQVR4nGP8zwACTGCSAQANHQEDgslx/wAAAABJRU5ErkJggg=="
 )
 ROM = Path(__file__).parent / "fixtures" / "synthetic.gb"
 
@@ -295,10 +296,21 @@ def test_real_transport_timeout_remains_ambiguous(runtime, monkeypatch):
     assert error["request_id"] == journal["operation"]["pending_request"]
 
 
-@pytest.mark.parametrize("encoded", [None, "", "***"])
+@pytest.mark.parametrize(
+    "encoded",
+    [None, "", "***", base64.b64encode(b"\x89PNG\r\n\x1a\ncorrupt").decode()],
+)
 def test_missing_visual_content_is_error_not_metadata_success(runtime, monkeypatch, encoded):
     monkeypatch.setattr(
-        runtime, "get_view", lambda **k: {"session_id": "s1", "frame": 40, "png_base64": encoded}
+        runtime,
+        "run_lua_and_view",
+        lambda **kwargs: {
+            "session_id": "s1",
+            "frame": 30,
+            "data": {"result": False},
+            "screenshot": {"frame": 40},
+            "png_base64": encoded,
+        },
     )
     result = invoke("mgba_live_run_lua_and_view", {"session": "s1", "code": "return false"})
     error = structured(result)["error"]

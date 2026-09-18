@@ -10,7 +10,6 @@ import shutil
 import signal
 import stat
 import subprocess
-import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -21,6 +20,7 @@ from typing import Any
 
 from . import process_control, session_transactions
 from .errors import CommandTimeout, DomainError, error_context, error_payload
+from .screenshots import ScreenshotResult, validate_png
 
 MODULE_PATH = Path(__file__).resolve()
 PACKAGE_DIR = MODULE_PATH.parent
@@ -1190,7 +1190,6 @@ class SessionManager:
                 exc.context.update(session_id=session, generation=recovery.generation)
                 raise
             recovery.finish()
-            views_dir = self._session_path(session, ".views")
             cleanup_errors = []
             if target.get("startup", {}).get("state") == "failed":
                 target["startup"]["state"] = "stopped"
@@ -1198,11 +1197,6 @@ class SessionManager:
                     self.write_session(target)
                 except (OSError, DomainError) as exc:
                     cleanup_errors.append(f"Failed to update startup diagnostics: {exc}")
-            for pending_view in views_dir.glob("*.png"):
-                try:
-                    pending_view.unlink(missing_ok=True)
-                except OSError as exc:
-                    cleanup_errors.append(f"{pending_view}: {exc}")
             if self.get_active_session_id() == target["id"]:
                 self._refresh_active_session()
         payload: dict[str, Any] = {
@@ -1316,85 +1310,89 @@ class SessionManager:
         out: str | None = None,
         no_save: bool = False,
         timeout: float = 20.0,
-    ) -> dict[str, Any]:
-        with self.transaction(session):
-            return self._screenshot(session=session, out=out, no_save=no_save, timeout=timeout)
-
-    def _screenshot(
-        self,
-        *,
-        session: str,
-        out: str | None = None,
-        no_save: bool = False,
-        timeout: float = 20.0,
-    ) -> dict[str, Any]:
-        target = self.require_session(session, require_alive=True)
+    ) -> ScreenshotResult:
         if no_save and out:
             raise ValueError("Use either out or no_save, not both.")
-
-        if no_save:
-            views_dir = self._session_path(session, ".views")
-            views_dir.mkdir(exist_ok=True)
-            with tempfile.NamedTemporaryFile(dir=views_dir, suffix=".png", delete=False) as tmp:
-                out_path = Path(tmp.name).resolve()
-            result_path = out_path
-            completed = False
-            try:
-                response = self.send_command(
-                    target, "screenshot", {"path": str(out_path)}, timeout=timeout
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be a finite positive number")
+        stage = "capture"
+        staged: Path | None = None
+        published: Path | None = None
+        response: dict[str, Any] | None = None
+        try:
+            with self.transaction(session) as operation:
+                target = self.require_session(session, require_alive=True)
+                destination = Path(out).resolve() if out else None
+                directory = (
+                    destination.parent
+                    if destination is not None
+                    else self._session_path(session, ".views" if no_save else "screenshots")
                 )
-                completed = True
+                directory.mkdir(parents=True, exist_ok=True)
+                staged = operation.stage_screenshot(directory)
+                response = self.send_command(
+                    target, "screenshot", {"path": str(staged)}, timeout=timeout
+                )
                 data = self.handle_response(response, session_id=target["id"])
-                if isinstance(data, dict) and isinstance(data.get("path"), str):
-                    result_path = Path(data["path"])
-                if result_path != out_path:
-                    raise DomainError(
-                        "snapshot_failed",
-                        "bridge returned an unexpected output path.",
-                        phase="snapshot",
-                        execution_outcome="partial",
-                        session_id=session,
-                        request_id=response.get("id"),
-                    )
+                if not isinstance(data, dict) or data.get("path") != str(staged):
+                    raise ValueError("Bridge returned an unexpected screenshot path.")
+                png = operation.read_screenshot(staged)
+                stage = "validation"
+                validate_png(png)
+                payload = {"session_id": target["id"], "frame": response.get("frame")}
+                if no_save:
+                    payload["png_base64"] = base64.b64encode(png).decode()
+                else:
+                    stage = "persistence"
+                    published = operation.publish_screenshot(staged, destination)
+                    payload["path"] = str(published)
+                result = ScreenshotResult(payload, png)
+                stage = "cleanup"
+                return result
+        except (DomainError, OSError, ValueError) as exc:
+            if staged is None and isinstance(exc, DomainError):
+                allocation_path = exc.context.get("staging_path")
+                if isinstance(allocation_path, str):
+                    staged = Path(allocation_path)
+            context: dict[str, Any] = {"session_id": session, "stage": stage}
+            if response is not None:
+                context.update(request_id=response.get("id"), frame=response.get("frame"))
+            if staged is not None:
+                context["staging_path"] = str(staged)
                 try:
-                    png_bytes = result_path.read_bytes()
-                except OSError as exc:
-                    raise DomainError(
-                        "snapshot_failed",
-                        str(exc),
-                        phase="snapshot",
-                        execution_outcome="partial",
-                        session_id=session,
-                        request_id=response.get("id"),
-                    ) from exc
-                return {
-                    "session_id": target["id"],
-                    "frame": response.get("frame"),
-                    "png_base64": base64.b64encode(png_bytes).decode(),
-                }
-            finally:
-                if completed or ("pid" in target and self._process_state(target) == "dead"):
-                    try:
-                        out_path.unlink()
-                    except FileNotFoundError:
-                        pass
+                    staged.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    if isinstance(exc, DomainError):
+                        retained = exc.context.get("retained_artifacts", [])
+                        if str(staged) in retained:
+                            retained.remove(str(staged))
+                        if not retained:
+                            exc.context.pop("retained_artifacts", None)
+                except OSError:
+                    context["retained_artifacts"] = [str(staged)]
+                else:
+                    context["retained_artifacts"] = [str(staged)]
+            if published is not None:
+                context["published_path"] = str(published)
+            if isinstance(exc, DomainError):
+                for key, value in context.items():
+                    exc.context.setdefault(key, value)
+                raise
+            raise DomainError(
+                "snapshot_failed",
+                str(exc),
+                phase="snapshot",
+                execution_outcome=(
+                    "partial"
+                    if response is not None
+                    else "not_started"
+                    if staged is None
+                    else "unknown"
+                ),
+                **context,
+            ) from exc
 
-        if out:
-            out_path = Path(out).resolve()
-        else:
-            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-            out_path = self._session_path(target["id"], f"screenshots/screenshot-{ts}.png")
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        response = self.send_command(target, "screenshot", {"path": str(out_path)}, timeout=timeout)
-        data = self.handle_response(response, session_id=target["id"])
-        result_path = Path(data.get("path") if isinstance(data, dict) else str(out_path))
-        return {
-            "session_id": target["id"],
-            "frame": response.get("frame"),
-            "path": str(result_path),
-        }
-
-    def get_view(self, *, session: str, timeout: float = 20.0) -> dict[str, Any]:
+    def get_view(self, *, session: str, timeout: float = 20.0) -> ScreenshotResult:
         return self.screenshot(session=session, no_save=True, timeout=timeout)
 
     def read_memory(
@@ -1599,11 +1597,14 @@ class SessionManager:
                 view = self.get_view(session=session, timeout=timeout)
             except Exception as exc:
                 raise self._composite_error(exc, "snapshot_failed", session) from exc
-            return {
-                **result,
-                "screenshot": {"frame": view.get("frame")},
-                "png_base64": view.get("png_base64"),
-            }
+            return ScreenshotResult(
+                {
+                    **result,
+                    "screenshot": {"frame": view.get("frame")},
+                    "png_base64": view.get("png_base64"),
+                },
+                view.png,
+            )
 
     def input_tap_and_view(
         self,
@@ -1634,11 +1635,14 @@ class SessionManager:
                 view = self.get_view(session=session, timeout=timeout)
             except Exception as exc:
                 raise self._composite_error(exc, "snapshot_failed", session) from exc
-            return {
-                **result,
-                "screenshot": {"frame": view.get("frame")},
-                "png_base64": view.get("png_base64"),
-            }
+            return ScreenshotResult(
+                {
+                    **result,
+                    "screenshot": {"frame": view.get("frame")},
+                    "png_base64": view.get("png_base64"),
+                },
+                view.png,
+            )
 
     def start_with_lua(self, *, timeout: float = 20.0, **kwargs: Any) -> dict[str, Any]:
         return self._start_with_lua(timeout=timeout, include_view=False, **kwargs)
@@ -1725,6 +1729,7 @@ class SessionManager:
             if include_view:
                 payload["screenshot"] = {"frame": view.get("frame")}
                 payload["png_base64"] = view.get("png_base64")
+                return ScreenshotResult(payload, view.png)
             return payload
 
     def _post_start_failure(

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import threading
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import pytest
+from PIL import Image
 
 from mgba_live_mcp.live_controller import LiveControllerClient
+from mgba_live_mcp.screenshots import ScreenshotResult
 from mgba_live_mcp.session_manager import SessionManager
 from mgba_live_mcp.session_transactions import recovery
 
@@ -32,9 +36,15 @@ class _BlockingManager(SessionManager):
         finally:
             self.finished.set()
 
-    def get_view(self, *, session: str, **kwargs: Any) -> dict[str, Any]:
+    def get_view(self, *, session: str, **kwargs: Any) -> ScreenshotResult:
         with self.transaction(session):
-            return {"session_id": session, "frame": 11, "png_base64": "AA=="}
+            image = BytesIO()
+            Image.new("L", (1, 1)).save(image, format="PNG")
+            png = image.getvalue()
+            return ScreenshotResult(
+                {"session_id": session, "frame": 11, "png_base64": base64.b64encode(png).decode()},
+                png,
+            )
 
     def stop(self, *, session: str, **kwargs: Any) -> dict[str, Any]:
         # The simulated bridge has no process; exercise the real recovery fence.

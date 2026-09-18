@@ -4,12 +4,15 @@ import asyncio
 import base64
 import sys
 import threading
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import pytest
+from PIL import Image
 
 from mgba_live_mcp.live_controller import LiveControllerClient
+from mgba_live_mcp.screenshots import ScreenshotResult
 from mgba_live_mcp.session_manager import SessionManager
 
 ROM = Path(__file__).parent / "fixtures" / "synthetic.gb"
@@ -38,10 +41,19 @@ class _StartManager(SessionManager):
             self.value += 1
             return {"session_id": session, "frame": self.value, "data": {"result": self.value}}
 
-    def get_view(self, *, session: str, **kwargs: Any) -> dict[str, Any]:
+    def get_view(self, *, session: str, **kwargs: Any) -> ScreenshotResult:
         with self.transaction(session):
-            image = base64.b64encode(str(self.value).encode()).decode()
-            return {"session_id": session, "frame": self.value, "png_base64": image}
+            image = BytesIO()
+            Image.new("L", (1, 1), self.value).save(image, format="PNG")
+            png = image.getvalue()
+            return ScreenshotResult(
+                {
+                    "session_id": session,
+                    "frame": self.value,
+                    "png_base64": base64.b64encode(png).decode(),
+                },
+                png,
+            )
 
 
 @pytest.mark.anyio
@@ -69,7 +81,8 @@ async def test_startup_composite_owns_reserved_session_after_start_returns(
         manager.release_start.set()
         result = await asyncio.wait_for(first, 2)
         if with_view:
-            assert base64.b64decode(result["png_base64"]) == b"3"
+            with Image.open(BytesIO(base64.b64decode(result["png_base64"]))) as image:
+                assert image.getpixel((0, 0)) == 3
             assert result["screenshot"]["frame"] == 3
         else:
             assert manager.value == 2

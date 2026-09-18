@@ -240,6 +240,28 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
 - `mgba_live_get_view` and `mgba_live_export_screenshot` are explicit screenshot tools.
 - `mgba_live_export_screenshot` persists a file and returns that path plus image
   content. `mgba_live_get_view` returns only image content plus frame metadata.
+- Every promised image must be a readable, fully validated PNG. Image content uses
+  the capture's validated bytes, not a later read of a potentially replaced path.
+- Omitting `out` allocates an exclusive, unique filename; implicit exports never
+  overwrite earlier captures, including simultaneous cross-process requests.
+- An explicit `out` retains `Path(out).resolve()` semantics and permits overwrite.
+  Capture is staged on the destination filesystem, then atomically replaces the
+  destination only after PNG validation. Failed capture or publication leaves the
+  previous file intact. Concurrent writes to the same explicit destination use
+  **last successful publication wins**; each response still carries its own image.
+- Temporary captures are tracked by the owning session operation. Cancellation
+  does not stop a native writer: cleanup waits for actual completion, a later
+  request reconciling its correlated response, or verified stop. Cleanup never
+  follows an unexpected bridge-returned path or sweeps unrelated image files.
+- Screenshot failures include the known session/request, failed stage
+  (`capture`, `validation`, `persistence`, or `cleanup`), and retained artifact
+  paths when applicable. A cleanup failure after publication also reports
+  `published_path`; do not assume that an error rolled back a completed mutation.
+  If both staging rollback and its recovery-journal write fail, `journal_error`
+  explains why automatic recovery cannot track the reported retained file.
+  That file requires manual recovery after the filesystem problem is resolved.
+  Reconciliation cleanup failures preserve the recorded request and retained-file
+  details even if updating the journal also fails.
 - Visual tools fail hard on settle or snapshot failure instead of returning a
   warning alongside a screenshot.
 
@@ -416,9 +438,9 @@ benchmark. It requires a real Qt frontend built from upstream mGBA commit
 (reports `0.11.0`). A program named `mgba`, or a version string alone, is not proof
 of Lua support: the smoke must actually load the packaged bridge and execute Lua.
 The stock macOS Qt 0.10.5 app was tested and rejected: it has no `--script` option.
-Native-only Python dependencies stay in the optional `native` group. The
-`native/` scripts are type-checked when selecting `make native-smoke`, separately
-from the default offline type-check paths.
+PNG validation uses Pillow at runtime; the optional `native` group pins its version
+for reproducible smoke checks. The `native/` scripts are type-checked when selecting
+`make native-smoke`, separately from the default offline type-check paths.
 
 Bridge JSON is serialized before opening a same-directory temporary file, then
 published by rename only after successful write and close. Failed publication

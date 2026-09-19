@@ -1685,6 +1685,7 @@ class SessionManager:
     def _wait_for_frame(self, session: str, target_frame: int, timeout: float) -> None:
         with operation_timeout(timeout, session_id=session) as budget:
             while True:
+                budget.begin("settle")
                 result = self.run_lua(
                     session=session, code="return true", timeout=budget.remaining("settle")
                 )
@@ -1710,6 +1711,7 @@ class SessionManager:
             code = "return true"
         with operation_timeout(timeout, session_id=session) as budget:
             while True:
+                budget.begin("settle")
                 result = self.run_lua(
                     session=session, code=code, timeout=budget.remaining("settle")
                 )
@@ -1767,6 +1769,7 @@ class SessionManager:
             command_request_id = budget.request_id
             budget.execution_outcome = "completed"
             try:
+                budget.begin("settle")
                 self._settle_lua(session, result, budget.remaining("settle"))
             except Exception as exc:
                 raise self._composite_error(
@@ -1819,6 +1822,7 @@ class SessionManager:
                     or duration < 1
                 ):
                     raise RuntimeError("input_tap did not return a valid duration.")
+                budget.begin("settle")
                 self._wait_for_frame(
                     session, tap_frame + int(duration) + wait_frames, budget.remaining("settle")
                 )
@@ -1908,6 +1912,7 @@ class SessionManager:
                 budget.execution_outcome = "completed"
                 if include_view:
                     try:
+                        budget.begin("settle")
                         self._settle_lua(session, result, budget.remaining("settle"))
                     except Exception as exc:
                         raise self._composite_error(

@@ -820,3 +820,57 @@ def test_deadline_across_startup_preserves_recoverable_child_and_lua_outcome(
         clock.now += 2
         stopped = manager.stop(session="candidate", grace=0.05)
         assert stopped["alive_after"] is False
+
+
+def test_startup_expiry_before_settle_keeps_only_primary_lua_completion(
+    manager: _PythonManager,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(deadlines, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    commands: list[dict[str, Any]] = []
+    effect = tmp_path / "primary-lua"
+    write_command = manager.write_command
+    run_lua = manager.run_lua
+
+    def native_reply(path, command, **kwargs):
+        write_command(path, command, **kwargs)
+        commands.append(command)
+        path.unlink()
+        if command["kind"] == "run_lua_inline":
+            with effect.open("a") as stream:
+                stream.write("applied\n")
+        path.with_name("response.json").write_text(
+            json.dumps({"id": command["id"], "ok": True, "data": {"result": True}})
+        )
+
+    def return_at_expiry(**kwargs):
+        result = run_lua(**kwargs)
+        clock.now = 0.5
+        return result
+
+    monkeypatch.setattr(manager, "send_command", SessionManager.send_command.__get__(manager))
+    monkeypatch.setattr(manager, "write_command", native_reply)
+    monkeypatch.setattr(manager, "run_lua", return_at_expiry)
+    with pytest.raises(DomainError) as raised:
+        manager.start_with_lua_and_view(
+            rom=str(manager.rom),
+            mgba_path=sys.executable,
+            session_id="candidate",
+            code="return true",
+            timeout=0.5,
+        )
+    failure = raised.value
+    assert failure.code == "settle_failed"
+    assert failure.execution_outcome == "unknown"
+    assert failure.context["command_completed"] is True
+    assert failure.context["command_request_id"] == commands[1]["id"]
+    assert failure.context["cause_execution_outcome"] == "not_executed"
+    assert "request_id" not in failure.context
+    assert [command["kind"] for command in commands] == ["ping", "run_lua_inline"]
+    with pytest.raises(DomainError) as busy:
+        manager.run_lua(session="candidate", code="return true", timeout=1)
+    assert busy.value.code == "session_busy"
+    assert effect.read_text() == "applied\n"
+    assert manager.stop(session="candidate", grace=0.05)["alive_after"] is False

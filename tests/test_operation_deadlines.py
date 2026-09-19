@@ -89,7 +89,7 @@ def _native_bridge(
         runtime.commands.append(command)
         running = path.with_name("command.lua.running")
         path.rename(running)
-        if command.get("code") == MUTATE:
+        if command.get("code") == MUTATE or command["kind"] == "tap_key":
             runtime.count += 1
             runtime.effect.write_text(str(runtime.count))
 
@@ -104,6 +104,8 @@ def _native_bridge(
             if command["kind"] == "screenshot":
                 Path(command["path"]).write_bytes(PNG)
                 data = {"path": command["path"]}
+            elif command["kind"] == "tap_key":
+                data = {"duration": command["duration"]}
             (runtime.directory / "response.json").write_text(
                 json.dumps(
                     {
@@ -507,4 +509,56 @@ def test_macro_settle_timeout_keeps_completion_evidence_and_recovery_fence(
     with pytest.raises(DomainError) as still_busy:
         runtime.manager.run_lua(session="budget", code=MUTATE, timeout=1)
     assert still_busy.value.code == "session_busy"
+    assert runtime.effect.read_text() == "1"
+
+
+@pytest.mark.parametrize("operation", ["lua", "tap"])
+@pytest.mark.parametrize("settle_started", [False, True])
+def test_expiry_before_settle_attempt_does_not_reuse_completed_request(
+    runtime: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    settle_started: bool,
+) -> None:
+    _native_bridge(runtime, monkeypatch, macro_finished=Event() if operation == "lua" else None)
+    if settle_started:
+        sleep = runtime.clock.sleep
+
+        def expire_after_poll_response(duration):
+            if len(runtime.commands) == 2 and not runtime.clock.events:
+                runtime.clock.now = 0.5
+            else:
+                sleep(duration)
+
+        monkeypatch.setattr(runtime.clock, "sleep", expire_after_poll_response)
+    else:
+        primitive_name = "run_lua" if operation == "lua" else "input_tap"
+        primary = getattr(runtime.manager, primitive_name)
+
+        def return_at_expiry(**kwargs):
+            result = primary(**kwargs)
+            runtime.clock.now = 0.5
+            return result
+
+        monkeypatch.setattr(runtime.manager, primitive_name, return_at_expiry)
+
+    with pytest.raises(DomainError) as raised:
+        if operation == "lua":
+            runtime.manager.run_lua_and_view(session="budget", code=MUTATE, timeout=0.5)
+        else:
+            runtime.manager.input_tap_and_view(session="budget", key="A", frames=30, timeout=0.5)
+    failure = raised.value
+    assert failure.code == "settle_failed"
+    assert failure.execution_outcome == "unknown"
+    assert failure.context["command_completed"] is True
+    assert failure.context["command_request_id"] == runtime.commands[0]["id"]
+    assert failure.context["cause_code"] == "command_timeout"
+    assert failure.context["cause_phase"] == "settle"
+    assert failure.context["cause_execution_outcome"] == "not_executed"
+    assert "request_id" not in failure.context
+    assert len(runtime.commands) == (2 if settle_started else 1)
+    assert all(command["kind"] != "screenshot" for command in runtime.commands)
+    with pytest.raises(DomainError) as busy:
+        runtime.manager.run_lua(session="budget", code=MUTATE, timeout=1)
+    assert busy.value.code == "session_busy"
     assert runtime.effect.read_text() == "1"

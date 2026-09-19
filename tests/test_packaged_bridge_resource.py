@@ -148,7 +148,7 @@ def _serialization_failure(raw, *, request_id="primary", frame=1, completed=True
     assert response["frame"] == frame
     assert response["code"] == "serialization_failed"
     assert response["phase"] == "serialization"
-    assert response["execution_outcome"] == ("partial" if completed else "unknown")
+    assert response["execution_outcome"] == ("completed" if completed else "unknown")
     assert response["command_completed"] is completed
     assert isinstance(response["error"], str) and 0 < len(response["error"]) <= 256
     reason = response["serialization_reason"]
@@ -454,7 +454,7 @@ def test_completed_mutation_serialization_failure_reaches_mcp(mcp_bridge):
     error = payload["error"]
     assert error["code"] == "serialization_failed"
     assert error["phase"] == "serialization"
-    assert error["execution_outcome"] == "partial"
+    assert error["execution_outcome"] == "completed"
     assert error["command_completed"] is True
     assert error["session_id"] == "running"
     assert error["request_id"] == published[0]["id"]

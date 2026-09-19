@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Spend one monotonic operation budget across CLI/MCP validation, queueing,
+  acquisition, startup, native execution, settling, capture, and result assembly
+  instead of restarting per-phase timeouts (#56).
+- Reject invalid/non-finite timeouts before effects. Report `not_executed`,
+  `completed`, or `unknown`, preserving primary mutation completion, request IDs,
+  and original failures through later capture, serialization, or cleanup errors.
+- Atomically claim bridge commands and withdraw only provably pending owned
+  requests; retain cancellation ownership and fences for running/ambiguous work.
+  Keep recovery stop independently bounded and never replay timed-out mutations.
 - Require complete, decodable PNGs for all promised images, reuse validated bytes
   in MCP image blocks, and keep image data out of structured/text metadata (#55).
   Enforce PNG pixel limits without changing process-wide warning policies during

@@ -8,6 +8,13 @@ import sys
 from pathlib import Path
 from typing import Any, NoReturn
 
+from .deadlines import (
+    check_deadline,
+    current_deadline,
+    operation_timeout,
+    suspend_deadline,
+    validate_timeout,
+)
 from .errors import DomainError, error_payload
 from .session_manager import (
     DEFAULT_BRIDGE_SCRIPT,
@@ -87,7 +94,13 @@ def send_command(
 
 
 def print_json(value: Any) -> None:
-    print(json.dumps(value, indent=2))
+    deadline = current_deadline()
+    if deadline is not None:
+        deadline.execution_outcome = "completed"
+    check_deadline("result")
+    text = json.dumps(value, indent=2)
+    check_deadline("result")
+    print(text)
 
 
 def resolve_startup_scripts(script_paths: list[str]) -> list[str]:
@@ -118,6 +131,7 @@ def build_start_command(
 
 
 def cmd_start(args: argparse.Namespace) -> None:
+    timeout = validate_timeout(args.ready_timeout)
     payload = _manager().start(
         rom=args.rom,
         savestate=args.savestate,
@@ -128,18 +142,20 @@ def cmd_start(args: argparse.Namespace) -> None:
         script=list(args.script),
         log_level=args.log_level,
         heartbeat_interval=args.heartbeat_interval,
-        ready_timeout=args.ready_timeout,
+        ready_timeout=timeout,
         config=list(args.config),
     )
     print_json(payload)
 
 
 def cmd_attach(args: argparse.Namespace) -> None:
-    print_json(_manager().attach(session=args.session, pid=args.pid))
+    timeout = validate_timeout(args.timeout)
+    print_json(_manager().attach(session=args.session, pid=args.pid, timeout=timeout))
 
 
 def cmd_status(args: argparse.Namespace) -> None:
-    print_json(_manager().status(session=args.session, all=args.all))
+    timeout = validate_timeout(args.timeout)
+    print_json(_manager().status(session=args.session, all=args.all, timeout=timeout))
 
 
 def cmd_stop(args: argparse.Namespace) -> None:
@@ -147,98 +163,102 @@ def cmd_stop(args: argparse.Namespace) -> None:
 
 
 def cmd_run_lua(args: argparse.Namespace) -> None:
+    timeout = validate_timeout(args.timeout)
     print_json(
         _manager().run_lua(
             session=args.session,
             file=args.file,
             code=args.code,
-            timeout=args.timeout,
+            timeout=timeout,
         )
     )
 
 
 def cmd_input_tap(args: argparse.Namespace) -> None:
+    timeout = validate_timeout(args.timeout)
     print_json(
         _manager().input_tap(
             session=args.session,
             key=args.key,
             frames=args.frames,
-            timeout=args.timeout,
+            timeout=timeout,
         )
     )
 
 
 def cmd_input_set(args: argparse.Namespace) -> None:
-    print_json(
-        _manager().input_set(
-            session=args.session,
-            keys=list(args.keys),
-            timeout=args.timeout,
-        )
-    )
+    timeout = validate_timeout(args.timeout)
+    print_json(_manager().input_set(session=args.session, keys=list(args.keys), timeout=timeout))
 
 
 def cmd_input_clear(args: argparse.Namespace) -> None:
+    timeout = validate_timeout(args.timeout)
     keys = None if args.keys is None else list(args.keys)
-    print_json(_manager().input_clear(session=args.session, keys=keys, timeout=args.timeout))
+    print_json(_manager().input_clear(session=args.session, keys=keys, timeout=timeout))
 
 
 def cmd_screenshot(args: argparse.Namespace) -> None:
+    timeout = validate_timeout(args.timeout)
     print_json(
         _manager().screenshot(
             session=args.session,
             out=args.out,
             no_save=args.no_save,
-            timeout=args.timeout,
+            timeout=timeout,
         )
     )
 
 
 def cmd_read_memory(args: argparse.Namespace) -> None:
+    timeout = validate_timeout(args.timeout)
     print_json(
         _manager().read_memory(
             session=args.session,
             addresses=list(args.addresses),
-            timeout=args.timeout,
+            timeout=timeout,
         )
     )
 
 
 def cmd_read_range(args: argparse.Namespace) -> None:
+    timeout = validate_timeout(args.timeout)
     print_json(
         _manager().read_range(
             session=args.session,
             start=args.start,
             length=args.length,
-            timeout=args.timeout,
+            timeout=timeout,
         )
     )
 
 
 def cmd_dump_pointers(args: argparse.Namespace) -> None:
+    timeout = validate_timeout(args.timeout)
     print_json(
         _manager().dump_pointers(
             session=args.session,
             start=args.start,
             count=args.count,
             width=args.width,
-            timeout=args.timeout,
+            timeout=timeout,
         )
     )
 
 
 def cmd_dump_oam(args: argparse.Namespace) -> None:
-    print_json(_manager().dump_oam(session=args.session, count=args.count, timeout=args.timeout))
+    timeout = validate_timeout(args.timeout)
+    print_json(_manager().dump_oam(session=args.session, count=args.count, timeout=timeout))
 
 
 def cmd_dump_entities(args: argparse.Namespace) -> None:
+    timeout = validate_timeout(args.timeout)
     print_json(
         _manager().dump_entities(
             session=args.session,
             base=args.base,
             size=args.size,
             count=args.count,
-            timeout=args.timeout,
+            timeout=timeout,
         )
     )
 
@@ -252,14 +272,14 @@ def add_timeout_arg(parser: argparse.ArgumentParser, default: float = 10.0) -> N
         "--timeout",
         type=float,
         default=default,
-        help="Command timeout in seconds.",
+        help="Finite positive budget in seconds for the complete operation.",
     )
 
 
 class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         failure = DomainError(
-            "invalid_arguments", message, phase="validation", execution_outcome="not_started"
+            "invalid_arguments", message, phase="validation", execution_outcome="not_executed"
         )
         print(
             json.dumps(error_payload(failure, command=self.prog), separators=(",", ":")),
@@ -296,7 +316,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--ready-timeout",
         type=float,
         default=20.0,
-        help="Wait time for bridge readiness.",
+        help="Finite positive budget in seconds for complete startup, including readiness.",
     )
     p_start.add_argument(
         "--config",
@@ -309,11 +329,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_attach = sub.add_parser("attach", help="Attach to a managed running session.")
     p_attach.add_argument("--session", help="Session id to attach.")
     p_attach.add_argument("--pid", type=int, help="PID of a managed session.")
+    add_timeout_arg(p_attach, default=20.0)
     p_attach.set_defaults(func=cmd_attach)
 
     p_status = sub.add_parser("status", help="Show session status.")
     add_session_arg(p_status, required=False)
     p_status.add_argument("--all", action="store_true", help="List all known sessions.")
+    add_timeout_arg(p_status, default=20.0)
     p_status.set_defaults(func=cmd_status)
 
     p_stop = sub.add_parser("stop", help="Stop a running session.")
@@ -430,7 +452,16 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     try:
-        args.func(args)
+        budget = (
+            suspend_deadline()
+            if args.cmd == "stop"
+            else operation_timeout(
+                getattr(args, "timeout", getattr(args, "ready_timeout", 20.0)),
+                session_id=getattr(args, "session", None) or getattr(args, "session_id", None),
+            )
+        )
+        with budget:
+            args.func(args)
     except Exception as exc:
         failure = error_payload(
             exc,

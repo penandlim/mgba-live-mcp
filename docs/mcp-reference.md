@@ -33,14 +33,35 @@ Tool argument objects reject unknown fields with `invalid_arguments`.
 Malformed MCP request envelopes, such as argument arrays, are rejected
 by the SDK with JSON-RPC `-32602` before tool dispatch.
 
-`execution_outcome` is domain-owned: `not_started` means no requested
-execution began, `partial` means an operation performed work before
-failure, and `unknown` means execution
-cannot be established. A snapshot/settle failure can include `cause_code`,
-`cause_phase`, and `cause_execution_outcome`; do not blindly retry a
-mutation after `partial` or `unknown`. Phases identify the actual failing
-domain stage (validation/admission/publication/command/settle/snapshot or
-native inspection/TERM/KILL), not an adapter's guess from error wording.
+`execution_outcome` is domain-owned: `not_executed` requires proof of
+nonexecution, `completed` preserves known command completion even when
+capture/result handling fails, and `unknown` means execution or settling
+cannot be established. `command_completed` and `command_request_id` retain
+primary mutation evidence separately from a failed capture/poll `request_id`.
+Snapshot/settle failures retain `cause_code`, `cause_phase`, and
+`cause_execution_outcome`. Known bridge failures remain primary if their
+completion crosses the deadline; `completion_error` records that failure.
+Never replay a mutation just to recover its result. Phases identify the
+actual failing stage, including acquisition, startup, dispatch, command,
+settle, snapshot, result, or native inspection/TERM/KILL.
+
+A timeout must be a finite positive number, never a boolean. One monotonic
+budget covers validation, worker queueing, acquisition, startup, execution,
+settling, capture, and result assembly. Nested caps never renew it;
+wall-clock jumps do not affect it. CLI `start --ready-timeout` covers all
+startup phases; CLI attach/status also accept `--timeout`.
+
+Timeout is not cancellation. Only an atomically proven pending owned
+request can be withdrawn using the bridge's `rename-v1` claim protocol.
+Running/ambiguous work, legacy bridges, and interrupted composites stay
+fenced. Cancelling an MCP caller does not release a running worker's lease.
+There is no automatic replay. Use independently bounded stop/recovery.
+
+Deadlines are cooperative: safety cleanup can finish after expiry, with
+each journal-state lock wait bounded to 0.5 seconds; filesystem/native
+syscalls cannot be preempted. Stop has no operation `timeout`: its separate
+nonnegative `grace` allows TERM, plus at most one second for escalation
+and exit confirmation. Ownership lock acquisition is nonblocking.
 
 Annotations are hints, not security enforcement. Read-only/idempotent
 hints describe requested domain effects, excluding bridge bookkeeping;
@@ -69,7 +90,7 @@ unrestricted, and screenshot export may overwrite files.
 | `termination_unconfirmed` | Process/group exit could not be confirmed. |
 | `bridge_error` | The bridge reported a command error; side effects may have occurred. |
 | `serialization_failed` | Lua response could not be serialized as JSON; inspect command_completed before retrying. |
-| `command_timeout` | No correlated bridge response arrived; execution remains unknown. |
+| `command_timeout` | The operation budget expired; inspect execution_outcome before retrying. |
 | `settle_failed` | The command ran, but settling could not be confirmed. |
 | `snapshot_failed` | Required visual content is unavailable after the requested operation. |
 | `startup_failed` | Startup/readiness failed; inspect the retained session before retrying. |
@@ -116,6 +137,8 @@ Validate local inputs and transactionally start a session.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     }
   },
@@ -224,6 +247,8 @@ Start and run unrestricted Lua. Metadata only; not safely retryable.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     }
   },
@@ -330,6 +355,8 @@ Start, run unrestricted Lua, settle, capture. Not safely retryable.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     }
   },
@@ -437,6 +464,8 @@ Attach to a managed session; updates the CLI active-session marker.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     }
   },
@@ -530,6 +559,8 @@ Show metadata; archives dead sessions and refreshes the active marker.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     }
   },
@@ -702,6 +733,8 @@ Capture a screenshot using a temporary file; no emulator mutation.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     }
   },
@@ -771,7 +804,7 @@ Capture a screenshot using a temporary file; no emulator mutation.
 
 ## `mgba_live_stop`
 
-Stop a managed group; retire its generation. Repeated stop confirms exit.
+Stop a managed group independently of operation deadlines; retire its generation. Repeated stop confirms exit.
 
 - Required input fields: `session`
 
@@ -782,16 +815,13 @@ Stop a managed group; retire its generation. Repeated stop confirms exit.
   "additionalProperties": false,
   "properties": {
     "grace": {
-      "description": "Kill grace period in seconds.",
+      "description": "Independent SIGTERM grace period in seconds before SIGKILL; not a total operation timeout.",
+      "minimum": 0,
       "type": "number"
     },
     "session": {
       "description": "Session id to stop.",
       "type": "string"
-    },
-    "timeout": {
-      "default": 20.0,
-      "type": "number"
     }
   },
   "required": [
@@ -895,6 +925,8 @@ Unrestricted Lua; may change emulator/files/processes. No safe retry.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     }
   },
@@ -981,6 +1013,8 @@ Unrestricted Lua, settle, capture; changes may persist. No safe retry.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     }
   },
@@ -1090,6 +1124,8 @@ Tap a key for N frames. Metadata only.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     }
   },
@@ -1193,6 +1229,8 @@ Tap a key, optionally wait additional frames, then return one screenshot.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     },
     "wait_frames": {
@@ -1324,6 +1362,8 @@ Replace held keys and cancel scheduled releases; the game keeps running.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     }
   },
@@ -1423,6 +1463,8 @@ Clear held keys from a live session.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     }
   },
@@ -1543,6 +1585,8 @@ Save a screenshot; may overwrite the requested file.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     }
   },
@@ -1623,6 +1667,8 @@ Read memory addresses from a live session.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     }
   },
@@ -1721,6 +1767,8 @@ Read a contiguous memory range from a live session.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     }
   },
@@ -1831,6 +1879,8 @@ Dump pointer table entries from a live session.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     },
     "width": {
@@ -1978,6 +2028,8 @@ Dump OAM entries from a live session.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     }
   },
@@ -2126,6 +2178,8 @@ Dump structured entity bytes from a live session.
     },
     "timeout": {
       "default": 20.0,
+      "description": "Finite positive budget in seconds for the entire operation, including validation, worker queueing, execution, settling, capture, and result assembly as applicable. Expiry does not prove nonexecution; inspect execution_outcome before recovery.",
+      "exclusiveMinimum": 0,
       "type": "number"
     }
   },

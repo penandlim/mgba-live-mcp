@@ -290,8 +290,11 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
 - Tool argument objects reject unknown fields with `invalid_arguments` rather than
   silently ignoring typos. Malformed MCP request envelopes (such as argument arrays)
   are rejected by the SDK with JSON-RPC `-32602` before tool dispatch.
-- `not_started`, `partial` and `unknown` execution outcomes are not interchangeable:
-  do not blindly retry a mutation after a partial composite or ambiguous timeout.
+- `execution_outcome` is `not_executed` only when nonexecution is proven,
+  `completed` when the requested command's execution is known to have completed,
+  or `unknown` when execution or settling cannot be established. These replace
+  the former `not_started`/`partial` vocabulary. A completed mutation can still
+  have a failed capture or result; do not replay it to recover an image.
   See the generated [error inventory and schemas](docs/mcp-reference.md).
 - Annotations are hints, not security controls. Status can archive dead sessions;
   attach updates the active marker; export can overwrite a file; Lua is unrestricted
@@ -319,7 +322,7 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
   `serialization_failed` errors with `phase: serialization`, the request/session
   identifiers, bridge counter, and a bounded `serialization_reason`. If Lua
   returned successfully before serialization failed, the error retains
-  `command_completed: true` and `execution_outcome: partial`. The mutation
+  `command_completed: true` and `execution_outcome: completed`. The mutation
   already happened; do not replay it merely to recover its result.
   An error during Lua execution keeps an unknown outcome.
 - Serialization rejection permits the next request. Response publication failure
@@ -362,6 +365,35 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
   (or an `active_session_error`). Do not assume that a failed start restored
   the marker when restoration is unconfirmed.
 
+### Operation deadlines
+
+- Every `timeout` is a finite positive number of seconds. Booleans, nonnumbers,
+  zero, negative values, NaN, infinity, and unrepresentable numeric values fail
+  with `invalid_arguments` before allocation or dispatch.
+- One monotonic deadline begins at the public CLI/MCP/controller boundary.
+  Validation, worker queueing, acquisition, startup, native execution, settling,
+  capture, and result assembly spend the same budget. Nested timeout caps may
+  shorten that deadline but never renew it. Wall-clock changes do not affect it.
+  CLI `start --ready-timeout` retains its spelling but covers complete startup,
+  not just the readiness ping. CLI attach/status also accept `--timeout`.
+- Timeout errors retain the failed `phase`, session, and allocated request IDs.
+  When a primary Lua/input command completed before a later failure,
+  `command_completed: true` and `command_request_id` retain that evidence;
+  `request_id` can identify a different, failed capture/poll request.
+  `cause_code`, `cause_phase`, and `cause_execution_outcome` describe the failed
+  composite stage. Readiness-ping completion never implies startup Lua ran.
+  Known bridge failures remain the primary error even if completion bookkeeping
+  crosses the deadline; `completion_error` retains the bookkeeping failure.
+- Deadlines are cooperative, not hard cancellation of native code or filesystem
+  syscalls. No new command/capture starts after expiry. Ownership-preserving
+  reconciliation, journaling, rollback, and late-child registration may finish
+  beyond it; each safety-state lock wait is bounded to 0.5 seconds, while native
+  and filesystem syscall latency cannot be preempted. This never grants Lua or
+  a later capture a fresh execution budget.
+- Stop/recovery deliberately has no operation `timeout`. Its nonnegative `grace`
+  and independent termination/confirmation bounds below remain available even
+  when the requesting operation's budget has expired.
+
 ### Transaction ownership and recovery
 
 - CLI processes and MCP clients share filesystem-backed, per-session ownership.
@@ -369,9 +401,14 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
   Startup-with-Lua and visual composites hold ownership across their entire
   mutation, settling, capture, and cleanup sequence.
 - Cancelling an MCP request does not cancel its synchronous worker or emulator
-  execution. The worker retains ownership until it finishes. A command timeout
-  leaves its request pending: deleting `command.lua` would not cancel Lua already
-  executing inside the emulator.
+  execution. The worker retains ownership until it finishes under its original
+  deadline. Timeout is not proof that a mutation did not happen.
+- The packaged bridge atomically claims `command.lua` as `command.lua.running`.
+  On expiry the host withdraws only a request it can atomically prove is still
+  pending and owned. It never overwrites a raced-in foreign command.
+  Claimed/running work, interrupted composites, and older/custom bridges without
+  the `rename-v1` claim handshake remain conservatively fenced. Neither timeout
+  nor recovery automatically replays a command.
 - `transaction.json` records the directory generation, owner, pending request,
   and `ready`/`stopping`/`stopped` state. Abandoned single commands can be reclaimed
   only when execution is resolved; an interrupted, started composite requires

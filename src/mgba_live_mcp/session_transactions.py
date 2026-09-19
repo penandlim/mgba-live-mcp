@@ -17,12 +17,22 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, BinaryIO, TextIO
 
-from .errors import DomainError
+from .deadlines import check_deadline, current_deadline, suspend_deadline
+from .errors import CommandTimeout, DomainError
 
 _JOURNAL = "transaction.json"
 _OPERATION_LOCK = ".operation.lock"
 _STATE_LOCK = ".state.lock"
 _STOP_LOCK = ".stop.lock"
+
+
+@contextmanager
+def _safety_lock(directory: _Directory, name: str) -> Iterator[None]:
+    with suspend_deadline():
+        with directory.lock(name, blocking=True):
+            yield
+
+
 _CURRENT: ContextVar[tuple[Transaction, ...]] = ContextVar("session_transactions", default=())
 
 
@@ -31,7 +41,7 @@ def _error(code: str, directory: Path, stage: str, detail: str, **context: Any) 
         code,
         f"session={directory.name} stage={stage} {detail}",
         phase=stage,
-        execution_outcome="not_started"
+        execution_outcome="not_executed"
         if stage
         in {
             "acquire",
@@ -108,6 +118,7 @@ class _Directory:
 
     @contextmanager
     def create_file(self, name: str) -> Iterator[BinaryIO]:
+        check_deadline()
         self.check()
         fd = os.open(
             name,
@@ -118,20 +129,30 @@ class _Directory:
         with os.fdopen(fd, "wb") as stream:
             self.check()
             yield stream
+            check_deadline()
             self.check()
 
     def copy_file(self, source: Path, name: str) -> Path:
+        check_deadline()
         self.check()
         fd = os.open(source, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW)
         with os.fdopen(fd, "rb") as input_file:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise OSError(errno.EINVAL, "Input is not a regular file", str(source))
             with self.create_file(name) as output_file:
-                shutil.copyfileobj(input_file, output_file)
+                while True:
+                    check_deadline()
+                    chunk = input_file.read(64 * 1024)
+                    if not chunk:
+                        break
+                    check_deadline()
+                    output_file.write(chunk)
+        check_deadline()
         return self.path / name
 
     @contextmanager
     def lock(self, name: str, *, blocking: bool = False) -> Iterator[None]:
+        check_deadline()
         self.check()
         flags = os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW
         try:
@@ -146,6 +167,7 @@ class _Directory:
             # A suspended publisher must not trap recovery in a blocking flock.
             deadline = time.monotonic() + 0.5 if blocking else 0.0
             while True:
+                check_deadline()
                 try:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
@@ -156,41 +178,68 @@ class _Directory:
                             "ownership acquisition timed out" if blocking else "ownership is held"
                         )
                         raise _error("session_busy", self.path, name, detail) from exc
+                    budget = current_deadline()
+                    if budget is not None:
+                        remaining = min(remaining, budget.remaining())
                     time.sleep(min(0.01, remaining))
+            check_deadline()
             self.check()
             yield
         finally:
             os.close(fd)
 
     def read_json(self, name: str) -> Any:
-        fd = os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=self.fd)
+        check_deadline()
+        fd = os.open(
+            name, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=self.fd
+        )
         with os.fdopen(fd) as stream:
-            return json.load(stream)
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(errno.EINVAL, "JSON input is not a regular file", name)
+            value = json.load(stream)
+        check_deadline()
+        return value
 
     @contextmanager
     def _writer(self, name: str) -> Iterator[TextIO]:
-        self.check()
-        temporary = f".{name}.{uuid.uuid4().hex}.tmp"
-        fd = os.open(
-            temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
-            0o600,
-            dir_fd=self.fd,
-        )
+        published = False
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                yield stream
-                stream.flush()
-                os.fsync(stream.fileno())
+            if name != _JOURNAL:
+                check_deadline()
             self.check()
-            os.replace(temporary, name, src_dir_fd=self.fd, dst_dir_fd=self.fd)
-            os.fsync(self.fd)
-            self.check()
-        finally:
+            temporary = f".{name}.{uuid.uuid4().hex}.tmp"
+            fd = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=self.fd,
+            )
             try:
-                os.unlink(temporary, dir_fd=self.fd)
-            except FileNotFoundError:
-                pass
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    yield stream
+                    if name != _JOURNAL:
+                        check_deadline()
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                self.check()
+                if name != _JOURNAL:
+                    check_deadline()
+                os.replace(temporary, name, src_dir_fd=self.fd, dst_dir_fd=self.fd)
+                published = True
+                os.fsync(self.fd)
+                self.check()
+                if name != _JOURNAL:
+                    check_deadline()
+            finally:
+                try:
+                    os.unlink(temporary, dir_fd=self.fd)
+                except FileNotFoundError:
+                    pass
+        except CommandTimeout as exc:
+            if name == "command.lua" and not published:
+                exc.execution_outcome = "not_executed"
+                exc.context["request_published"] = False
+            raise
 
     def write_json(self, name: str, payload: Any) -> None:
         with self._writer(name) as stream:
@@ -414,9 +463,11 @@ def _cleanup_screenshots(directory: _Directory, state: dict[str, Any]) -> None:
             execution_outcome=(
                 "unknown"
                 if operation["pending_request"]
-                else "partial"
+                else "completed"
+                if operation["started"] and not operation["uncertain"]
+                else "unknown"
                 if operation["started"]
-                else "not_started"
+                else "not_executed"
             ),
             session_id=directory.path.name,
             request_id=retained[0].get("request_id"),
@@ -436,6 +487,8 @@ def _read_state(directory: _Directory, *, initialize: bool = False) -> dict[str,
         state = _new_state(directory, "ready")
         directory.write_json(_JOURNAL, state)
         return state
+    except CommandTimeout:
+        raise
     except (ValueError, OSError) as exc:
         raise _error("session_state_corrupt", directory.path, "journal", str(exc)) from exc
 
@@ -507,6 +560,8 @@ def _reclaimable(directory: _Directory, operation: dict[str, Any]) -> bool:
         return not operation["uncertain"]
     try:
         response = directory.read_json("response.json")
+    except CommandTimeout:
+        raise
     except (OSError, ValueError):
         return False
     # A vanished command is not completion. Only this abandoned request's response is evidence.
@@ -535,6 +590,7 @@ def _owned_operation(
     return state
 
 
+@suspend_deadline()
 def _remove_prelaunch(
     directory: _Directory,
     parent: _Directory,
@@ -580,6 +636,7 @@ def _remove_prelaunch(
             raise
 
 
+@suspend_deadline()
 def _rollback_prelaunch(
     directory: _Directory,
     parent: _Directory,
@@ -622,6 +679,7 @@ class Transaction:
         self._rolled_back = False
         self._startup_guarded = False
         self._startup_finalization: AbstractContextManager[None] | None = None
+        self._pending_started: bool | None = None
 
     def _check_owner(self) -> None:
         if not self._active or self._owner != _execution():
@@ -649,7 +707,9 @@ class Transaction:
             artifact: dict[str, Any] | None = None
             try:
                 parent.check()
+                check_deadline()
                 while True:
+                    check_deadline()
                     path = directory / f".mgba-screenshot-{uuid.uuid4().hex}.png"
                     try:
                         fd = os.open(
@@ -672,6 +732,7 @@ class Transaction:
                 parent.check()
                 operation.setdefault("artifacts", []).append(artifact)
                 self._directory.write_json(_JOURNAL, state)
+                check_deadline()
                 return path
             except BaseException as exc:
                 # No command can reference this file until this method returns.
@@ -693,7 +754,9 @@ class Transaction:
                             str(exc),
                             phase="snapshot",
                             stage="capture",
-                            execution_outcome="partial" if operation["started"] else "not_started",
+                            execution_outcome="completed"
+                            if operation["started"]
+                            else "not_executed",
                             session_id=self._directory.path.name,
                             staging_path=artifact["path"],
                             retained_artifacts=[artifact["path"]],
@@ -737,7 +800,10 @@ class Transaction:
                         errno.ESTALE, "Owned screenshot staging file was replaced", str(path)
                     )
                 parent.check()
-            return stream.read()
+            check_deadline()
+            png = stream.read()
+            check_deadline()
+            return png
 
     def publish_screenshot(self, path: Path, destination: Path | None) -> Path:
         """Fence the short filesystem commit against recovery; never replace implicit names."""
@@ -750,6 +816,7 @@ class Transaction:
                         raise ValueError(
                             "Screenshot publication must stay on the staging filesystem."
                         )
+                    check_deadline()
                     os.replace(
                         path.name, destination.name, src_dir_fd=parent.fd, dst_dir_fd=parent.fd
                     )
@@ -757,6 +824,7 @@ class Transaction:
                 while True:
                     destination = path.parent / f"screenshot-{uuid.uuid4().hex}.png"
                     try:
+                        check_deadline()
                         os.link(
                             path.name,
                             destination.name,
@@ -812,7 +880,8 @@ class Transaction:
             raise _error(
                 "session_busy", self._directory.path, "rollback", "reservation was not created here"
             )
-        _rollback_prelaunch(self._directory, self._parent, self.generation, self._operation_id)
+        with suspend_deadline():
+            _rollback_prelaunch(self._directory, self._parent, self.generation, self._operation_id)
         self._rolled_back = True
         self._active = False
 
@@ -831,22 +900,139 @@ class Transaction:
                     request_id=request_id,
                     pending_request_id=operation["pending_request"],
                 )
+            check_deadline()
+            self._pending_started = operation["started"]
             operation["started"] = True
             operation["pending_request"] = request_id
             for artifact in operation.get("artifacts", []):
                 if artifact["request_id"] is None:
                     artifact["request_id"] = request_id
-            self._directory.write_json(_JOURNAL, state)
             # Persist before the side effect, under the same guard that fences recovery stop.
-            # Callback failure is ambiguous: publication may have happened before it raised.
-            callback()
+            self._directory.write_json(_JOURNAL, state)
+            try:
+                try:
+                    check_deadline()
+                except CommandTimeout as exc:
+                    exc.execution_outcome = "not_executed"
+                    exc.context["request_published"] = False
+                    raise
+                callback()
+            except CommandTimeout as exc:
+                if exc.context.get("request_published") is False:
+                    # Only the guarded atomic writer can prove the callback did not publish.
+                    with suspend_deadline():
+                        try:
+                            self._owned_state()
+                            operation["started"] = self._pending_started
+                            operation["pending_request"] = None
+                            for artifact in operation.get("artifacts", []):
+                                if artifact["request_id"] == request_id:
+                                    artifact["request_id"] = None
+                            self._directory.write_json(_JOURNAL, state)
+                            self._pending_started = None
+                        except (DomainError, OSError) as cleanup:
+                            exc.context["journal_error"] = str(cleanup)
+                raise
+            # Other callback failures stay ambiguous: publication may already have happened.
             self._owned_state()
+
+    def withdraw(self, request_id: str) -> bool:
+        """Compete with native rename-v1 claiming; never unlink an unverified request."""
+        if not isinstance(request_id, str) or not request_id:
+            raise ValueError("request_id must be a nonempty string")
+        with _safety_lock(self._directory, _STATE_LOCK):
+            state = self._owned_state()
+            operation = state["operation"]
+            if operation["pending_request"] != request_id:
+                return False
+            try:
+                heartbeat = self._directory.read_json("heartbeat.json")
+            except (OSError, ValueError):
+                return False
+            if not isinstance(heartbeat, dict) or heartbeat.get("command_claim") != "rename-v1":
+                return False
+            header = f"-- mgba-live-request={json.dumps(request_id)}\n".encode()
+            command_name = "command.lua"
+            claimed_name = f".{command_name}.withdraw.{uuid.uuid4().hex}"
+            claimed = False
+            withdrawn = False
+            try:
+                try:
+                    fd = os.open(
+                        command_name,
+                        os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
+                        dir_fd=self._directory.fd,
+                    )
+                except FileNotFoundError:
+                    return False
+                with os.fdopen(fd, "rb") as stream:
+                    info = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(info.st_mode) or stream.readline(512) != header:
+                        return False
+                    try:
+                        os.rename(
+                            command_name,
+                            claimed_name,
+                            src_dir_fd=self._directory.fd,
+                            dst_dir_fd=self._directory.fd,
+                        )
+                    except FileNotFoundError:
+                        return False  # Native won; an open descriptor is not a cancellation.
+                    claimed = True
+                    actual = os.stat(claimed_name, dir_fd=self._directory.fd, follow_symlinks=False)
+                    stream.seek(0)
+                    if (actual.st_dev, actual.st_ino) != (
+                        info.st_dev,
+                        info.st_ino,
+                    ) or stream.readline(512) != header:
+                        # Restore a raced-in foreign file without overwriting a newer pending
+                        # command. A failed restore retains the private path and the fence.
+                        os.link(
+                            claimed_name,
+                            command_name,
+                            src_dir_fd=self._directory.fd,
+                            dst_dir_fd=self._directory.fd,
+                            follow_symlinks=False,
+                        )
+                        os.unlink(claimed_name, dir_fd=self._directory.fd)
+                        claimed = False
+                        return False
+                    withdrawn = True
+                    os.unlink(claimed_name, dir_fd=self._directory.fd)
+                    claimed = False
+                operation["started"] = self._pending_started
+                operation["pending_request"] = None
+                for artifact in operation.get("artifacts", []):
+                    if artifact["request_id"] == request_id:
+                        artifact["request_id"] = None
+                self._directory.write_json(_JOURNAL, state)
+                self._pending_started = None
+                return True
+            except (DomainError, OSError) as exc:
+                failure = (
+                    exc
+                    if isinstance(exc, DomainError)
+                    else DomainError("io_error", str(exc), phase="withdrawal")
+                )
+                failure.execution_outcome = "not_executed" if withdrawn else "unknown"
+                failure.context.update(
+                    session_id=self._directory.path.name,
+                    request_id=request_id,
+                    request_withdrawn=withdrawn,
+                )
+                if claimed:
+                    failure.context["retained_command_path"] = str(
+                        self._directory.path / claimed_name
+                    )
+                if failure is exc:
+                    raise
+                raise failure from exc
 
     def complete(self, request_id: str) -> None:
         """Record a response already correlated by the caller, before deleting that response."""
         if not isinstance(request_id, str) or not request_id:
             raise ValueError("request_id must be a nonempty string")
-        with self._directory.lock(_STATE_LOCK, blocking=True):
+        with _safety_lock(self._directory, _STATE_LOCK):
             state = self._owned_state()
             if state["operation"]["pending_request"] != request_id:
                 raise _error(
@@ -861,7 +1047,7 @@ class Transaction:
             self._directory.write_json(_JOURNAL, state)
 
     def mark_uncertain(self) -> None:
-        with self._directory.lock(_STATE_LOCK, blocking=True):
+        with _safety_lock(self._directory, _STATE_LOCK):
             state = self._owned_state()
             state["operation"]["uncertain"] = True
             self._directory.write_json(_JOURNAL, state)
@@ -880,7 +1066,7 @@ class Transaction:
     def _finish(self, *, failed: bool = False) -> None:
         if self._rolled_back:
             return
-        with self._directory.lock(_STATE_LOCK, blocking=True):
+        with _safety_lock(self._directory, _STATE_LOCK):
             state = self._owned_state()
             operation = state["operation"]
             complete = operation["pending_request"] is None and not operation["uncertain"]
@@ -921,6 +1107,7 @@ def transaction(
     for current in _CURRENT.get():
         if current._directory.path == path and current._active and current._owner == _execution():
             current._nest(create=create, composite=composite)
+            check_deadline()
             yield current
             return
 
@@ -970,6 +1157,7 @@ def transaction(
                 current = Transaction(
                     owned, parent, grandparent, state["generation"], operation_id, created=create
                 )
+            check_deadline()
             token = _CURRENT.set((*_CURRENT.get(), current))
         except BaseException as exc:
             if create:
@@ -1012,7 +1200,7 @@ class Recovery:
             raise _error(
                 "session_busy", self._directory.path, "recovery", "recovery lease is not owned"
             )
-        with self._directory.lock(_STATE_LOCK, blocking=True):
+        with _safety_lock(self._directory, _STATE_LOCK):
             state = _read_state(self._directory)
             if (
                 state is None
@@ -1035,7 +1223,10 @@ class Recovery:
 def recovery(directory: Path) -> Iterator[Recovery]:
     """Fence immediately without the operation lock; failure deliberately leaves stopping."""
     path = Path(os.path.abspath(directory))
-    with _leased_directory(path, create=False, lock=_STOP_LOCK) as (_, _, owned):
+    with (
+        suspend_deadline(),
+        _leased_directory(path, create=False, lock=_STOP_LOCK) as (_, _, owned),
+    ):
         with owned.lock(_STATE_LOCK, blocking=True):
             try:
                 state = _read_state(owned)
@@ -1067,6 +1258,8 @@ def transaction_status(directory: Path) -> dict[str, Any] | None:
     try:
         try:
             return _read_state(owned)
+        except CommandTimeout:
+            raise
         except RuntimeError as exc:
             return {"state": "unresolved", "error": str(exc)}
     finally:

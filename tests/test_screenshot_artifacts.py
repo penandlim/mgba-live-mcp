@@ -406,7 +406,7 @@ def test_cleanup_permission_failure_retains_then_reconciles_owned_file(tmp_path,
         retained = Path(commands[0]["path"])
         assert retained.read_bytes() == pngs[0]
         assert failure.value.code == "snapshot_failed"
-        assert failure.value.execution_outcome == "partial"
+        assert failure.value.execution_outcome == "completed"
         assert failure.value.context["stage"] == "cleanup"
         assert failure.value.context["request_id"] == commands[0]["id"]
         assert failure.value.context["retained_artifacts"] == [str(retained)]
@@ -457,7 +457,7 @@ def test_staging_journal_and_rollback_failures_preserve_recovery_details(
         error = result.structuredContent["error"]
         assert error["code"] == "snapshot_failed"
         assert error["session_id"] == "s1" and error["stage"] == "capture"
-        assert error["execution_outcome"] == "not_started"
+        assert error["execution_outcome"] == "not_executed"
         assert not commands  # No native side effects before staging was journaled.
         assert destination.read_bytes() == pngs[0]
         staged = Path(error["staging_path"])

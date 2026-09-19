@@ -9,12 +9,13 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, get_ident
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from mgba_live_mcp import process_control, session_transactions
-from mgba_live_mcp.errors import DomainError, error_payload
+from mgba_live_mcp import deadlines, process_control, session_transactions
+from mgba_live_mcp.errors import CommandTimeout, DomainError, error_payload
 from mgba_live_mcp.session_manager import SessionManager
 
 pytestmark = pytest.mark.skipif(
@@ -129,7 +130,7 @@ def manager(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Python
 
 
 def _assert_prelaunch(manager: _PythonManager, error: dict[str, Any]) -> None:
-    assert error["execution_outcome"] == "not_started"
+    assert error["execution_outcome"] == "not_executed"
     assert not manager.session_dir("candidate").exists()
     assert "candidate" not in manager.children
     assert {session["id"] for session in manager.iter_sessions()} == {"previous"}
@@ -137,7 +138,7 @@ def _assert_prelaunch(manager: _PythonManager, error: dict[str, Any]) -> None:
 
 def _assert_logs(manager: _PythonManager, error: dict[str, Any]) -> None:
     directory = manager.session_dir("candidate")
-    assert error["execution_outcome"] in {"partial", "unknown"}
+    assert error["execution_outcome"] in {"completed", "unknown"}
     assert error["session_id"] == "candidate"
     assert error["pid"] == manager.children["candidate"].pid
     assert Path(error["session_dir"]) == directory
@@ -160,7 +161,7 @@ def _assert_discoverable(manager: _PythonManager, error: dict[str, Any], state: 
     assert status["is_active"] is False
     assert status["startup"]["state"] == "failed"
     diagnostic = status["startup"].get("error") or status["startup"]["post_start_error"]
-    assert diagnostic["execution_outcome"] in {"partial", "unknown"}
+    assert diagnostic["execution_outcome"] in {"completed", "unknown"}
     sessions = manager.status(all=True)
     assert isinstance(sessions, list)
     assert {session["session_id"] for session in sessions} == {"previous", "candidate"}
@@ -735,3 +736,87 @@ def test_retirement_publication_failure_retains_failed_startup_diagnostics(
             pytest.fail("retirement failure must retain the unresolved startup fence")
     assert blocked.value.code == "session_busy"
     _stop_and_archive(manager, "stopped")
+
+
+@pytest.mark.parametrize("phase", ["staging", "spawn", "readiness"])
+def test_deadline_across_startup_preserves_recoverable_child_and_lua_outcome(
+    manager: _PythonManager,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    phase: str,
+) -> None:
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(deadlines, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    options: dict[str, Any] = {}
+    commands: list[str] = []
+    if phase == "staging":
+        script = tmp_path / "deadline.lua"
+        script.write_text("return true")
+        options["script"] = [str(script)]
+        copy_file = session_transactions._Directory.copy_file
+
+        def delayed_copy(directory, source, name):
+            result = copy_file(directory, source, name)
+            if Path(source) == script:
+                clock.now = 1.0
+            return result
+
+        monkeypatch.setattr(session_transactions._Directory, "copy_file", delayed_copy)
+    elif phase == "spawn":
+        popen = subprocess.Popen
+
+        def delayed_spawn(*args, **kwargs):
+            child = popen(*args, **kwargs)
+            clock.now = 1.0
+            return child
+
+        monkeypatch.setattr(subprocess, "Popen", delayed_spawn)
+    else:
+        write_json = session_transactions._Directory.write_json
+        write_command = manager.write_command
+
+        def native_reply(path, command, **kwargs):
+            write_command(path, command, **kwargs)
+            commands.append(command["kind"])
+            path.unlink()
+            path.with_name("response.json").write_text(
+                json.dumps({"id": command["id"], "ok": True, "data": {}})
+            )
+
+        def delayed_ready(directory, name, payload):
+            write_json(directory, name, payload)
+            if name == "session.json" and payload.get("ready") is True:
+                clock.now = max(clock.now, 1.0)
+
+        monkeypatch.setattr(manager, "send_command", SessionManager.send_command.__get__(manager))
+        monkeypatch.setattr(manager, "write_command", native_reply)
+        monkeypatch.setattr(session_transactions._Directory, "write_json", delayed_ready)
+
+    with pytest.raises(DomainError) as raised:
+        if phase == "readiness":
+            _composite(manager, code="error('must not execute')", timeout=0.5)
+        else:
+            _start(manager, ready_timeout=0.5, **options)
+    failure = raised.value
+    assert failure.code == "command_timeout"
+    if phase == "staging":
+        _assert_prelaunch(manager, error_payload(failure)["error"])
+        return
+    assert failure.execution_outcome == "unknown"
+    assert failure.context["pid"] == manager.children["candidate"].pid
+    assert manager.load_session("candidate")["pid"] == manager.children["candidate"].pid
+    if phase == "readiness":
+        assert commands == ["ping"]
+        assert failure.context["command_completed"] is False
+        assert "command_request_id" not in failure.context
+        recorded = manager.load_session("candidate")["startup"]["post_start_error"]
+        assert recorded["command_completed"] is False
+    with pytest.raises(DomainError) as busy:
+        with manager.transaction("candidate"):
+            pass
+    assert busy.value.code == "session_busy"
+    # Recovery has its own grace even inside an already expired caller scope.
+    with pytest.raises(CommandTimeout), deadlines.operation_timeout(1):
+        clock.now += 2
+        stopped = manager.stop(session="candidate", grace=0.05)
+        assert stopped["alive_after"] is False

@@ -75,7 +75,7 @@ def _snapshot(root: Path) -> dict[str, tuple[Any, ...]]:
 def _assert_refusal(error: DomainError, *, corrupt: bool = False) -> None:
     codes = {"invalid_arguments", "session_state_corrupt"} if corrupt else {"invalid_arguments"}
     assert error.code in codes
-    assert error.execution_outcome == "not_started"
+    assert error.execution_outcome == "not_executed"
     if error.code == "invalid_arguments":
         assert error.phase == "validation"
 
@@ -213,7 +213,7 @@ def test_cli_invalid_id_returns_domain_failure_without_eager_runtime_creation(
     error = json.loads(captured.err)["error"]
     assert error["code"] == "invalid_arguments"
     assert error["phase"] == "validation"
-    assert error["execution_outcome"] == "not_started"
+    assert error["execution_outcome"] == "not_executed"
     assert _snapshot(tmp_path) == before
     assert not manager.runtime_root.exists()
 
@@ -333,7 +333,7 @@ def test_enumeration_and_pruning_do_not_adopt_corrupt_entries_or_modify_winner_o
         with pytest.raises(DomainError) as error:
             manager.attach(pid=2222)
         if error.value.code == "session_not_found":
-            assert error.value.execution_outcome == "not_started"
+            assert error.value.execution_outcome == "not_executed"
         else:
             _assert_refusal(error.value, corrupt=True)
     else:

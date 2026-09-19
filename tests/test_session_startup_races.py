@@ -247,7 +247,7 @@ def test_concurrent_explicit_creators_never_change_the_winner(
                 with pytest.raises(DomainError) as failure:
                     loser.result(timeout=3)
                 assert failure.value.code in {"session_exists", "session_busy"}
-                assert failure.value.execution_outcome == "not_started"
+                assert failure.value.execution_outcome == "not_executed"
             assert _snapshot(runtime.manager.session_dir("contended")) == before
             assert _snapshot(runtime.manager.session_dir("unrelated")) == other_tree
             assert runtime.manager.active_session_file.read_bytes() == active
@@ -450,7 +450,7 @@ def test_recovery_winning_before_popen_fences_launch(
             worker.result(timeout=5)
 
     assert failure.value.code == "session_stopped"
-    assert failure.value.execution_outcome == "not_started"
+    assert failure.value.execution_outcome == "not_executed"
     assert [child.pid for child in runtime.children] == [unrelated["pid"]]
     assert runtime.signals == []
     assert _snapshot(runtime.manager.session_dir("unrelated")) == before
@@ -544,7 +544,7 @@ def test_startup_guard_bounds_stop_until_registration_but_not_readiness(
             worker.result(timeout=5)
 
     assert failure.value.code == "session_stopped"
-    assert failure.value.execution_outcome != "not_started"
+    assert failure.value.execution_outcome != "not_executed"
     assert process_control.process_state(child.pid, record["process_identity"]) == "dead"
     # Explicit stop already retired the operation. The late worker may not publish
     # readiness or reactivate it; its original logs survive even though it is stopped.
@@ -641,7 +641,7 @@ def test_nested_second_start_cannot_roll_back_an_already_running_reservation(
         with pytest.raises(DomainError) as failure:
             runtime.start("nested")
         assert failure.value.code == "session_exists"
-        assert failure.value.execution_outcome == "not_started"
+        assert failure.value.execution_outcome == "not_executed"
         assert _snapshot(manager.session_dir("nested")) == before
         assert manager.load_session("nested")["pid"] == started["pid"]
         assert [child.pid for child in runtime.children] == [started["pid"]]
@@ -664,7 +664,7 @@ def test_composite_timeout_is_validated_before_reservation_with_separate_readine
     assert not runtime.manager.session_dir("invalid-timeout").exists()
     assert failure.value.code == "invalid_arguments"
     assert failure.value.phase == "validation"
-    assert failure.value.execution_outcome == "not_started"
+    assert failure.value.execution_outcome == "not_executed"
 
 
 def test_staging_never_writes_through_a_replaced_session_directory(
@@ -689,7 +689,7 @@ def test_staging_never_writes_through_a_replaced_session_directory(
         runtime.start("replaced-during-staging")
     assert _snapshot(outside) == before
     assert runtime.children == []
-    assert failure.value.execution_outcome == "not_started"
+    assert failure.value.execution_outcome == "not_executed"
     assert "rollback_error" in failure.value.context
     assert retired.is_dir()
 
@@ -716,7 +716,7 @@ def test_log_creation_is_bound_to_the_reserved_inode(
         runtime.start("replaced-at-log")
     assert _snapshot(outside) == before
     assert runtime.children == []
-    assert failure.value.execution_outcome == "not_started"
+    assert failure.value.execution_outcome == "not_executed"
 
 
 def test_registration_losing_its_directory_still_cleans_up_the_owned_child(
@@ -741,7 +741,7 @@ def test_registration_losing_its_directory_still_cleans_up_the_owned_child(
     assert _snapshot(outside) == before
     assert len(runtime.children) == 1
     assert runtime.children[0].poll() is not None
-    assert failure.value.execution_outcome != "not_started"
+    assert failure.value.execution_outcome != "not_executed"
     assert failure.value.context["cleanup"]["confirmed"] is True
     assert failure.value.context["metadata_persisted"] is False
 
@@ -768,7 +768,7 @@ def test_public_mcp_distinguishes_whitespace_components_from_empty_ids(
     async def roundtrip() -> None:
         refused = await call("mgba_live_status", {"session": "", "all": True}, failure=True)
         assert refused["error"]["code"] == "invalid_arguments"
-        assert refused["error"]["execution_outcome"] == "not_started"
+        assert refused["error"]["execution_outcome"] == "not_executed"
         assert not runtime.manager.runtime_root.exists()
         started = await call(
             "mgba_live_start",
@@ -842,15 +842,15 @@ def test_external_stop_reaps_child_while_readiness_response_read_is_blocked(
 ) -> None:
     reading, release = threading.Event(), threading.Event()
     response_path = runtime.manager.session_dir("blocked-readiness") / "response.json"
-    read_text = Path.read_text
+    read_json = session_transactions._Directory.read_json
 
-    def blocked_read(path: Path, *args: Any, **kwargs: Any) -> str:
-        if path == response_path:
+    def blocked_read(directory: session_transactions._Directory, name: str) -> Any:
+        if directory.path / name == response_path:
             reading.set()
             _wait(release)
-        return read_text(path, *args, **kwargs)
+        return read_json(directory, name)
 
-    monkeypatch.setattr(Path, "read_text", blocked_read)
+    monkeypatch.setattr(session_transactions._Directory, "read_json", blocked_read)
     code = (
         "import json, sys\n"
         "from pathlib import Path\n"

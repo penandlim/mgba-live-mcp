@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import math
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -20,6 +19,7 @@ from pydantic import JsonValue, TypeAdapter
 
 from . import __version__
 from . import result_types as results
+from .deadlines import check_deadline, current_deadline, operation_timeout, suspend_deadline
 from .errors import DomainError, error_payload
 from .live_controller import LiveControllerClient
 from .screenshots import ScreenshotResult, validate_png
@@ -93,7 +93,7 @@ def _image_bytes_from_screenshot(result: dict[str, Any]) -> bytes:
             "snapshot_failed",
             str(exc),
             phase="snapshot",
-            execution_outcome="partial",
+            execution_outcome="completed",
             stage=stage,
             **{
                 key: result[key]
@@ -116,7 +116,7 @@ def _require_session(arguments: dict[str, Any]) -> str:
             "session_required",
             "session is required.",
             phase="validation",
-            execution_outcome="not_started",
+            execution_outcome="not_executed",
         )
     return SessionManager.validate_session_id(session)
 
@@ -242,6 +242,16 @@ def _tool(
     **definition: Any,
 ) -> Tool:
     definition["inputSchema"]["additionalProperties"] = False
+    timeout = definition["inputSchema"]["properties"].get("timeout")
+    if timeout is not None:
+        timeout.update(
+            exclusiveMinimum=0,
+            description=(
+                "Finite positive budget in seconds for the entire operation, including validation, "
+                "worker queueing, execution, settling, capture, and result assembly as applicable. "
+                "Expiry does not prove nonexecution; inspect execution_outcome before recovery."
+            ),
+        )
     return Tool(
         **definition,
         outputSchema={"type": "object", **TypeAdapter(result_type).json_schema()},
@@ -388,13 +398,22 @@ def _tools() -> dict[str, Tool]:
             results.Stopped,
             idempotent=True,
             name="mgba_live_stop",
-            description="Stop a managed group; retire its generation. Repeated stop confirms exit.",
+            description=(
+                "Stop a managed group independently of operation deadlines; retire its generation. "
+                "Repeated stop confirms exit."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session": {"type": "string", "description": "Session id to stop."},
-                    "grace": {"type": "number", "description": "Kill grace period in seconds."},
-                    "timeout": {"type": "number", "default": 20.0},
+                    "grace": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": (
+                            "Independent SIGTERM grace period in seconds before SIGKILL; "
+                            "not a total operation timeout."
+                        ),
+                    },
                 },
                 "required": ["session"],
             },
@@ -634,38 +653,61 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
                 "unknown_tool",
                 f"Unknown tool: {name}",
                 phase="dispatch",
-                execution_outcome="not_started",
+                execution_outcome="not_executed",
             )
-        input_validator, output_validator = _validators(name)
-        try:
-            input_validator.validate(args)
-        except ValidationError as exc:
-            raise DomainError(
-                "invalid_arguments",
-                exc.message,
-                phase="validation",
-                execution_outcome="not_started",
-            ) from exc
-        timeout = args.get("timeout", 20.0)
-        if not math.isfinite(timeout) or timeout <= 0:
-            raise ValueError("timeout must be a finite positive number")
-        payload = await _dispatch_tool(name, args)
-        if not isinstance(payload, dict):
-            raise DomainError("invalid_result", "Expected an object result.", phase="result")
-        visual = name.endswith("_and_view") or name in {
-            "mgba_live_get_view",
-            "mgba_live_export_screenshot",
-        }
-        image = _image_content(payload) if visual else None
-        public = {key: value for key, value in payload.items() if key != "png_base64"}
-        try:
-            output_validator.validate(public)
-        except ValidationError as exc:
-            raise DomainError("invalid_result", exc.message, phase="result") from exc
-        content: list[ContentBlock] = [_text_content(public)]
-        if image is not None:
-            content.append(image)
-        return CallToolResult(content=content, structuredContent=public)
+        budget = (
+            suspend_deadline()
+            if name == "mgba_live_stop"
+            else operation_timeout(
+                args.get("timeout", 20.0) if isinstance(args, dict) else 20.0,
+                session_id=context.get("session_id"),
+            )
+        )
+        with budget:
+            check_deadline("validation")
+            input_validator, output_validator = _validators(name)
+            try:
+                input_validator.validate(args)
+            except ValidationError as exc:
+                raise DomainError(
+                    "invalid_arguments",
+                    exc.message,
+                    phase="validation",
+                    execution_outcome="not_executed",
+                ) from exc
+            check_deadline("dispatch")
+            payload = await _dispatch_tool(name, args)
+            deadline = current_deadline()
+            if deadline is not None:
+                deadline.execution_outcome = "completed"
+            check_deadline("result")
+            if not isinstance(payload, dict):
+                raise DomainError(
+                    "invalid_result",
+                    "Expected an object result.",
+                    phase="result",
+                    execution_outcome="completed",
+                )
+            visual = name.endswith("_and_view") or name in {
+                "mgba_live_get_view",
+                "mgba_live_export_screenshot",
+            }
+            image = _image_content(payload) if visual else None
+            check_deadline("result")
+            public = {key: value for key, value in payload.items() if key != "png_base64"}
+            try:
+                output_validator.validate(public)
+            except ValidationError as exc:
+                raise DomainError(
+                    "invalid_result",
+                    exc.message,
+                    phase="result",
+                    execution_outcome="completed",
+                ) from exc
+            content: list[ContentBlock] = [_text_content(public)]
+            if image is not None:
+                content.append(image)
+            return CallToolResult(content=content, structuredContent=public)
     except Exception as exc:
         failure = error_payload(exc, **context)
         return CallToolResult(
@@ -677,7 +719,7 @@ async def _dispatch_tool(
     name: str, arguments: dict[str, Any]
 ) -> dict[str, Any] | list[dict[str, Any]]:
     args = arguments or {}
-    timeout = float(args.get("timeout", 20.0))
+    timeout = args.get("timeout", 20.0)
 
     if name == "mgba_live_start":
         payload = await _controller.start(timeout=timeout, **_build_start_kwargs(args))
@@ -707,16 +749,18 @@ async def _dispatch_tool(
                 "session_required",
                 "provide session or pid.",
                 phase="validation",
-                execution_outcome="not_started",
+                execution_outcome="not_executed",
             )
-        payload = await _controller.attach(session=session, pid=pid)
+        payload = await _controller.attach(session=session, pid=pid, timeout=timeout)
         return payload
 
     if name == "mgba_live_status":
         if _all_sessions_requested(args):
-            payload = await _controller.status(session=_maybe_session(args), all=True)
+            payload = await _controller.status(
+                session=_maybe_session(args), all=True, timeout=timeout
+            )
             return {"value": payload}
-        payload = await _controller.status(session=_require_session(args))
+        payload = await _controller.status(session=_require_session(args), timeout=timeout)
         return payload
 
     if name == "mgba_live_get_view":
@@ -852,7 +896,7 @@ async def _dispatch_tool(
         "unknown_tool",
         f"Unknown tool: {name}",
         phase="dispatch",
-        execution_outcome="not_started",
+        execution_outcome="not_executed",
     )
 
 

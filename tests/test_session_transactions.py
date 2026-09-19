@@ -161,7 +161,7 @@ def test_process_contention_preserves_unread_response_and_other_sessions(tmp_pat
             with transaction(directory):
                 pytest.fail("a competing operation must not be admitted")
         assert refused.value.code == "session_busy"
-        assert refused.value.execution_outcome == "not_started"
+        assert refused.value.execution_outcome == "not_executed"
         with transaction(tmp_path / "independent", create=True) as other:
             other.publish("other-request", lambda: None)
             other.complete("other-request")
@@ -186,7 +186,7 @@ def test_publish_refusal_does_not_start_replacement_request(tmp_path: Path) -> N
             owner.publish("second", (tmp_path / "second").touch)
         assert refused.value.code == "session_busy"
         assert refused.value.phase == "publish"
-        assert refused.value.execution_outcome == "not_started"
+        assert refused.value.execution_outcome == "not_executed"
         assert refused.value.context["request_id"] == "second"
         assert refused.value.context["pending_request_id"] == "first"
         assert not (tmp_path / "second").exists()

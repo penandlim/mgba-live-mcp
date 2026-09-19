@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, Literal
 
-ExecutionOutcome = Literal["not_started", "partial", "unknown"]
+ExecutionOutcome = Literal["not_executed", "completed", "unknown"]
 
 # Authoritative inventory, also rendered in the generated MCP reference.
 ERROR_CODES = {
@@ -29,7 +29,7 @@ ERROR_CODES = {
     "serialization_failed": (
         "Lua response could not be serialized as JSON; inspect command_completed before retrying."
     ),
-    "command_timeout": "No correlated bridge response arrived; execution remains unknown.",
+    "command_timeout": "The operation budget expired; inspect execution_outcome before retrying.",
     "settle_failed": "The command ran, but settling could not be confirmed.",
     "snapshot_failed": "Required visual content is unavailable after the requested operation.",
     "startup_failed": "Startup/readiness failed; inspect the retained session before retrying.",
@@ -62,7 +62,7 @@ class DomainError(RuntimeError):
 
 
 class CommandTimeout(DomainError, TimeoutError):
-    """A published bridge request timed out, not a confirmed cancellation."""
+    """An operation deadline expired; native execution is not thereby cancelled."""
 
 
 @contextmanager
@@ -92,7 +92,7 @@ def error_payload(exc: Exception, **context: Any) -> dict[str, Any]:
     if not isinstance(exc, DomainError):
         if isinstance(exc, ValueError):
             exc = DomainError(
-                "invalid_arguments", str(exc), phase="validation", execution_outcome="not_started"
+                "invalid_arguments", str(exc), phase="validation", execution_outcome="not_executed"
             )
         elif isinstance(exc, PermissionError):
             exc = DomainError("permission_denied", str(exc), phase="io")

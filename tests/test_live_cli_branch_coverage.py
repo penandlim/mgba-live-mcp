@@ -21,7 +21,7 @@ def test_resolve_session_requires_explicit_session(
     with pytest.raises(DomainError) as error:
         live_cli.resolve_session(argparse.Namespace(session=None))
     assert error.value.code == "session_required"
-    assert error.value.execution_outcome == "not_started"
+    assert error.value.execution_outcome == "not_executed"
 
 
 def test_parser_requires_session_for_existing_session_commands() -> None:
@@ -54,3 +54,22 @@ def test_cli_stop_reports_already_exited_without_archiving_its_target(
         assert result["outcome"] == "already_exited"
         assert result["alive_after"] is False
     assert manager.get_active_session_id() is None
+
+
+@pytest.mark.parametrize("timeout", [False, 0, -1, float("nan"), float("inf")])
+def test_cli_timeout_rejected_before_manager_side_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, timeout: float
+) -> None:
+    manager = SessionManager(runtime_root=tmp_path)
+    called = False
+
+    def fail_manager():
+        nonlocal called
+        called = True
+        return manager
+
+    monkeypatch.setattr(live_cli, "_manager", fail_manager)
+    args = argparse.Namespace(session="missing", pid=None, timeout=timeout)
+    with pytest.raises((DomainError, ValueError)):
+        live_cli.cmd_attach(args)
+    assert called is False

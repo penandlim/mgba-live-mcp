@@ -9,6 +9,7 @@ import sys
 from importlib.metadata import version
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -16,7 +17,7 @@ from jsonschema import Draft202012Validator
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 
-from mgba_live_mcp import process_control, server, session_transactions
+from mgba_live_mcp import deadlines, process_control, server, session_transactions
 from mgba_live_mcp.errors import ERROR_CODES, DomainError
 from mgba_live_mcp.live_controller import LiveControllerClient
 from mgba_live_mcp.session_manager import SessionManager
@@ -249,7 +250,7 @@ def test_registered_failures_never_look_successful(runtime, suffix, arguments, c
     assert result.isError
     error = structured(result)["error"]
     assert error["code"] == code and code in ERROR_CODES
-    assert error["execution_outcome"] == "not_started"
+    assert error["execution_outcome"] == "not_executed"
     if "session" in arguments:
         assert error["session_id"] == arguments["session"]
 
@@ -282,7 +283,7 @@ def test_busy_session_retains_pending_request(runtime):
     assert result.isError and error["code"] == "session_busy"
     assert error["pending_request_id"] == "pending-request"
     assert "request_id" not in error
-    assert error["phase"] == "reconcile" and error["execution_outcome"] == "not_started"
+    assert error["phase"] == "reconcile" and error["execution_outcome"] == "not_executed"
 
 
 def test_real_transport_timeout_remains_ambiguous(runtime, monkeypatch):
@@ -315,7 +316,7 @@ def test_missing_visual_content_is_error_not_metadata_success(runtime, monkeypat
     result = invoke("mgba_live_run_lua_and_view", {"session": "s1", "code": "return false"})
     error = structured(result)["error"]
     assert result.isError and error["code"] == "snapshot_failed"
-    assert error["phase"] == "snapshot" and error["execution_outcome"] == "partial"
+    assert error["phase"] == "snapshot" and error["execution_outcome"] == "completed"
     assert not any(isinstance(block, types.ImageContent) for block in result.content)
 
 
@@ -328,7 +329,7 @@ def test_composite_domain_failure_does_not_erase_cause(runtime, monkeypatch):
     error = structured(result)["error"]
     assert result.isError and error["code"] == "snapshot_failed"
     assert error["cause_code"] == "command_timeout" and error["cause_phase"] == "command"
-    assert error["request_id"] == "capture-id" and error["execution_outcome"] == "partial"
+    assert error["request_id"] == "capture-id" and error["execution_outcome"] == "completed"
 
 
 def test_real_stdio_initialize_and_metadata_requests(tmp_path):
@@ -385,7 +386,7 @@ def test_cli_uses_domain_error_envelope(tmp_path, arguments, code, exit_code):
     )
     assert result.returncode == exit_code and result.stdout == ""
     error = json.loads(result.stderr)["error"]
-    assert error["code"] == code and error["execution_outcome"] == "not_started"
+    assert error["code"] == code and error["execution_outcome"] == "not_executed"
     if code == "session_not_found":
         assert error["session_id"] == "missing" and error["phase"] == "admission"
 
@@ -395,3 +396,93 @@ def test_invalid_success_payload_becomes_error(runtime, monkeypatch):
     result = invoke("mgba_live_read_memory", {"session": "s1", "addresses": []})
     assert result.isError
     assert structured(result)["error"]["code"] == "invalid_result"
+
+
+@pytest.mark.parametrize("timeout", [False, 0, -1, float("nan"), float("inf"), -float("inf")])
+def test_registered_timeout_validation_precedes_dispatch(runtime, monkeypatch, timeout):
+    called = False
+
+    async def fail(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("dispatch must not run")
+
+    monkeypatch.setattr(server, "_dispatch_tool", fail)
+    result = invoke("mgba_live_status", {"all": True, "timeout": timeout})
+    assert result.isError
+    error = structured(result)["error"]
+    assert error["code"] == "invalid_arguments"
+    assert error["execution_outcome"] == "not_executed"
+    assert called is False
+
+
+def test_stop_schema_uses_independent_grace_without_timeout():
+    tool = {item.name: item for item in asyncio.run(server.list_tools())}["mgba_live_stop"]
+    properties = tool.inputSchema["properties"]
+    assert "timeout" not in properties
+    assert properties["grace"]["minimum"] == 0
+
+
+def test_result_assembly_timeout_keeps_completed_mutation_without_replay(
+    runtime,
+    tmp_path,
+    monkeypatch,
+):
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(deadlines, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    render = server._text_content
+    bridge = runtime.send_command
+    effect = tmp_path / "mutation"
+
+    def mutate(target, kind, payload=None, **kwargs):
+        if kind == "run_lua_inline":
+            with effect.open("a") as stream:
+                stream.write("applied\n")
+        return bridge(target, kind, payload, **kwargs)
+
+    def delayed_render(payload):
+        if "error" not in payload:
+            clock.now = 0.5
+        return render(payload)
+
+    monkeypatch.setattr(runtime, "send_command", mutate)
+    monkeypatch.setattr(server, "_text_content", delayed_render)
+    result = invoke("mgba_live_run_lua", {"session": "s1", "code": "return true", "timeout": 0.5})
+    failure = structured(result)["error"]
+    assert result.isError is True
+    assert failure["code"] == "command_timeout"
+    assert failure["phase"] == "result"
+    assert failure["execution_outcome"] == "completed"
+    assert failure["session_id"] == "s1"
+    assert effect.read_text() == "applied\n"
+
+
+@pytest.mark.parametrize("failure_kind", ["timeout", "io"])
+def test_completed_attach_result_errors_do_not_invent_bridge_completion(
+    runtime,
+    monkeypatch,
+    failure_kind,
+):
+    runtime.active_session_file.unlink()
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(deadlines, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    render = server._text_content
+
+    def fail_result(payload):
+        if "error" not in payload:
+            if failure_kind == "io":
+                raise OSError("result renderer failed")
+            clock.now = 0.5
+        return render(payload)
+
+    monkeypatch.setattr(server, "_text_content", fail_result)
+    result = invoke("mgba_live_attach", {"session": "s1", "timeout": 0.5})
+    failure = structured(result)["error"]
+    assert result.isError is True
+    assert failure["code"] == ("command_timeout" if failure_kind == "timeout" else "io_error")
+    assert failure["execution_outcome"] == "completed"
+    assert failure["phase"] == "result"
+    assert "command_completed" not in failure
+    assert "command_request_id" not in failure
+    assert "request_id" not in failure
+    assert runtime.get_active_session_id() == "s1"

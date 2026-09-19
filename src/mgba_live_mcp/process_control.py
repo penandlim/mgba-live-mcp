@@ -229,7 +229,7 @@ def _failure(
     stage: str,
     detail: str = "",
     *,
-    execution_outcome: ExecutionOutcome = "not_started",
+    execution_outcome: ExecutionOutcome = "not_executed",
 ) -> DomainError:
     return DomainError(
         code,
@@ -458,7 +458,7 @@ def terminate_owned_process(
                 pid,
                 stage,
                 "Pre-signal ownership check failed",
-                execution_outcome="unknown" if attempted else "not_started",
+                execution_outcome="unknown" if attempted else "not_executed",
             )
         attempted = True
         try:

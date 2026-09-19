@@ -107,14 +107,21 @@ def test_timeout_keeps_unresolved_work_fenced_until_its_response(
         "command_path": str(command_path),
         "response_path": str(response_path),
     }
-    clock = iter([0.0, 0.2])
+    clock = SimpleNamespace(now=0.0)
+
+    def sleep(duration: float) -> None:
+        clock.now += duration
+
     with monkeypatch.context() as timing:
+        timing.setattr("mgba_live_mcp.deadlines.time", SimpleNamespace(monotonic=lambda: clock.now))
         timing.setattr(
             "mgba_live_mcp.session_manager.time",
-            SimpleNamespace(monotonic=lambda: next(clock), sleep=lambda _: None),
+            SimpleNamespace(sleep=sleep),
         )
-        with pytest.raises(TimeoutError, match="execution outcome unknown"):
+        with pytest.raises(DomainError) as failure:
             manager.send_command(target, "ping", timeout=0.1)
+        assert failure.value.code == "command_timeout"
+        assert failure.value.execution_outcome == "unknown"
     pending = session_transactions.transaction_status(session_dir)
     assert pending is not None
     request_id = pending["operation"]["pending_request"]
@@ -168,7 +175,7 @@ def test_dead_or_replaced_process_is_refused_before_command_publication(
         manager.send_command(target, "ping", timeout=1)
     assert error.value.code == ("session_dead" if state == "dead" else "identity_mismatch")
     assert error.value.phase == "admission"
-    assert error.value.execution_outcome == "not_started"
+    assert error.value.execution_outcome == "not_executed"
     assert error.value.context["session_id"] == "replaced"
     assert not Path(target["command_path"]).exists()
     journal = session_transactions.transaction_status(manager.session_dir("replaced"))

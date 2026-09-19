@@ -239,19 +239,19 @@ local function apply_key_releases()
 end
 
 local function parse_command_file()
-  local f = io.open(command_path, "r")
-  if not f then
+  local claimed_path = command_path .. ".running"
+  -- Rename is the claim: exactly one bridge invocation can win this command.
+  local claimed = os.rename(command_path, claimed_path)
+  if not claimed then
     return nil
   end
-  f:close()
-
-  local loader, lerr = loadfile(command_path)
-  os.remove(command_path)
+  local loader, lerr = loadfile(claimed_path)
   if not loader then
+    os.remove(claimed_path)
     return { id = "unknown", kind = "__invalid__", _error = lerr }
   end
-
   local ok, command = pcall(loader)
+  os.remove(claimed_path)
   if not ok then
     return { id = "unknown", kind = "__invalid__", _error = command }
   end
@@ -545,7 +545,7 @@ local function process_command(cmd)
       phase = "serialization",
       error = serialization_messages[reason],
       serialization_reason = reason,
-      execution_outcome = ok and "partial" or (invalid and "not_started" or "unknown"),
+      execution_outcome = ok and "completed" or (invalid and "not_executed" or "unknown"),
       command_completed = ok,
     })
   end
@@ -564,6 +564,7 @@ local function write_heartbeat()
     frame = frame,
     keys = emu:getKeys(),
     unix_time = os.time(),
+    command_claim = "rename-v1",
   })
 end
 

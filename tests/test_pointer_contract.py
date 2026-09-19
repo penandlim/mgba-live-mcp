@@ -65,7 +65,7 @@ def test_manager_rejects_invalid_width_before_session_lookup(tmp_path, width) ->
     with pytest.raises(DomainError) as error:
         manager.dump_pointers(session="missing", start=0, count=1, width=width)
     assert error.value.code == "invalid_arguments"
-    assert error.value.execution_outcome == "not_started"
+    assert error.value.execution_outcome == "not_executed"
 
 
 def test_registered_mcp_rejects_invalid_width_before_dispatch() -> None:

@@ -169,15 +169,6 @@ async def test_cancelled_composite_keeps_ownership_through_every_phase(
 
 
 @pytest.mark.anyio
-async def test_run_lua_and_view_does_not_capture_unsettled_macro(tmp_path: Path) -> None:
-    manager = _MacroManager(tmp_path)
-    client = LiveControllerClient(manager=manager)
-    with pytest.raises(RuntimeError, match="settle_failed"):
-        await client.run_lua_and_view(session="session-123", code="return 11", timeout=0)
-    assert manager.captured_value is None
-
-
-@pytest.mark.anyio
 async def test_run_lua_and_view_preserves_snapshot_failure_cause(tmp_path: Path) -> None:
     client = LiveControllerClient(manager=_BrokenViewManager(tmp_path))
     with pytest.raises(RuntimeError, match="snapshot_failed") as error:

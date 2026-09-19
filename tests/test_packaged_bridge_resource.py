@@ -8,11 +8,12 @@ import subprocess
 import sys
 from importlib.resources import as_file, files
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from mcp import types
 
-from mgba_live_mcp import server
+from mgba_live_mcp import deadlines, server
 from mgba_live_mcp.live_controller import LiveControllerClient
 from mgba_live_mcp.session_manager import SessionManager
 
@@ -148,7 +149,7 @@ def _serialization_failure(raw, *, request_id="primary", frame=1, completed=True
     assert response["frame"] == frame
     assert response["code"] == "serialization_failed"
     assert response["phase"] == "serialization"
-    assert response["execution_outcome"] == ("partial" if completed else "unknown")
+    assert response["execution_outcome"] == ("completed" if completed else "unknown")
     assert response["command_completed"] is completed
     assert isinstance(response["error"], str) and 0 < len(response["error"]) <= 256
     reason = response["serialization_reason"]
@@ -454,7 +455,7 @@ def test_completed_mutation_serialization_failure_reaches_mcp(mcp_bridge):
     error = payload["error"]
     assert error["code"] == "serialization_failed"
     assert error["phase"] == "serialization"
-    assert error["execution_outcome"] == "partial"
+    assert error["execution_outcome"] == "completed"
     assert error["command_completed"] is True
     assert error["session_id"] == "running"
     assert error["request_id"] == published[0]["id"]
@@ -465,12 +466,22 @@ def test_completed_mutation_serialization_failure_reaches_mcp(mcp_bridge):
     _serialization_failure(raw[0], request_id=published[0]["id"])
 
 
-def test_response_write_failure_keeps_transaction_unresolved(mcp_bridge):
+def test_response_write_failure_keeps_transaction_unresolved(mcp_bridge, monkeypatch):
     manager, _, executions = mcp_bridge
     (manager.session_dir("running") / "response.json.tmp").mkdir()
+    # Expire after Lua attempts publication, not during subprocess startup.
+    clock = SimpleNamespace(monotonic=lambda: 0.0)
+    monkeypatch.setattr(deadlines, "time", clock)
+    original_publish = manager.write_command
+
+    def publish(path, command, **kwargs):
+        original_publish(path, command, **kwargs)
+        clock.monotonic = lambda: 1.0
+
+    monkeypatch.setattr(manager, "write_command", publish)
     result = _call_tool(
         "mgba_live_run_lua",
-        {"session": "running", "code": "emu:setKeys(7); return true", "timeout": 0.01},
+        {"session": "running", "code": "emu:setKeys(7); return true", "timeout": 1.0},
     )
     assert isinstance(result, types.CallToolResult)
     assert result.isError

@@ -399,7 +399,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_session_arg(p_screenshot)
     p_screenshot.add_argument(
         "--out",
-        help="Optional output path; otherwise returns png_base64.",
+        help="Output path; defaults to the session's screenshots directory.",
+    )
+    p_screenshot.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Return png_base64 without retaining an image file.",
     )
     add_timeout_arg(p_screenshot, default=20.0)
     p_screenshot.set_defaults(func=cmd_screenshot)

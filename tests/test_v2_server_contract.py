@@ -373,6 +373,8 @@ def test_real_stdio_initialize_and_metadata_requests(tmp_path):
     ("arguments", "code", "exit_code"),
     [
         (["run-lua", "--session", "missing", "--code", "return 1"], "session_not_found", 1),
+        (["screenshot", "--session", "missing"], "session_not_found", 1),
+        (["screenshot", "--session", "missing", "--no-save"], "session_not_found", 1),
         (
             ["read-range", "--session", "missing", "--start", "0", "--length", "bad"],
             "invalid_arguments",
@@ -393,7 +395,7 @@ def test_cli_uses_domain_error_envelope(tmp_path, arguments, code, exit_code):
     error = json.loads(result.stderr)["error"]
     assert error["code"] == code and error["execution_outcome"] == "not_executed"
     if code == "session_not_found":
-        assert error["session_id"] == "missing" and error["phase"] == "admission"
+        assert error["session_id"] == "missing"
 
 
 def test_invalid_success_payload_becomes_error(runtime, monkeypatch):

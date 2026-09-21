@@ -338,6 +338,82 @@ Use `mgba_live_get_view` for a one-off in-memory screenshot.
   Bytes are read in ascending address order, preserving the existing MMIO
   read sequence.
 
+### Bounded memory inspections
+
+`read-memory`, `read-range`, `dump-pointers`, and `dump-entities` share fixed
+budgets in the CLI and MCP:
+
+- At most **4096 source bytes** per request. Pointer `count * width` and entity
+  `count * size` must fit this budget.
+- At most **1024 sparse addresses**, **512 pointers**, or **590 one-byte entities**;
+  larger entities can require fewer records. Dimensions must be positive integers.
+  Duplicate sparse addresses each consume a read; the existing address map keeps
+  the last value for each address.
+- Addresses and the final byte must fit the active core: **0–65535 on GB/GBC**,
+  **0–4294967295 on GBA**. The bridge asks the emulator for its platform; it does
+  not infer it from the ROM filename. An unavailable/unknown platform is rejected.
+- At most **32 KiB of conservatively estimated native JSON**. This pre-read
+  admission budget includes the complete compact bridge success envelope, not
+  CLI pretty-printing or MCP protocol wrappers. Records/spans can hit this
+  budget before the source-byte/item caps; no data is silently truncated.
+
+All budgets apply together. Both host and bridge reserve the larger of 2048 bytes
+or 256 bytes plus the encoded request/session IDs for metadata and shape headers.
+They then charge these worst-case payload costs (`N` source bytes, `C` records):
+
+| Selection | Payload charge |
+| --- | --- |
+| Sparse addresses | 17 bytes per requested address |
+| Byte range | `4 * N` |
+| Hex range | `2 * N` |
+| Delta range | `26 * ceil(N / 2) + 2 * N` |
+| Pointers | `60 * C` |
+| Entities | `48 * C + 4 * N` |
+
+With normal-sized IDs, 512 pointers, 480 four-byte entities, or a 2048-byte delta
+exactly fill their estimated budget; one more record/byte is rejected before
+reads. Delta admission assumes worst-case fragmentation even if the baseline
+later proves unchanged. Byte-array and hex ranges still accept 4096 source bytes.
+The shared Lua serializer's independent **1 MiB**, **10,000-entry**, and
+**32-level** safety limits remain unchanged for arbitrary Lua and correlated
+error envelopes, so an oversized request's identifiers can still be reported.
+
+Invalid selections and budgets fail before any memory read. `invalid_arguments`
+reports invalid dimensions, addresses, encodings, or baselines; `inspection_limit`
+includes `limit_name`, `limit`, `max_read_bytes`, `max_items`, and
+`max_response_bytes`, with a smaller-chunk suggestion. `inspection_unsupported`
+reports an unavailable platform. A failed/non-byte native read returns
+`inspection_read_failed`, not a fabricated zero or partial success.
+
+`read-range` keeps the default byte array and offers two opt-in encodings:
+
+```sh
+uv run python scripts/mgba_live.py read-range --session game --start 0xC000 --length 4
+uv run python scripts/mgba_live.py read-range --session game --start 0xC000 --length 4 --encoding hex
+uv run python scripts/mgba_live.py read-range --session game --start 0xC000 --length 4 --encoding delta \
+  --baseline '{"start":49152,"data":"00010203"}'
+```
+
+The MCP equivalent is `mgba_live_read_range` with
+`{"session":"game","start":49152,"length":4,"encoding":"delta","baseline":{"start":49152,"data":"00010203"}}`.
+Baselines are caller-owned and stateless: provide exactly `start` and `data`,
+matching the requested start and byte length. Hex input is case-insensitive,
+without whitespace or a prefix. A baseline is required only for `delta`.
+
+All responses preserve the root `session_id` and `frame`. The `range` payload is:
+
+- Bytes: `{start, length, data: [0, 1, 255, 3]}`.
+- Hex: `{start, length, encoding: "hex", data: "0001ff03"}`.
+- Delta: `{start, length, encoding: "delta", spans: [{offset: 2, data: "ff"}]}`
+  for that example relative to `00010203`. Spans are maximal contiguous changes,
+  ordered by zero-based byte offset; apply them to a copy of the baseline.
+  Unchanged data yields `spans: []`; all-changed data yields one complete span.
+
+Split larger reads explicitly. `frame` is a **bridge callback counter**, not a
+native emulator frame number; separate chunks need not observe the same frame
+or game state. These bounds do not sandbox arbitrary Lua or change OAM behavior.
+Restart existing sessions after upgrading to load the current bridge checks.
+
 ### Transactional startup
 
 - ROM, executable, bridge, startup Lua, initial savestate and numeric options

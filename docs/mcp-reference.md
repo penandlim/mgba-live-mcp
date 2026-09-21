@@ -69,6 +69,21 @@ live emulation continues, so repeated reads need not return identical data.
 Status performs maintenance, attach changes the active marker, Lua is
 unrestricted, and screenshot export may overwrite files.
 
+Built-in memory inspections reject requests above 4096 source bytes or 1024 sparse addresses/pointers/entities
+before reading. A conservative 32768-byte native JSON budget
+also rejects output expansion before traversal (not after reading/serialization).
+This bounds compact success envelopes, excluding CLI formatting/MCP wrappers.
+Metadata/header reserve is `max(2048, 256 + encoded request/session IDs)`.
+Payload costs: 17 per sparse address,
+4 per raw byte, 2 per hex byte, 60 per pointer, or 48 per entity plus 4 per byte.
+Delta costs `26 * ceil(length / 2) + 2 * length`, even for an unchanged baseline.
+Thus pointer/delta maxima are 512 records/2048 bytes; byte/hex ranges allow 4096.
+Addresses must fit the active platform; failed reads never fabricate bytes.
+`read_range` returns byte arrays by default; `hex` and `delta` are opt-in.
+Delta baselines contain exactly `start` and hex `data` for the requested region.
+Split larger reads explicitly: `frame` is a bridge callback counter.
+Chunks need not share a frame or game state. Baselines are not retained.
+
 ### Stable error codes
 
 | Code | Meaning |
@@ -90,6 +105,9 @@ unrestricted, and screenshot export may overwrite files.
 | `termination_unconfirmed` | Process/group exit could not be confirmed. |
 | `bridge_error` | The bridge reported a command error; side effects may have occurred. |
 | `serialization_failed` | Lua response could not be serialized as JSON; inspect command_completed before retrying. |
+| `inspection_limit` | Inspection exceeds a read/item/response budget; request smaller chunks. |
+| `inspection_unsupported` | The native platform cannot be verified for bounded inspection. |
+| `inspection_read_failed` | A native memory read failed or did not return a byte. |
 | `command_timeout` | The operation budget expired; inspect execution_outcome before retrying. |
 | `settle_failed` | The command ran, but settling could not be confirmed. |
 | `snapshot_failed` | Required visual content is unavailable after the requested operation. |
@@ -1646,7 +1664,7 @@ Save a screenshot; may overwrite the requested file.
 
 ## `mgba_live_read_memory`
 
-Read memory addresses from a live session.
+Read 1-1024 memory addresses; duplicates each consume a read. Conservative native JSON budget: 32768 bytes before reads. frame is a bridge callback counter; separate chunks need not share a frame.
 
 - Required input fields: `session`, `addresses`
 
@@ -1657,9 +1675,14 @@ Read memory addresses from a live session.
   "additionalProperties": false,
   "properties": {
     "addresses": {
+      "description": "One byte per address, including duplicates; at most 4096 bytes read. Addresses must also fit the active emulator platform.",
       "items": {
+        "maximum": 4294967295,
+        "minimum": 0,
         "type": "integer"
       },
+      "maxItems": 1024,
+      "minItems": 1,
       "type": "array"
     },
     "session": {
@@ -1684,9 +1707,6 @@ Read memory addresses from a live session.
 
 ```json
 {
-  "$defs": {
-    "JsonValue": {}
-  },
   "additionalProperties": false,
   "properties": {
     "frame": {
@@ -1701,22 +1721,11 @@ Read memory addresses from a live session.
       "title": "Frame"
     },
     "memory": {
-      "anyOf": [
-        {
-          "additionalProperties": {
-            "type": "integer"
-          },
-          "type": "object"
-        },
-        {
-          "items": {
-            "$ref": "#/$defs/JsonValue"
-          },
-          "maxItems": 0,
-          "type": "array"
-        }
-      ],
-      "title": "Memory"
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Memory",
+      "type": "object"
     },
     "session_id": {
       "title": "Session Id",
@@ -1746,7 +1755,7 @@ Read memory addresses from a live session.
 
 ## `mgba_live_read_range`
 
-Read a contiguous memory range from a live session.
+Read 1-4096 bytes as a byte array, lowercase hex, or delta spans. Conservative native JSON budget: 32768 bytes before reads. Deltas accept at most 2048 bytes under worst-case span expansion. frame is a bridge callback counter; separate chunks need not share a frame.
 
 - Required input fields: `session`, `start`, `length`
 
@@ -1755,14 +1764,69 @@ Read a contiguous memory range from a live session.
 ```json
 {
   "additionalProperties": false,
+  "else": {
+    "not": {
+      "required": [
+        "baseline"
+      ]
+    }
+  },
+  "if": {
+    "properties": {
+      "encoding": {
+        "const": "delta"
+      }
+    },
+    "required": [
+      "encoding"
+    ]
+  },
   "properties": {
+    "baseline": {
+      "additionalProperties": false,
+      "description": "Required only for delta. start must match the requested start; data must contain exactly length*2 ASCII hex characters, case-insensitive, without whitespace or a prefix. Baselines are supplied, not stored.",
+      "properties": {
+        "data": {
+          "maxLength": 4096,
+          "minLength": 2,
+          "pattern": "^(?:[0-9a-fA-F]{2})+(?![\\s\\S])",
+          "type": "string"
+        },
+        "start": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "data"
+      ],
+      "type": "object"
+    },
+    "encoding": {
+      "default": "bytes",
+      "description": "bytes preserves the legacy byte array; hex is lossless lowercase hex; delta returns ordered maximal changed-byte spans with zero-based offsets. Delta requires baseline; other encodings forbid it.",
+      "enum": [
+        "bytes",
+        "hex",
+        "delta"
+      ],
+      "type": "string"
+    },
     "length": {
+      "description": "Source byte count, independent of encoding.",
+      "maximum": 4096,
+      "minimum": 1,
       "type": "integer"
     },
     "session": {
       "type": "string"
     },
     "start": {
+      "description": "Start and final byte must fit the active platform.",
+      "maximum": 4294967295,
+      "minimum": 0,
       "type": "integer"
     },
     "timeout": {
@@ -1777,6 +1841,16 @@ Read a contiguous memory range from a live session.
     "start",
     "length"
   ],
+  "then": {
+    "properties": {
+      "length": {
+        "maximum": 2048
+      }
+    },
+    "required": [
+      "baseline"
+    ]
+  },
   "type": "object"
 }
 ```
@@ -1786,6 +1860,91 @@ Read a contiguous memory range from a live session.
 ```json
 {
   "$defs": {
+    "DeltaRangeData": {
+      "additionalProperties": false,
+      "properties": {
+        "encoding": {
+          "const": "delta",
+          "title": "Encoding",
+          "type": "string"
+        },
+        "length": {
+          "title": "Length",
+          "type": "integer"
+        },
+        "spans": {
+          "items": {
+            "$ref": "#/$defs/DeltaSpan"
+          },
+          "title": "Spans",
+          "type": "array"
+        },
+        "start": {
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "length",
+        "encoding",
+        "spans"
+      ],
+      "title": "DeltaRangeData",
+      "type": "object"
+    },
+    "DeltaSpan": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "pattern": "^(?:[0-9a-f]{2})+(?![\\s\\S])",
+          "title": "Data",
+          "type": "string"
+        },
+        "offset": {
+          "minimum": 0,
+          "title": "Offset",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "offset",
+        "data"
+      ],
+      "title": "DeltaSpan",
+      "type": "object"
+    },
+    "HexRangeData": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "pattern": "^(?:[0-9a-f]{2})+(?![\\s\\S])",
+          "title": "Data",
+          "type": "string"
+        },
+        "encoding": {
+          "const": "hex",
+          "title": "Encoding",
+          "type": "string"
+        },
+        "length": {
+          "title": "Length",
+          "type": "integer"
+        },
+        "start": {
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "length",
+        "encoding",
+        "data"
+      ],
+      "title": "HexRangeData",
+      "type": "object"
+    },
     "RangeData": {
       "additionalProperties": false,
       "properties": {
@@ -1828,7 +1987,18 @@ Read a contiguous memory range from a live session.
       "title": "Frame"
     },
     "range": {
-      "$ref": "#/$defs/RangeData"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RangeData"
+        },
+        {
+          "$ref": "#/$defs/HexRangeData"
+        },
+        {
+          "$ref": "#/$defs/DeltaRangeData"
+        }
+      ],
+      "title": "Range"
     },
     "session_id": {
       "title": "Session Id",
@@ -1858,7 +2028,7 @@ Read a contiguous memory range from a live session.
 
 ## `mgba_live_dump_pointers`
 
-Dump pointer table entries from a live session.
+Dump little-endian pointers; count*width must not exceed 4096 bytes. Native JSON is conservatively bounded to 32768 bytes before reads, permitting at most 512 pointers. frame is a bridge callback counter; separate chunks need not share a frame.
 
 - Required input fields: `session`, `start`, `count`
 
@@ -1869,12 +2039,18 @@ Dump pointer table entries from a live session.
   "additionalProperties": false,
   "properties": {
     "count": {
+      "description": "count*width must not exceed 4096 bytes.",
+      "maximum": 512,
+      "minimum": 1,
       "type": "integer"
     },
     "session": {
       "type": "string"
     },
     "start": {
+      "description": "Start and final byte must fit the active platform.",
+      "maximum": 4294967295,
+      "minimum": 0,
       "type": "integer"
     },
     "timeout": {
@@ -2151,7 +2327,7 @@ Dump OAM entries from a live session.
 
 ## `mgba_live_dump_entities`
 
-Dump structured entity bytes from a live session.
+Dump entities; count*size must not exceed 4096 bytes. Conservative native JSON budget: 32768 bytes before reads. frame is a bridge callback counter; separate chunks need not share a frame.
 
 - Required input fields: `session`
 
@@ -2163,10 +2339,16 @@ Dump structured entity bytes from a live session.
   "properties": {
     "base": {
       "default": 49664,
+      "description": "Base and final byte must fit the active emulator platform.",
+      "maximum": 4294967295,
+      "minimum": 0,
       "type": "integer"
     },
     "count": {
       "default": 10,
+      "description": "count*size must not exceed 4096 bytes.",
+      "maximum": 590,
+      "minimum": 1,
       "type": "integer"
     },
     "session": {
@@ -2174,6 +2356,9 @@ Dump structured entity bytes from a live session.
     },
     "size": {
       "default": 24,
+      "description": "count*size must not exceed 4096 bytes.",
+      "maximum": 4096,
+      "minimum": 1,
       "type": "integer"
     },
     "timeout": {

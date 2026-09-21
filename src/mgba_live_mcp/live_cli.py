@@ -16,6 +16,7 @@ from .deadlines import (
     validate_timeout,
 )
 from .errors import DomainError, error_payload
+from .inspections import MAX_ADDRESS, MAX_ITEMS, MAX_READ_BYTES, MAX_RESPONSE_BYTES
 from .session_manager import (
     DEFAULT_BRIDGE_SCRIPT,
     DEFAULT_RUNTIME_ROOT,
@@ -220,6 +221,16 @@ def cmd_read_memory(args: argparse.Namespace) -> None:
     )
 
 
+def _parse_baseline(value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"baseline must be valid JSON: {exc.msg}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("baseline must be a JSON object.")
+    return parsed
+
+
 def cmd_read_range(args: argparse.Namespace) -> None:
     timeout = validate_timeout(args.timeout)
     print_json(
@@ -227,6 +238,8 @@ def cmd_read_range(args: argparse.Namespace) -> None:
             session=args.session,
             start=args.start,
             length=args.length,
+            encoding=args.encoding,
+            baseline=args.baseline,
             timeout=timeout,
         )
     )
@@ -382,42 +395,78 @@ def build_parser() -> argparse.ArgumentParser:
     add_timeout_arg(p_input_clear)
     p_input_clear.set_defaults(func=cmd_input_clear)
 
-    p_screenshot = sub.add_parser("screenshot", help="Capture screenshot from running session.")
+    p_screenshot = sub.add_parser("screenshot", help="Capture a screenshot.")
     add_session_arg(p_screenshot)
-    p_screenshot.add_argument("--out", help="Optional output PNG path.")
     p_screenshot.add_argument(
-        "--no-save",
-        action="store_true",
-        help="Capture screenshot without persisting to disk; returns png_base64.",
+        "--out",
+        help="Optional output path; otherwise returns png_base64.",
     )
     add_timeout_arg(p_screenshot, default=20.0)
     p_screenshot.set_defaults(func=cmd_screenshot)
 
-    p_read_memory = sub.add_parser("read-memory", help="Read sparse memory addresses.")
+    inspection_help = (
+        f"Read at most {MAX_READ_BYTES} source bytes, with at most {MAX_ITEMS} sparse addresses, "
+        f"pointers, or entities. Native JSON has a conservative {MAX_RESPONSE_BYTES}-byte budget "
+        "checked before reads; structured records or delta spans can require smaller chunks. "
+        "Addresses must fit the active emulator platform. Split larger reads explicitly; "
+        "frame is a bridge callback counter, and separate chunks need not share a frame."
+    )
+    p_read_memory = sub.add_parser(
+        "read-memory", help="Read sparse memory addresses.", description=inspection_help
+    )
     add_session_arg(p_read_memory)
     p_read_memory.add_argument(
         "--addresses",
         nargs="+",
         required=True,
-        help="Addresses (hex or decimal).",
+        help=f"Addresses (hex or decimal), at most {MAX_ITEMS}; each consumes one byte/read.",
     )
     add_timeout_arg(p_read_memory)
     p_read_memory.set_defaults(func=cmd_read_memory)
 
-    p_read_range = sub.add_parser("read-range", help="Read a contiguous memory range.")
+    p_read_range = sub.add_parser(
+        "read-range",
+        help=f"Read 1-{MAX_READ_BYTES} contiguous bytes (max response {MAX_RESPONSE_BYTES} bytes).",
+        description=inspection_help,
+    )
     add_session_arg(p_read_range)
     p_read_range.add_argument("--start", required=True, help="Start address (hex or decimal).")
-    p_read_range.add_argument("--length", type=int, required=True, help="Number of bytes.")
+    p_read_range.add_argument(
+        "--length",
+        type=int,
+        required=True,
+        help=f"Source byte count, 1-{MAX_READ_BYTES}; final address <= 0x{MAX_ADDRESS:x}.",
+    )
+    p_read_range.add_argument(
+        "--encoding",
+        choices=("bytes", "hex", "delta"),
+        default="bytes",
+        help="Legacy bytes, lowercase hex, or baseline delta spans (delta: at most 2048 bytes).",
+    )
+    p_read_range.add_argument(
+        "--baseline",
+        type=_parse_baseline,
+        help=(
+            'Delta-only JSON: {"start": address, "data": hex}. '
+            "Start and byte length must match the requested range; no whitespace or hex prefix."
+        ),
+    )
     add_timeout_arg(p_read_range)
     p_read_range.set_defaults(func=cmd_read_range)
 
     p_dump_pointers = sub.add_parser(
         "dump-pointers",
         help="Dump pointer table entries (little-endian).",
+        description=inspection_help,
     )
     add_session_arg(p_dump_pointers)
     p_dump_pointers.add_argument("--start", required=True, help="Pointer table start address.")
-    p_dump_pointers.add_argument("--count", type=int, required=True, help="Number of entries.")
+    p_dump_pointers.add_argument(
+        "--count",
+        type=int,
+        required=True,
+        help=f"Entries, 1-512; count*width must not exceed {MAX_READ_BYTES} bytes.",
+    )
     p_dump_pointers.add_argument(
         "--width",
         type=int,
@@ -437,11 +486,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_dump_entities = sub.add_parser(
         "dump-entities",
         help="Dump structured entity bytes from memory.",
+        description=inspection_help,
     )
     add_session_arg(p_dump_entities)
     p_dump_entities.add_argument("--base", default="0xC200", help="Entity array base address.")
-    p_dump_entities.add_argument("--size", type=int, default=24, help="Entity struct byte size.")
-    p_dump_entities.add_argument("--count", type=int, default=10, help="Entity count.")
+    p_dump_entities.add_argument(
+        "--size",
+        type=int,
+        default=24,
+        help=f"Struct byte size, 1-{MAX_READ_BYTES}; count*size <= {MAX_READ_BYTES}.",
+    )
+    p_dump_entities.add_argument(
+        "--count", type=int, default=10, help="Entity count, 1-590; larger structs allow fewer."
+    )
     add_timeout_arg(p_dump_entities)
     p_dump_entities.set_defaults(func=cmd_dump_entities)
 

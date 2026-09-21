@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Bound built-in memory inspections to 4096 source bytes and 1024 address/record
+  entries, validating the active GB/GBA address space before reads. Enforce a
+  conservative 32 KiB native JSON budget before traversal, including structured
+  records and worst-case delta expansion. Return actionable errors without
+  clamping or zero-fill (#45).
+- Add opt-in lowercase hex and stateless, caller-baseline delta ranges across
+  CLI/MCP while preserving default byte-array results and session/frame metadata.
+- Make timeout regressions expire the operation budget at the intended native
+  boundary rather than relying on 10–50 ms scheduling assumptions in CI.
 - Spend one monotonic operation budget across CLI/MCP validation, queueing,
   acquisition, startup, native execution, settling, capture, and result assembly
   instead of restarting per-phase timeouts (#56).

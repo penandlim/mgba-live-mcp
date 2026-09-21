@@ -21,6 +21,13 @@ from . import __version__
 from . import result_types as results
 from .deadlines import check_deadline, current_deadline, operation_timeout, suspend_deadline
 from .errors import DomainError, error_payload
+from .inspections import (
+    MAX_ADDRESS,
+    MAX_ITEMS,
+    MAX_READ_BYTES,
+    MAX_RESPONSE_BYTES,
+    validate_inspection,
+)
 from .live_controller import LiveControllerClient
 from .screenshots import ScreenshotResult, validate_png
 from .session_manager import SessionManager
@@ -536,12 +543,25 @@ def _tools() -> dict[str, Tool]:
             destructive=False,
             idempotent=True,
             name="mgba_live_read_memory",
-            description="Read memory addresses from a live session.",
+            description=(
+                f"Read 1-{MAX_ITEMS} memory addresses; duplicates each consume a read. "
+                f"Conservative native JSON budget: {MAX_RESPONSE_BYTES} bytes before reads. "
+                "frame is a bridge callback counter; separate chunks need not share a frame."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session": {"type": "string"},
-                    "addresses": {"type": "array", "items": {"type": "integer"}},
+                    "addresses": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": MAX_ITEMS,
+                        "items": {"type": "integer", "minimum": 0, "maximum": MAX_ADDRESS},
+                        "description": (
+                            f"One byte per address, including duplicates; at most {MAX_READ_BYTES} "
+                            "bytes read. Addresses must also fit the active emulator platform."
+                        ),
+                    },
                     "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session", "addresses"],
@@ -553,16 +573,66 @@ def _tools() -> dict[str, Tool]:
             destructive=False,
             idempotent=True,
             name="mgba_live_read_range",
-            description="Read a contiguous memory range from a live session.",
+            description=(
+                f"Read 1-{MAX_READ_BYTES} bytes as a byte array, lowercase hex, or delta spans. "
+                f"Conservative native JSON budget: {MAX_RESPONSE_BYTES} bytes before reads. "
+                "Deltas accept at most 2048 bytes under worst-case span expansion. "
+                "frame is a bridge callback counter; separate chunks need not share a frame."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session": {"type": "string"},
-                    "start": {"type": "integer"},
-                    "length": {"type": "integer"},
+                    "start": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": MAX_ADDRESS,
+                        "description": "Start and final byte must fit the active platform.",
+                    },
+                    "length": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_READ_BYTES,
+                        "description": "Source byte count, independent of encoding.",
+                    },
+                    "encoding": {
+                        "type": "string",
+                        "enum": ["bytes", "hex", "delta"],
+                        "default": "bytes",
+                        "description": (
+                            "bytes preserves the legacy byte array; hex is lossless lowercase hex; "
+                            "delta returns ordered maximal changed-byte spans with zero-based "
+                            "offsets. Delta requires baseline; other encodings forbid it."
+                        ),
+                    },
+                    "baseline": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "start": {"type": "integer", "minimum": 0, "maximum": MAX_ADDRESS},
+                            "data": {
+                                "type": "string",
+                                "minLength": 2,
+                                "maxLength": 2 * 2048,
+                                "pattern": r"^(?:[0-9a-fA-F]{2})+(?![\s\S])",
+                            },
+                        },
+                        "required": ["start", "data"],
+                        "description": (
+                            "Required only for delta. start must match the requested start; data "
+                            "must contain exactly length*2 ASCII hex characters, case-insensitive, "
+                            "without whitespace or a prefix. Baselines are supplied, not stored."
+                        ),
+                    },
                     "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session", "start", "length"],
+                "if": {"properties": {"encoding": {"const": "delta"}}, "required": ["encoding"]},
+                "then": {
+                    "required": ["baseline"],
+                    "properties": {"length": {"maximum": 2048}},
+                },
+                "else": {"not": {"required": ["baseline"]}},
             },
         ),
         _tool(
@@ -571,13 +641,28 @@ def _tools() -> dict[str, Tool]:
             destructive=False,
             idempotent=True,
             name="mgba_live_dump_pointers",
-            description="Dump pointer table entries from a live session.",
+            description=(
+                "Dump little-endian pointers; count*width must not exceed "
+                f"{MAX_READ_BYTES} bytes. Native JSON is conservatively bounded to "
+                f"{MAX_RESPONSE_BYTES} bytes before reads, permitting at most 512 pointers. "
+                "frame is a bridge callback counter; separate chunks need not share a frame."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session": {"type": "string"},
-                    "start": {"type": "integer"},
-                    "count": {"type": "integer"},
+                    "start": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": MAX_ADDRESS,
+                        "description": "Start and final byte must fit the active platform.",
+                    },
+                    "count": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": min(MAX_ITEMS, (MAX_RESPONSE_BYTES - 2048) // 60),
+                        "description": f"count*width must not exceed {MAX_READ_BYTES} bytes.",
+                    },
                     "width": {"type": "integer", "minimum": 1, "maximum": 6, "default": 4},
                     "timeout": {"type": "number", "default": 20.0},
                 },
@@ -607,14 +692,36 @@ def _tools() -> dict[str, Tool]:
             destructive=False,
             idempotent=True,
             name="mgba_live_dump_entities",
-            description="Dump structured entity bytes from a live session.",
+            description=(
+                f"Dump entities; count*size must not exceed {MAX_READ_BYTES} bytes. "
+                f"Conservative native JSON budget: {MAX_RESPONSE_BYTES} bytes before reads. "
+                "frame is a bridge callback counter; separate chunks need not share a frame."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "session": {"type": "string"},
-                    "base": {"type": "integer", "default": 49664},
-                    "size": {"type": "integer", "default": 24},
-                    "count": {"type": "integer", "default": 10},
+                    "base": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": MAX_ADDRESS,
+                        "default": 49664,
+                        "description": "Base and final byte must fit the active emulator platform.",
+                    },
+                    "size": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_READ_BYTES,
+                        "default": 24,
+                        "description": f"count*size must not exceed {MAX_READ_BYTES} bytes.",
+                    },
+                    "count": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": min(MAX_ITEMS, (MAX_RESPONSE_BYTES - 2048) // 52),
+                        "default": 10,
+                        "description": f"count*size must not exceed {MAX_READ_BYTES} bytes.",
+                    },
                     "timeout": {"type": "number", "default": 20.0},
                 },
                 "required": ["session"],
@@ -669,6 +776,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
             try:
                 input_validator.validate(args)
             except ValidationError as exc:
+                if isinstance(args, dict) and name in {
+                    "mgba_live_read_memory",
+                    "mgba_live_read_range",
+                    "mgba_live_dump_pointers",
+                    "mgba_live_dump_entities",
+                }:
+                    validate_inspection(
+                        name.removeprefix("mgba_live_"), args, session_id=args.get("session", "")
+                    )
                 raise DomainError(
                     "invalid_arguments",
                     exc.message,
@@ -859,7 +975,9 @@ async def _dispatch_tool(
         payload = await _controller.read_range(
             session=_require_session(args),
             start=args["start"],
-            length=int(args["length"]),
+            length=args["length"],
+            encoding=args.get("encoding", "bytes"),
+            baseline=args.get("baseline"),
             timeout=timeout,
         )
         return payload
@@ -868,7 +986,7 @@ async def _dispatch_tool(
         payload = await _controller.dump_pointers(
             session=_require_session(args),
             start=args["start"],
-            count=int(args["count"]),
+            count=args["count"],
             width=args.get("width", 4),
             timeout=timeout,
         )
@@ -886,8 +1004,8 @@ async def _dispatch_tool(
         payload = await _controller.dump_entities(
             session=_require_session(args),
             base=args.get("base", 49664),
-            size=int(args.get("size", 24)),
-            count=int(args.get("count", 10)),
+            size=args.get("size", 24),
+            count=args.get("count", 10),
             timeout=timeout,
         )
         return payload

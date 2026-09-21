@@ -13,17 +13,23 @@ from types import SimpleNamespace
 import pytest
 from mcp import types
 
-from mgba_live_mcp import deadlines, server
+from mgba_live_mcp import deadlines, inspections, server
+from mgba_live_mcp.errors import DomainError
+from mgba_live_mcp.inspections import MAX_ITEMS, MAX_READ_BYTES
 from mgba_live_mcp.live_controller import LiveControllerClient
 from mgba_live_mcp.session_manager import SessionManager
 
 # Only the emulator host API is substituted. Commands and responses pass through
 # the unmodified packaged bridge and the real Lua interpreter/serializer.
 HOST = """
-C = { GBA_KEY = { A=0, B=1, SELECT=2, START=3, RIGHT=4, LEFT=5, UP=6, DOWN=7, R=8, L=9 } }
+C = {
+  GBA_KEY = { A=0, B=1, SELECT=2, START=3, RIGHT=4, LEFT=5, UP=6, DOWN=7, R=8, L=9 },
+  PLATFORM = { GB=1, GBA=2 },
+}
 emu = {
-  keys = 0, memory = {}, reads = 0,
+  keys = 0, memory = {}, reads = 0, platform_id = 2,
   getKeys = function(self) return self.keys end,
+  platform = function(self) return self.platform_id end,
   setKeys = function(self, keys) self.keys = keys end,
   read8 = function(self, address)
     self.reads = self.reads + 1
@@ -345,8 +351,438 @@ def test_packaged_bridge_rejects_unsupported_pointer_width(packaged_bridge, widt
     )
     failure = _json_response(responses[1])
     assert failure["ok"] is False
+    assert failure["code"] == "invalid_arguments"
     assert isinstance(failure["error"], str)
     _recovered(responses[2], frame=3, result=0)
+
+
+def test_packaged_bridge_range_hex_and_delta_are_lossless(packaged_bridge):
+    _, execute = packaged_bridge
+    current = bytes(range(256)) * 8  # Fits worst-case delta expansion as well as source limits.
+    partial = bytearray(current)
+    for offset in (0, 1, 1023, len(current) - 1):
+        partial[offset] ^= 255
+    baselines = [
+        current,
+        partial,
+        bytes(value ^ 255 for value in current),
+        bytes(value ^ (255 if i % 2 == 0 else 0) for i, value in enumerate(current)),
+    ]
+    responses, _ = execute(
+        _command(code=f"for i=0,{len(current) - 1} do emu.memory[i]=i%256 end"),
+        _command(kind="read_range", start=0, length=len(current)),
+        _command(kind="read_range", start=0, length=len(current), encoding="hex"),
+        *[
+            _command(
+                kind="read_range",
+                start=0,
+                length=len(current),
+                encoding="delta",
+                baseline={"start": 0, "data": baseline.hex().upper()},
+            )
+            for baseline in baselines
+        ],
+        _command(request_id="recovered", code="return emu.reads"),
+    )
+    assert _json_response(responses[1])["data"]["data"] == list(current)
+    encoded = _json_response(responses[2])["data"]
+    assert encoded["start"] == 0 and encoded["length"] == len(current)
+    assert encoded["encoding"] == "hex" and bytes.fromhex(encoded["data"]) == current
+    assert len(responses[2]) < len(responses[1])
+    for baseline, raw in zip(baselines, responses[3:7], strict=True):
+        result = _json_response(raw)["data"]
+        assert result["encoding"] == "delta"
+        assert result["start"] == 0 and result["length"] == len(current)
+        restored = bytearray(baseline)
+        previous_end = -1
+        for span in result["spans"]:
+            offset, changed = span["offset"], bytes.fromhex(span["data"])
+            assert offset > previous_end
+            assert all(baseline[offset + i] != value for i, value in enumerate(changed))
+            restored[offset : offset + len(changed)] = changed
+            previous_end = offset + len(changed)
+        assert restored == current
+    assert _json_response(responses[3])["data"]["spans"] == []
+    assert _json_response(responses[4])["data"]["spans"] == [
+        {"offset": 0, "data": "0001"},
+        {"offset": 1023, "data": "ff"},
+        {"offset": len(current) - 1, "data": "ff"},
+    ]
+    assert _json_response(responses[5])["data"]["spans"] == [{"offset": 0, "data": current.hex()}]
+    assert len(_json_response(responses[6])["data"]["spans"]) == len(current) // 2
+    assert _json_response(responses[7])["data"]["result"] == 6 * len(current)
+
+
+@pytest.mark.parametrize(
+    ("kind", "valid", "invalid", "byte_count", "limit_name"),
+    [
+        (
+            "read_memory",
+            {"addresses": list(range(MAX_ITEMS))},
+            {"addresses": list(range(MAX_ITEMS + 1))},
+            MAX_ITEMS,
+            "items",
+        ),
+        (
+            "read_range",
+            {"start": 0, "length": MAX_READ_BYTES},
+            {"start": 0, "length": MAX_READ_BYTES + 1},
+            MAX_READ_BYTES,
+            "read_bytes",
+        ),
+        (
+            "dump_pointers",
+            {"start": 0, "count": 512, "width": 4},
+            {"start": 0, "count": MAX_ITEMS, "width": 5},
+            2048,
+            "read_bytes",
+        ),
+        (
+            "dump_pointers",
+            {"start": 0, "count": 512, "width": 1},
+            {"start": 0, "count": MAX_ITEMS + 1, "width": 1},
+            512,
+            "items",
+        ),
+        (
+            "dump_entities",
+            {"base": 0, "count": 1, "size": MAX_READ_BYTES},
+            {"base": 0, "count": MAX_ITEMS, "size": 5},
+            MAX_READ_BYTES,
+            "read_bytes",
+        ),
+        (
+            "dump_entities",
+            {"base": 0, "count": 512, "size": 1},
+            {"base": 0, "count": MAX_ITEMS + 1, "size": 1},
+            512,
+            "items",
+        ),
+    ],
+)
+def test_inspection_limits_preserve_complete_results_and_recovery(
+    packaged_bridge, kind, valid, invalid, byte_count, limit_name
+):
+    _, execute = packaged_bridge
+    responses, _ = execute(
+        _command(kind=kind, **valid),
+        _command(kind=kind, request_id="oversized", **invalid),
+        _command(code="return emu.reads"),
+        _command(kind="read_range", start=0, length=1),
+        _command(request_id="recovered", code="return emu.reads"),
+    )
+    accepted = _json_response(responses[0])
+    assert accepted["ok"] is True
+    data = accepted["data"]
+    if kind == "read_memory":
+        assert data == {f"0x{address:08X}": 0 for address in valid["addresses"]}
+    elif kind == "read_range":
+        assert data["data"] == [0] * byte_count
+    elif kind == "dump_pointers":
+        assert data["pointers"] == [
+            {"index": i, "address": i * valid["width"], "value": 0} for i in range(valid["count"])
+        ]
+    else:
+        assert data["entities"] == [
+            {"index": i, "address": i * valid["size"], "bytes": [0] * valid["size"]}
+            for i in range(valid["count"])
+        ]
+    failure = _json_response(responses[1])
+    assert failure["code"] == "inspection_limit"
+    assert failure["id"] == "oversized" and failure["session_id"] == "running"
+    assert failure["phase"] == "validation" and failure["execution_outcome"] == "not_executed"
+    assert failure["limit_name"] == limit_name
+    assert failure["limit"] == (MAX_ITEMS if limit_name == "items" else MAX_READ_BYTES)
+    assert failure["max_response_bytes"] == inspections.MAX_RESPONSE_BYTES
+    assert _json_response(responses[2])["data"]["result"] == byte_count
+    assert _json_response(responses[3])["data"]["data"] == [0]
+    _recovered(responses[4], frame=5, result=byte_count + 1)
+
+
+@pytest.mark.parametrize(
+    ("kind", "selection", "oversized", "byte_count"),
+    [
+        (
+            "dump_pointers",
+            {"start": 0xFFFF0000, "count": 512, "width": 6},
+            {"start": 0xFFFF0000, "count": 513, "width": 6},
+            3072,
+        ),
+        (
+            "dump_entities",
+            {"base": 0xFFFF0000, "count": 480, "size": 4},
+            {"base": 0xFFFF0000, "count": 481, "size": 4},
+            1920,
+        ),
+        (
+            "read_range",
+            {
+                "start": 0xFFFF0000,
+                "length": 2048,
+                "encoding": "delta",
+                "baseline": {"start": 0xFFFF0000, "data": "00ff" * 1024},
+            },
+            {
+                "start": 0xFFFF0000,
+                "length": 2049,
+                "encoding": "delta",
+                "baseline": {"start": 0xFFFF0000, "data": "00ff" * 1024 + "00"},
+            },
+            2048,
+        ),
+    ],
+)
+def test_response_expansion_budget_rejects_before_reads(
+    packaged_bridge, kind, selection, oversized, byte_count
+):
+    manager, execute = packaged_bridge
+    responses, _ = execute(
+        _command(code="emu.read8=function(self,address) self.reads=self.reads+1; return 255 end"),
+        _command(kind=kind, request_id="oversized-output", **oversized),
+        _command(code="return emu.reads"),
+        _command(kind=kind, **selection),
+        _command(request_id="recovered", code="return emu.reads"),
+    )
+    failure = _json_response(responses[1])
+    assert failure["ok"] is False and failure["code"] == "inspection_limit"
+    assert failure["limit_name"] == "response_bytes" and failure["limit"] == 32768
+    assert failure["id"] == "oversized-output" and failure["session_id"] == "running"
+    assert failure["execution_outcome"] == "not_executed" and failure["phase"] == "validation"
+    assert _json_response(responses[2])["data"]["result"] == 0
+    with pytest.raises(DomainError) as caught:
+        manager.handle_response(failure, session_id="running")
+    assert caught.value.code == "inspection_limit"
+    assert caught.value.context["request_id"] == "oversized-output"
+    assert caught.value.context["limit_name"] == "response_bytes"
+    accepted = _json_response(responses[3])
+    assert accepted["ok"] is True and len(responses[3]) <= 32768
+    data = accepted["data"]
+    if kind == "dump_pointers":
+        assert data["pointers"] == [
+            {"index": i, "address": selection["start"] + i * 6, "value": 2**48 - 1}
+            for i in range(selection["count"])
+        ]
+    elif kind == "dump_entities":
+        assert data["entities"] == [
+            {"index": i, "address": selection["base"] + i * 4, "bytes": [255] * 4}
+            for i in range(selection["count"])
+        ]
+    else:
+        assert data["spans"] == [{"offset": i, "data": "ff"} for i in range(0, byte_count, 2)]
+    _recovered(responses[4], frame=5, result=byte_count)
+
+
+@pytest.mark.parametrize("field", ["session_id", "request_id"])
+def test_escaped_metadata_counts_toward_inspection_budget(packaged_bridge, tmp_path, field):
+    _, execute = packaged_bridge
+    oversized = {field: "\x01" * 6000}
+    fitting = {field: "\x01" * 4000}
+    responses, _ = execute(
+        _command(kind="read_range", start=0, length=1, **oversized),
+        _command(code="return emu.reads"),
+        _command(kind="read_range", start=0, length=1, **fitting),
+        _command(request_id="recovered", code="return emu.reads"),
+    )
+    failure = _json_response(responses[0])
+    assert failure["ok"] is False and failure["code"] == "inspection_limit"
+    assert failure["limit_name"] == "response_bytes"
+    assert failure["session_id"] == oversized.get("session_id", "running")
+    assert failure["id"] == oversized.get("request_id", "primary")
+    assert _json_response(responses[1])["data"]["result"] == 0
+    assert _json_response(responses[2])["data"]["data"] == [0]
+    assert len(responses[2]) <= inspections.MAX_RESPONSE_BYTES
+    _recovered(responses[3], frame=4, result=1)
+    if field == "session_id":
+        manager = SessionManager(runtime_root=tmp_path / "untouched")
+        with pytest.raises(DomainError) as caught:
+            manager.read_range(session=oversized[field], start=0, length=1)
+        assert caught.value.code == "inspection_limit"
+        assert not manager.runtime_root.exists()
+
+
+def test_inspection_preflight_rejects_every_selection_before_reading(packaged_bridge):
+    _, execute = packaged_bridge
+    invalid = [
+        _command(kind="read_memory", addresses=[]),
+        _command(kind="read_memory", addresses=[0, 0x10000]),
+        _command(kind="read_memory", addresses=[True]),
+        _command(kind="read_range", start=0xFFFF, length=2),
+        *[_command(kind="read_range", start=0, length=value) for value in (0, -1, 1.5, True)],
+        _command(kind="dump_pointers", start=0xFFFF, count=1, width=2),
+        _command(kind="dump_entities", base=0xFFFF, count=1, size=2),
+        _command(kind="read_range", start=-1, length=1),
+        _command(kind="read_range", start=0, length=1, encoding="base64"),
+        _command(kind="read_range", start=0, length=1, encoding="delta"),
+        _command(
+            kind="read_range",
+            start=0,
+            length=1,
+            encoding="delta",
+            baseline={"start": 1, "data": "00"},
+        ),
+        _command(
+            kind="read_range",
+            start=0,
+            length=2,
+            encoding="delta",
+            baseline={"start": 0, "data": "00"},
+        ),
+        _command(
+            kind="read_range",
+            start=0,
+            length=1,
+            encoding="delta",
+            baseline={"start": 0, "data": "0g"},
+        ),
+        _command(
+            kind="read_range",
+            start=0,
+            length=1,
+            encoding="hex",
+            baseline={"start": 0, "data": "00"},
+        ),
+    ]
+    responses, _ = execute(
+        _command(code="emu.platform_id=C.PLATFORM.GB"),
+        *invalid,
+        _command(request_id="recovered", code="return emu.reads"),
+    )
+    for raw in responses[1:-1]:
+        response = _json_response(raw)
+        assert response["ok"] is False and response["code"] == "invalid_arguments"
+        assert response["execution_outcome"] == "not_executed"
+    _recovered(responses[-1], frame=len(responses), result=0)
+
+
+@pytest.mark.parametrize(("platform", "end"), [("GB", 0xFFFF), ("GBA", 0xFFFFFFFF)])
+def test_inspection_platform_last_byte_never_wraps(packaged_bridge, platform, end):
+    _, execute = packaged_bridge
+    responses, _ = execute(
+        _command(code=f"emu.platform_id=C.PLATFORM.{platform}; emu.memory[{end}]=123"),
+        _command(kind="read_range", start=end, length=1),
+        _command(kind="read_range", start=end, length=2),
+        _command(kind="read_memory", addresses=[0, end + 1]),
+        _command(request_id="recovered", code="return emu.reads"),
+    )
+    assert _json_response(responses[1])["data"]["data"] == [123]
+    assert all(_json_response(raw)["code"] == "invalid_arguments" for raw in responses[2:4])
+    _recovered(responses[4], frame=5, result=1)
+
+
+@pytest.mark.parametrize(
+    "unavailable", ["emu.platform_id=99", "emu.platform=nil", "C.PLATFORM=nil"]
+)
+def test_unknown_inspection_platform_is_not_guessed(packaged_bridge, unavailable):
+    _, execute = packaged_bridge
+    responses, _ = execute(
+        _command(code=unavailable),
+        _command(kind="read_range", start=0, length=1),
+        _command(request_id="recovered", code="return emu.reads"),
+    )
+    failure = _json_response(responses[1])
+    assert failure["code"] == "inspection_unsupported"
+    assert failure["execution_outcome"] == "not_executed"
+    _recovered(responses[2], frame=3, result=0)
+
+
+@pytest.mark.parametrize("failure", ["return nil", "return 256", "error('unmapped')"])
+def test_failed_native_byte_is_not_zero_filled_or_partial_success(packaged_bridge, failure):
+    _, execute = packaged_bridge
+    responses, _ = execute(
+        _command(
+            code="saved_read8=emu.read8; emu.read8=function(self, address) "
+            f"if address==1 then {failure} end; return saved_read8(self,address) end"
+        ),
+        _command(kind="read_range", start=0, length=2),
+        _command(code="emu.read8=saved_read8"),
+        _command(kind="read_range", start=0, length=2),
+    )
+    rejected = _json_response(responses[1])
+    assert rejected["code"] == "inspection_read_failed"
+    assert rejected["phase"] == "inspection" and rejected["execution_outcome"] == "unknown"
+    assert "data" not in rejected
+    assert _json_response(responses[3])["data"]["data"] == [0, 0]
+
+
+@pytest.mark.parametrize(
+    ("kind", "payload", "code"),
+    [
+        ("read_memory", {"addresses": []}, "invalid_arguments"),
+        ("read_memory", {"addresses": [True]}, "invalid_arguments"),
+        ("read_range", {"start": 0, "length": MAX_READ_BYTES + 1}, "inspection_limit"),
+        ("read_range", {"start": 0xFFFFFFFF, "length": 2}, "invalid_arguments"),
+        ("read_range", {"start": 0, "length": 1.5}, "invalid_arguments"),
+        ("dump_pointers", {"start": 0, "count": MAX_ITEMS, "width": 5}, "inspection_limit"),
+        ("dump_entities", {"base": 0, "count": 2, "size": MAX_READ_BYTES}, "inspection_limit"),
+        ("dump_pointers", {"start": 0, "count": 513, "width": 6}, "inspection_limit"),
+        ("dump_entities", {"base": 0, "count": 481, "size": 4}, "inspection_limit"),
+        (
+            "read_range",
+            {
+                "start": 0,
+                "length": 2049,
+                "encoding": "delta",
+                "baseline": {"start": 0, "data": "00" * 2049},
+            },
+            "inspection_limit",
+        ),
+        (
+            "read_range",
+            {"start": 0, "length": 1, "encoding": "delta", "baseline": {"start": 1, "data": "00"}},
+            "invalid_arguments",
+        ),
+    ],
+)
+def test_host_inspection_rejection_precedes_session_allocation(tmp_path, kind, payload, code):
+    manager = SessionManager(runtime_root=tmp_path / "untouched")
+    with pytest.raises(DomainError) as raised:
+        getattr(manager, kind)(session="running", **payload)
+    assert raised.value.code == code and raised.value.execution_outcome == "not_executed"
+    assert raised.value.context["session_id"] == "running"
+    assert not manager.runtime_root.exists()
+
+
+def test_inspection_encoding_and_limit_errors_reach_mcp(mcp_bridge):
+    _, published, _ = mcp_bridge
+    arguments = {"session": "running", "start": 0, "length": 2, "encoding": "hex"}
+    encoded = _call_tool("mgba_live_read_range", arguments)
+    assert not encoded.isError
+    assert encoded.structuredContent["range"] == {
+        "start": 0,
+        "length": 2,
+        "encoding": "hex",
+        "data": "0000",
+    }
+    delta = _call_tool(
+        "mgba_live_read_range",
+        {**arguments, "encoding": "delta", "baseline": {"start": 0, "data": "00ff"}},
+    )
+    assert not delta.isError
+    assert delta.structuredContent["range"]["spans"] == [{"offset": 1, "data": "00"}]
+    for tool_name, selection, limit in (
+        ("read_range", {"start": 0, "length": MAX_READ_BYTES + 1}, MAX_READ_BYTES),
+        ("read_memory", {"addresses": [0] * (MAX_ITEMS + 1)}, MAX_ITEMS),
+        ("dump_pointers", {"start": 0, "count": MAX_ITEMS + 1}, MAX_ITEMS),
+        ("dump_entities", {"count": MAX_ITEMS + 1}, MAX_ITEMS),
+        ("dump_entities", {"base": 0, "count": 1024, "size": 4}, inspections.MAX_RESPONSE_BYTES),
+        ("dump_pointers", {"start": 0, "count": 513}, inspections.MAX_RESPONSE_BYTES),
+        (
+            "read_range",
+            {
+                "start": 0,
+                "length": 2049,
+                "encoding": "delta",
+                "baseline": {"start": 0, "data": "00" * 2049},
+            },
+            inspections.MAX_RESPONSE_BYTES,
+        ),
+    ):
+        rejected = _call_tool(f"mgba_live_{tool_name}", {"session": "running", **selection})
+        assert (
+            rejected.isError and rejected.structuredContent["error"]["code"] == "inspection_limit"
+        )
+        assert rejected.structuredContent["error"]["limit"] == limit
+    assert len(published) == 2
 
 
 def test_packaged_bridge_depth_limit_boundary_and_recovery(packaged_bridge):

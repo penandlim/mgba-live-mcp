@@ -1195,6 +1195,12 @@ class SessionManager:
         registered: bool,
     ) -> DomainError:
         returncode = proc.poll()
+        # poll() can return None while the reaper owns Popen's wait lock.
+        if returncode is None and self._process_state(session) != "alive":
+            try:
+                returncode = proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                pass
         details = [
             (
                 f"mGBA process exited early with {format_process_exit(returncode)}."

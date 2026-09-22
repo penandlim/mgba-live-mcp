@@ -11,6 +11,8 @@
   CLI/MCP while preserving default byte-array results and session/frame metadata.
 - Make timeout regressions expire the operation budget at the intended native
   boundary rather than relying on 10–50 ms scheduling assumptions in CI.
+- Preserve failed-startup exit codes when the child reaper has collected, but
+  not yet published, the exit status; bound synchronization before cleanup.
 - Spend one monotonic operation budget across CLI/MCP validation, queueing,
   acquisition, startup, native execution, settling, capture, and result assembly
   instead of restarting per-phase timeouts (#56).

@@ -29,6 +29,7 @@ from .deadlines import (
     validate_timeout,
 )
 from .errors import CommandTimeout, DomainError, error_context, error_payload
+from .inspections import INSPECTION_ERROR_CODES, validate_inspection
 from .screenshots import ScreenshotResult, validate_png
 
 MODULE_PATH = Path(__file__).resolve()
@@ -724,6 +725,28 @@ class SessionManager:
 
     def handle_response(self, response: dict[str, Any], *, session_id: str | None = None) -> Any:
         if not response.get("ok"):
+            if response.get("code") in INSPECTION_ERROR_CODES:
+                read_failed = response["code"] == "inspection_read_failed"
+                raise DomainError(
+                    response["code"],
+                    str(response.get("error", "Inspection failed.")),
+                    phase="inspection" if read_failed else "validation",
+                    execution_outcome="unknown" if read_failed else "not_executed",
+                    request_id=response.get("id"),
+                    session_id=session_id,
+                    frame=response.get("frame"),
+                    **{
+                        key: response[key]
+                        for key in (
+                            "limit_name",
+                            "limit",
+                            "max_read_bytes",
+                            "max_items",
+                            "max_response_bytes",
+                        )
+                        if key in response
+                    },
+                )
             if response.get("code") == "serialization_failed":
                 completed = response.get("command_completed") is True
                 raise DomainError(
@@ -1172,6 +1195,12 @@ class SessionManager:
         registered: bool,
     ) -> DomainError:
         returncode = proc.poll()
+        # poll() can return None while the reaper owns Popen's wait lock.
+        if returncode is None and self._process_state(session) != "alive":
+            try:
+                returncode = proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                pass
         details = [
             (
                 f"mGBA process exited early with {format_process_exit(returncode)}."
@@ -1556,11 +1585,12 @@ class SessionManager:
         addresses: list[int | str],
         timeout: float = 10.0,
     ) -> dict[str, Any]:
+        payload = validate_inspection("read_memory", {"addresses": addresses}, session_id=session)
         target = self.require_session(session, require_alive=True)
         response = self.send_command(
             target,
             "read_memory",
-            {"addresses": [parse_int(address) for address in addresses]},
+            payload,
             timeout=remaining_timeout(),
         )
         data = self.handle_response(response, session_id=target["id"])
@@ -1577,16 +1607,33 @@ class SessionManager:
         session: str,
         start: int | str,
         length: int,
+        encoding: str = "bytes",
+        baseline: dict[str, Any] | None = None,
         timeout: float = 10.0,
     ) -> dict[str, Any]:
+        payload = validate_inspection(
+            "read_range",
+            {"start": start, "length": length, "encoding": encoding, "baseline": baseline},
+            session_id=session,
+        )
         target = self.require_session(session, require_alive=True)
         response = self.send_command(
             target,
             "read_range",
-            {"start": parse_int(start), "length": length},
+            payload,
             timeout=remaining_timeout(),
         )
         data = self.handle_response(response, session_id=target["id"])
+        if encoding != "bytes" and (not isinstance(data, dict) or data.get("encoding") != encoding):
+            raise DomainError(
+                "invalid_result",
+                "Bridge did not return the requested encoding; restart with the current bridge.",
+                phase="inspection",
+                execution_outcome="completed",
+                request_id=response.get("id"),
+                session_id=target["id"],
+                frame=response.get("frame"),
+            )
         return {
             "session_id": target["id"],
             "frame": response.get("frame"),
@@ -1603,19 +1650,14 @@ class SessionManager:
         width: int = 4,
         timeout: float = 10.0,
     ) -> dict[str, Any]:
-        if type(width) is not int or not 1 <= width <= 6:
-            raise DomainError(
-                "invalid_arguments",
-                "Pointer width must be an integer from 1 to 6 bytes.",
-                phase="validation",
-                execution_outcome="not_executed",
-                session_id=session,
-            )
+        payload = validate_inspection(
+            "dump_pointers", {"start": start, "count": count, "width": width}, session_id=session
+        )
         target = self.require_session(session, require_alive=True)
         response = self.send_command(
             target,
             "dump_pointers",
-            {"start": parse_int(start), "count": count, "width": width},
+            payload,
             timeout=remaining_timeout(),
         )
         data = self.handle_response(response, session_id=target["id"])
@@ -1654,11 +1696,14 @@ class SessionManager:
         count: int = 10,
         timeout: float = 10.0,
     ) -> dict[str, Any]:
+        payload = validate_inspection(
+            "dump_entities", {"base": base, "size": size, "count": count}, session_id=session
+        )
         target = self.require_session(session, require_alive=True)
         response = self.send_command(
             target,
             "dump_entities",
-            {"base": parse_int(base), "size": size, "count": count},
+            payload,
             timeout=remaining_timeout(),
         )
         data = self.handle_response(response, session_id=target["id"])

@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event, get_ident
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -466,6 +466,53 @@ def test_exit_seven_survives_native_registration_and_concurrent_status(
     error = error_payload(raised.value)["error"]
     assert error["exit_code"] == 7
     assert manager.children["candidate"].wait(timeout=1) == 7
+    _assert_discoverable(manager, error, "dead")
+    _stop_and_archive(manager, "already_exited")
+
+
+def test_startup_failure_preserves_exit_code_during_reaper_publication(
+    manager: _PythonManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    status_pending, release_status = Event(), Event()
+    startup_thread = get_ident()
+    write_metadata = session_transactions.Transaction.write_metadata
+
+    def fail_after_exit(
+        operation: session_transactions.Transaction, payload: dict[str, Any]
+    ) -> None:
+        write_metadata(operation, payload)
+        if payload["id"] != "candidate" or payload["startup"]["state"] != "ready":
+            return
+        # Popen's private status-publication hook is not exposed in its type stubs.
+        child = cast(Any, manager.children["candidate"])
+        handle_exitstatus, wait = child._handle_exitstatus, child.wait
+
+        def publish_exitstatus(status: int) -> None:
+            status_pending.set()
+            assert release_status.wait(5)
+            handle_exitstatus(status)
+
+        def wait_for_exit(*args: Any, **kwargs: Any) -> int:
+            if get_ident() == startup_thread:
+                release_status.set()
+            return wait(*args, **kwargs)
+
+        monkeypatch.setattr(child, "_handle_exitstatus", publish_exitstatus)
+        monkeypatch.setattr(child, "wait", wait_for_exit)
+        (manager.session_dir("candidate") / "exit-seven").touch()
+        assert status_pending.wait(5)
+        raise OSError(errno.EIO, "Injected failure before exit-status publication.")
+
+    monkeypatch.setattr(session_transactions.Transaction, "write_metadata", fail_after_exit)
+    try:
+        with pytest.raises(DomainError) as raised:
+            _start(manager, ready_timeout=5)
+    finally:
+        release_status.set()
+    assert manager.children["candidate"].wait(timeout=5) == 7
+    error = error_payload(raised.value)["error"]
+    assert error["exit_code"] == 7
+    assert manager.load_session("candidate")["startup"]["error"]["exit_code"] == 7
     _assert_discoverable(manager, error, "dead")
     _stop_and_archive(manager, "already_exited")
 

@@ -13,6 +13,7 @@ from mcp.types import Tool
 
 from mgba_live_mcp import server as mcp_server
 from mgba_live_mcp.errors import ERROR_CODES
+from mgba_live_mcp.inspections import MAX_ITEMS, MAX_READ_BYTES, MAX_RESPONSE_BYTES
 
 DEFAULT_OUTPUT = Path("docs/mcp-reference.md")
 
@@ -155,6 +156,22 @@ def _render_markdown(tools: list[Tool]) -> str:
                 "live emulation continues, so repeated reads need not return identical data.",
                 "Status performs maintenance, attach changes the active marker, Lua is",
                 "unrestricted, and screenshot export may overwrite files.",
+                "",
+                "Built-in memory inspections reject requests above "
+                f"{MAX_READ_BYTES} source bytes or {MAX_ITEMS} sparse addresses/pointers/entities",
+                f"before reading. A conservative {MAX_RESPONSE_BYTES}-byte native JSON budget",
+                "also rejects output expansion before traversal (not after reading/serialization).",
+                "This bounds compact success envelopes, excluding CLI formatting/MCP wrappers.",
+                "Metadata/header reserve is `max(2048, 256 + encoded request/session IDs)`.",
+                "Payload costs: 17 per sparse address,",
+                "4 per raw byte, 2 per hex byte, 60 per pointer, or 48 per entity plus 4 per byte.",
+                "Delta costs `26 * ceil(length / 2) + 2 * length`, even for an unchanged baseline.",
+                "Thus pointer/delta maxima are 512 records/2048 bytes; byte/hex ranges allow 4096.",
+                "Addresses must fit the active platform; failed reads never fabricate bytes.",
+                "`read_range` returns byte arrays by default; `hex` and `delta` are opt-in.",
+                "Delta baselines contain exactly `start` and hex `data` for the requested region.",
+                "Split larger reads explicitly: `frame` is a bridge callback counter.",
+                "Chunks need not share a frame or game state. Baselines are not retained.",
                 "",
                 "### Stable error codes",
                 "",

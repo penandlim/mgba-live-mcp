@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Generic, Literal, TypeVar
+from typing import Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 T = TypeVar("T")
-# The Lua bridge serializes an empty table as [], even for an empty memory map.
-EmptyArray = Annotated[list[JsonValue], Field(max_length=0)]
 
 
 class Result(BaseModel):
@@ -111,7 +109,7 @@ class Exported(Framed):
 
 
 class Memory(Framed):
-    memory: dict[str, int] | EmptyArray
+    memory: dict[str, int]
 
 
 class RangeData(BaseModel):
@@ -121,8 +119,33 @@ class RangeData(BaseModel):
     data: list[int]
 
 
+class HexRangeData(BaseModel):
+    model_config = ConfigDict(extra="forbid", regex_engine="python-re")
+    start: int
+    length: int
+    encoding: Literal["hex"]
+    data: str = Field(pattern=r"^(?:[0-9a-f]{2})+(?![\s\S])")
+
+
+class DeltaSpan(BaseModel):
+    model_config = ConfigDict(extra="forbid", regex_engine="python-re")
+    offset: int = Field(ge=0, strict=True)
+    data: str = Field(pattern=r"^(?:[0-9a-f]{2})+(?![\s\S])")
+
+
+class DeltaRangeData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    start: int
+    length: int
+    encoding: Literal["delta"]
+    spans: list[DeltaSpan]
+
+
+RangeResult = RangeData | HexRangeData | DeltaRangeData
+
+
 class MemoryRange(Framed):
-    range: RangeData
+    range: RangeResult
 
 
 class Pointer(BaseModel):

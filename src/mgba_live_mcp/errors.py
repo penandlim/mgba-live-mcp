@@ -29,6 +29,9 @@ ERROR_CODES = {
     "serialization_failed": (
         "Lua response could not be serialized as JSON; inspect command_completed before retrying."
     ),
+    "inspection_limit": "Inspection exceeds a read/item/response budget; request smaller chunks.",
+    "inspection_unsupported": "The native platform cannot be verified for bounded inspection.",
+    "inspection_read_failed": "A native memory read failed or did not return a byte.",
     "command_timeout": "The operation budget expired; inspect execution_outcome before retrying.",
     "settle_failed": "The command ran, but settling could not be confirmed.",
     "snapshot_failed": "Required visual content is unavailable after the requested operation.",

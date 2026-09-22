@@ -250,6 +250,109 @@ async def scenario(root: Path, binary: Path, rom: Path, *, inject_failure: bool)
                         require(len(images) == (1 if visual else 0), "Unexpected MCP image count")
                         return payload, images
 
+                    plain = cli(
+                        "read-range", "--session", SESSION, "--start", "0x100", "--length", "64"
+                    )["range"]["data"]
+                    encoded, _ = await call(
+                        "mgba_live_read_range", {"start": 0x100, "length": 64, "encoding": "hex"}
+                    )
+                    hex_data = encoded["range"]["data"]
+                    require(
+                        bytes.fromhex(hex_data) == bytes(plain), "Native hex differs from bytes"
+                    )
+                    cli_hex = cli(
+                        "read-range",
+                        "--session",
+                        SESSION,
+                        "--start",
+                        "0x100",
+                        "--length",
+                        "64",
+                        "--encoding",
+                        "hex",
+                    )
+                    require(cli_hex["range"] == encoded["range"], "CLI/MCP hex results differ")
+                    baseline = {"start": 0x100, "data": hex_data}
+                    unchanged, _ = await call(
+                        "mgba_live_read_range",
+                        {"start": 0x100, "length": 64, "encoding": "delta", "baseline": baseline},
+                    )
+                    require(unchanged["range"]["spans"] == [], "Unchanged ROM produced a delta")
+                    previous = bytearray(plain)
+                    previous[0] ^= 255
+                    previous[-1] ^= 255
+                    baseline = {"start": 0x100, "data": previous.hex()}
+                    changed, _ = await call(
+                        "mgba_live_read_range",
+                        {
+                            "start": 0x100,
+                            "length": 64,
+                            "encoding": "delta",
+                            "baseline": baseline,
+                        },
+                    )
+                    cli_delta = cli(
+                        "read-range",
+                        "--session",
+                        SESSION,
+                        "--start",
+                        "0x100",
+                        "--length",
+                        "64",
+                        "--encoding",
+                        "delta",
+                        "--baseline",
+                        json.dumps(baseline),
+                    )
+                    require(cli_delta["range"] == changed["range"], "CLI/MCP delta results differ")
+                    for span in changed["range"]["spans"]:
+                        offset, data = span["offset"], bytes.fromhex(span["data"])
+                        previous[offset : offset + len(data)] = data
+                    require(
+                        previous == bytes(plain), "Native delta failed to reconstruct ROM bytes"
+                    )
+                    rejected = await mcp.call_tool(
+                        "mgba_live_read_range", {"session": SESSION, "start": 0xFFFF, "length": 2}
+                    )
+                    record("gb-address-rejection", rejected.model_dump(mode="json"))
+                    if not rejected.isError or rejected.structuredContent is None:
+                        raise RuntimeError("GB read wrapped the bus or omitted error metadata")
+                    failure = rejected.structuredContent["error"]
+                    require(
+                        failure["code"] == "invalid_arguments"
+                        and failure["execution_outcome"] == "not_executed"
+                        and failure["request_id"]
+                        and isinstance(failure["frame"], int),
+                        "Native platform rejection lost its correlated validation failure",
+                    )
+                    oversized = await mcp.call_tool(
+                        "mgba_live_dump_entities",
+                        {"session": SESSION, "base": 0xC000, "size": 4, "count": 481},
+                    )
+                    record("output-budget-rejection", oversized.model_dump(mode="json"))
+                    if not oversized.isError or oversized.structuredContent is None:
+                        raise RuntimeError("Oversized native output was not rejected")
+                    failure = oversized.structuredContent["error"]
+                    require(
+                        failure["code"] == "inspection_limit"
+                        and failure["limit_name"] == "response_bytes"
+                        and failure["limit"] == 32768
+                        and failure["execution_outcome"] == "not_executed",
+                        "Output rejection lost its pre-read budget metadata",
+                    )
+                    bounded, _ = await call(
+                        "mgba_live_dump_entities", {"base": 0xC000, "size": 4, "count": 480}
+                    )
+                    entities = bounded["entities"]["entities"]
+                    require(
+                        len(entities) == 480
+                        and all(
+                            item["address"] == 0xC000 + i * 4 and len(item["bytes"]) == 4
+                            for i, item in enumerate(entities)
+                        ),
+                        "Limit-sized native entity output was truncated",
+                    )
+
                     async def probe():
                         payload, _ = await call("mgba_live_run_lua", {"code": PROBE, "timeout": 10})
                         return payload["data"]["result"]

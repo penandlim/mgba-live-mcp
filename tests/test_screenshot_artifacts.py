@@ -27,7 +27,7 @@ import pytest
 from mcp import types
 from PIL import Image
 
-from mgba_live_mcp import process_control, server, session_manager, session_transactions
+from mgba_live_mcp import deadlines, process_control, server, session_manager, session_transactions
 from mgba_live_mcp.errors import CommandTimeout, DomainError
 from mgba_live_mcp.live_controller import LiveControllerClient
 from mgba_live_mcp.screenshots import validate_png
@@ -133,6 +133,8 @@ def _bridge(
     manager: SessionManager,
     monkeypatch: pytest.MonkeyPatch,
     native: Callable[[dict[str, Any]], None],
+    *,
+    expire_after: Event | None = None,
 ) -> Iterator[tuple[list[dict[str, Any]], list[Future[None]]]]:
     """Substitute native execution, not command publication, ownership, or correlation."""
     original = manager.write_command
@@ -145,6 +147,11 @@ def _bridge(
             path.unlink()  # Native bridge claims the command before executing it.
             commands.append(command)
             writers.append(pool.submit(native, command))
+            if expire_after is not None and len(commands) == 1:
+                assert expire_after.wait(2)
+                budget = deadlines.current_deadline()
+                assert budget is not None
+                budget.expires_at = 0.0
 
         patch.setattr(manager, "write_command", publish)
         try:
@@ -584,10 +591,10 @@ def test_timeout_retains_stage_until_correlated_response_reconciliation(
         assert release.wait(5)
         _write_png(manager, command, pngs[0])
 
-    with _bridge(manager, monkeypatch, native) as (commands, writers):
+    with _bridge(manager, monkeypatch, native, expire_after=started) as (commands, writers):
         try:
             with pytest.raises(CommandTimeout) as failure:
-                manager.get_view(session="s1", timeout=0.05)
+                manager.get_view(session="s1")
             assert started.wait(2)
             staged = Path(commands[0]["path"])
             assert staged.exists()
@@ -633,10 +640,10 @@ def test_reconciliation_reports_cleanup_and_journal_failures(tmp_path, monkeypat
 
     monkeypatch.setattr(os, "unlink", remove)
     monkeypatch.setattr(session_transactions._Directory, "write_json", record)
-    with _bridge(manager, monkeypatch, native) as (commands, writers):
+    with _bridge(manager, monkeypatch, native, expire_after=started) as (commands, writers):
         try:
             with pytest.raises(CommandTimeout):
-                manager.get_view(session="s1", timeout=0.05)
+                manager.get_view(session="s1")
             assert started.wait(2)
             staged = Path(commands[0]["path"])
             unrelated = staged.with_name("unrelated.png")
@@ -680,7 +687,7 @@ def test_verified_recovery_cleans_only_owned_staging_after_writer_exit(tmp_path,
         if not stopped.is_set():
             _write_png(manager, command, pngs[1])
 
-    with _bridge(manager, monkeypatch, native) as (commands, writers):
+    with _bridge(manager, monkeypatch, native, expire_after=started) as (commands, writers):
 
         def terminate(pid, identity, **kwargs):
             assert pid == os.getpid()
@@ -693,7 +700,7 @@ def test_verified_recovery_cleans_only_owned_staging_after_writer_exit(tmp_path,
         monkeypatch.setattr(process_control, "terminate_owned_process", terminate)
         try:
             with pytest.raises(CommandTimeout):
-                manager.get_view(session="s1", timeout=0.05)
+                manager.get_view(session="s1")
             assert started.wait(2)
             result = manager.stop(session="s1")
         finally:

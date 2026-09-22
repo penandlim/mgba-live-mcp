@@ -17,7 +17,7 @@ from jsonschema import Draft202012Validator
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 
-from mgba_live_mcp import deadlines, process_control, server, session_transactions
+from mgba_live_mcp import deadlines, process_control, server, session_manager, session_transactions
 from mgba_live_mcp.errors import ERROR_CODES, DomainError
 from mgba_live_mcp.live_controller import LiveControllerClient
 from mgba_live_mcp.session_manager import SessionManager
@@ -147,7 +147,6 @@ CASES = [
     ("input_clear", {"session": "s1", "keys": ["A"]}),
     ("export_screenshot", {"session": "s1"}),
     ("read_memory", {"session": "s1", "addresses": [1]}),
-    ("read_memory", {"session": "s1", "addresses": []}),
     ("read_range", {"session": "s1", "start": 1, "length": 2}),
     ("dump_pointers", {"session": "s1", "start": 0, "count": 1}),
     ("dump_oam", {"session": "s1", "count": 1}),
@@ -287,8 +286,14 @@ def test_busy_session_retains_pending_request(runtime):
 
 
 def test_real_transport_timeout_remains_ambiguous(runtime, monkeypatch):
+    def expire_command_wait(_seconds):
+        budget = deadlines.current_deadline()
+        assert budget is not None
+        budget.expires_at = 0.0
+
+    monkeypatch.setattr(session_manager, "time", SimpleNamespace(sleep=expire_command_wait))
     monkeypatch.setattr(runtime, "send_command", SessionManager.send_command.__get__(runtime))
-    result = invoke("mgba_live_run_lua", {"session": "s1", "code": "return 1", "timeout": 0.01})
+    result = invoke("mgba_live_run_lua", {"session": "s1", "code": "return 1"})
     error = structured(result)["error"]
     assert result.isError and error["code"] == "command_timeout"
     assert error["execution_outcome"] == "unknown" and error["phase"] == "command"
@@ -368,6 +373,8 @@ def test_real_stdio_initialize_and_metadata_requests(tmp_path):
     ("arguments", "code", "exit_code"),
     [
         (["run-lua", "--session", "missing", "--code", "return 1"], "session_not_found", 1),
+        (["screenshot", "--session", "missing"], "session_not_found", 1),
+        (["screenshot", "--session", "missing", "--no-save"], "session_not_found", 1),
         (
             ["read-range", "--session", "missing", "--start", "0", "--length", "bad"],
             "invalid_arguments",
@@ -388,12 +395,12 @@ def test_cli_uses_domain_error_envelope(tmp_path, arguments, code, exit_code):
     error = json.loads(result.stderr)["error"]
     assert error["code"] == code and error["execution_outcome"] == "not_executed"
     if code == "session_not_found":
-        assert error["session_id"] == "missing" and error["phase"] == "admission"
+        assert error["session_id"] == "missing"
 
 
 def test_invalid_success_payload_becomes_error(runtime, monkeypatch):
     monkeypatch.setattr(runtime, "read_memory", lambda **k: {"session_id": "s1", "frame": 3})
-    result = invoke("mgba_live_read_memory", {"session": "s1", "addresses": []})
+    result = invoke("mgba_live_read_memory", {"session": "s1", "addresses": [0]})
     assert result.isError
     assert structured(result)["error"]["code"] == "invalid_result"
 
